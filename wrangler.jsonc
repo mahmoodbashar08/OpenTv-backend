@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "opentv-api",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-31",
+  "compatibility_date": "2026-07-30",
   "observability": { "enabled": true },
 
   // The social layer. Nothing a user owns is stored here — see docs/PLAN.md.
@@ -11,13 +11,13 @@
       "binding": "DB",
       "database_name": "opentv",
       // Filled in by: wrangler d1 create opentv
-      "database_id": "REPLACE_ME",
+      "database_id": "872adbe7-4735-4ef6-8cd2-620e443b1fbd",
       "migrations_dir": "migrations"
     }
   ],
 
   // Caches provider JWKS so token verification does not fetch on every request.
   "kv_namespaces": [
-    { "binding": "CACHE", "id": "REPLACE_ME" }
+    { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" }
   ]
 }

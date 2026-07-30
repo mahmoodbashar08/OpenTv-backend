@@ -321,15 +321,23 @@ Token: `{ sub: profileId, iat, exp }`, HS256, secret `SESSION_SECRET`.
   "needs_handle": true }
 ```
 
-Find-or-create, as one `db.batch()`:
+Find-or-create. The lookup runs first as its own statement — a `batch()` cannot
+branch on a result, so "one batch" here would be a lie an implementer trips on.
+Only the *create* pair batches:
 
 ```sql
+-- 1. alone:
 SELECT profile_id FROM identities WHERE provider = ? AND external_id = ?;
--- if found and the profile is not soft-deleted: issue a token, done.
--- if not found:
+-- found and profile not soft-deleted → issue a token, done.
+
+-- 2. not found → one db.batch() so a crash cannot orphan an identity:
 INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?);
 INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?,?,?,?,?);
 ```
+
+The race (two devices, first sign-in, same instant) resolves at the
+`identities` primary key: the loser's batch fails on `(provider, external_id)`,
+and the handler re-runs the lookup and returns the winner's profile.
 
 `profiles.handle` is `NOT NULL UNIQUE`, so a new profile gets a **placeholder**:
 `user_<first 10 of id>`, with `needs_handle: true` telling the app to run the
@@ -1066,6 +1074,36 @@ that appear in every client binary anyway:
 
 Add the R2 binding when avatars ship — it is absent from `wrangler.jsonc` today:
 `"r2_buckets": [{ "binding": "AVATARS", "bucket_name": "opentv-avatars" }]`.
+
+### The RevenueCat webhook — specified now, shipped with Plus
+
+`plus_until` is written only by this endpoint (`PLAN.md` §3), so the plan must
+say what it is even though nothing sells Plus at v1. It ships in the same
+release as the paywall, not before — but the secret is provisioned in this step
+so the deploy checklist is complete once.
+
+**`POST /v1/webhooks/revenuecat`** — authenticated by
+`Authorization: Bearer <REVENUECAT_WEBHOOK_SECRET>` (RevenueCat sends the exact
+header value you configure; compare with a constant-time check, not `===` on
+user input into a branch that logs). Not a user session — `requireAuth` is not
+mounted here.
+
+Handle exactly three event families and ignore the rest with `200` (RevenueCat
+retries on non-2xx, and an ignored event must not retry forever):
+
+| Event | Action |
+|---|---|
+| `INITIAL_PURCHASE`, `RENEWAL`, `UNCANCELLATION` | `UPDATE profiles SET plus_until = <expiration_at_ms as ISO> WHERE id = <app_user_id>` |
+| `CANCELLATION` | nothing — access runs to the existing `plus_until`; cancelling is not revoking |
+| `EXPIRATION`, `REFUND` | `UPDATE profiles SET plus_until = NULL WHERE id = <app_user_id>` |
+
+`app_user_id` is the OpenTV profile id because the app sets it at RevenueCat
+login (`Purchases.logIn(profileId)`) — record that as a requirement on the app
+side. Zero rows updated is a `200` with a log line, not an error: a webhook for
+a deleted profile is expected traffic.
+
+Unit tests: event mapping table above, unknown event → no-op 200, bad secret →
+401, and the constant-time compare.
 
 ### Deploy
 
