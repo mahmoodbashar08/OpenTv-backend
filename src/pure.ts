@@ -221,3 +221,205 @@ export function placeholderHandle(profileId: string): string {
 export function needsHandle(handle: string): boolean {
   return handle.startsWith(HANDLE_PLACEHOLDER_PREFIX);
 }
+
+// ── ratings ──────────────────────────────────────────────────────────────────
+
+/** The three addressable kinds of thing. Mirrors the CHECK constraints in 0001. */
+export const TARGET_SOURCES = ['tvdb', 'tmdb', 'title'] as const;
+export type TargetSource = (typeof TARGET_SOURCES)[number];
+
+export function isTargetSource(v: unknown): v is TargetSource {
+  return typeof v === 'string' && (TARGET_SOURCES as readonly string[]).includes(v);
+}
+
+/**
+ * The emotion allow-list — TV Time's own set, so an imported reaction has
+ * somewhere to land and the app's existing icons keep their meaning.
+ *
+ * This list is not decoration. Emotion names are interpolated into a JSON path
+ * (`'$.' || :name`) in the aggregate upsert, so an unvalidated emotion is a
+ * JSON-path injection. Nothing reaches that SQL without passing through here.
+ */
+export const EMOTIONS = ['love', 'fun', 'wow', 'sad', 'scared', 'angry'] as const;
+export type Emotion = (typeof EMOTIONS)[number];
+
+export function isEmotion(v: unknown): v is Emotion {
+  return typeof v === 'string' && (EMOTIONS as readonly string[]).includes(v);
+}
+
+export const SCORE_MIN = 1;
+export const SCORE_MAX = 10;
+
+/** A vote as it is stored: either half may be null, never both. */
+export type Vote = { score: number | null; emotion: string | null };
+
+/**
+ * How a vote moves the rollup. `emotionFrom`/`emotionTo` are names, not counts:
+ * the caller turns them into the `json_set` pair, skipping the decrement when
+ * `emotionFrom` is null, the increment when `emotionTo` is null, and both when
+ * they are equal.
+ */
+export type AggregateDelta = {
+  dVotes: number;
+  dScore: number;
+  emotionFrom: string | null;
+  emotionTo: string | null;
+};
+
+/**
+ * docs/IMPLEMENTATION.md Step 2, "The delta logic", row for row:
+ *
+ * | new vote with a score        | +1 | +next.score  | null → next.emotion |
+ * | new vote, emotion only       | +1 |  0           | null → next.emotion |
+ * | changed score 7 → 9          |  0 | +2           | unchanged           |
+ * | score added to emotion-only  |  0 | +next.score  | unchanged           |
+ * | score removed (score → null) |  0 | -prev.score  | unchanged           |
+ * | emotion changed only         |  0 |  0           | prev → next         |
+ *
+ * `vote_count` counts *people*, which is why an emotion-only vote still adds
+ * one and a re-vote adds none. The two extra cases the table does not name fall
+ * out of the same arithmetic: emotion-only → score-only clears the emotion
+ * (from = e, to = null, so only the decrement runs), and an identical re-vote
+ * is all zeroes with from === to, so the emotion clause is skipped entirely.
+ */
+export function aggregateDelta(prev: Vote | null, next: Vote): AggregateDelta {
+  const prevScore = prev?.score ?? null;
+  const nextScore = next.score ?? null;
+  return {
+    dVotes: prev ? 0 : 1,
+    dScore: (nextScore ?? 0) - (prevScore ?? 0),
+    emotionFrom: prev?.emotion ?? null,
+    emotionTo: next.emotion ?? null,
+  };
+}
+
+export type VoteFailure =
+  | 'score_invalid'
+  | 'emotion_invalid'
+  | 'empty_vote'
+  | 'season_invalid'
+  | 'episode_invalid'
+  | 'episode_without_season';
+
+export type ValidatedVote = {
+  score: number | null;
+  emotion: Emotion | null;
+  season: number | null;
+  episode: number | null;
+};
+
+/**
+ * Everything a vote body must satisfy before a statement is prepared. Score 0
+ * and score 11 die here, not at the CHECK constraint, so the client gets
+ * `invalid_body` rather than a 500 wearing a database error's clothes.
+ */
+export function validateVote(input: {
+  score?: unknown;
+  emotion?: unknown;
+  season?: unknown;
+  episode?: unknown;
+}): { ok: true; vote: ValidatedVote } | { ok: false; reason: VoteFailure } {
+  const rawScore = input.score ?? null;
+  let score: number | null = null;
+  if (rawScore !== null) {
+    if (typeof rawScore !== 'number' || !Number.isInteger(rawScore)) {
+      return { ok: false, reason: 'score_invalid' };
+    }
+    if (rawScore < SCORE_MIN || rawScore > SCORE_MAX) return { ok: false, reason: 'score_invalid' };
+    score = rawScore;
+  }
+
+  const rawEmotion = input.emotion ?? null;
+  let emotion: Emotion | null = null;
+  if (rawEmotion !== null) {
+    if (!isEmotion(rawEmotion)) return { ok: false, reason: 'emotion_invalid' };
+    emotion = rawEmotion;
+  }
+
+  // A vote that says nothing is not a vote; it is a delete, and deleting is
+  // not this endpoint's job.
+  if (score === null && emotion === null) return { ok: false, reason: 'empty_vote' };
+
+  const season = numberOrNull(input.season);
+  if (season === undefined) return { ok: false, reason: 'season_invalid' };
+  const episode = numberOrNull(input.episode);
+  if (episode === undefined) return { ok: false, reason: 'episode_invalid' };
+  // Episode 3 of nothing in particular is not addressable.
+  if (episode !== null && season === null) return { ok: false, reason: 'episode_without_season' };
+
+  return { ok: true, vote: { score, emotion, season, episode } };
+}
+
+/** null for absent, the number for a valid one, `undefined` for invalid. */
+function numberOrNull(v: unknown): number | null | undefined {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return undefined;
+  return v;
+}
+
+/** The `t=` form of GET /v1/aggregates, parsed. */
+export type ParsedTarget = {
+  source: TargetSource;
+  key: string;
+  season: number;
+  episode: number;
+};
+
+export const MAX_TARGETS = 100;
+
+/**
+ * `t=source:key[:season:episode]`, repeated, capped at 100. Any malformed
+ * member poisons the whole call and returns null — a silently dropped target
+ * would show a film with no votes rather than an error, which is worse.
+ *
+ * THE PARSING RULE, and it is not obvious.
+ *
+ * A `title:` key is `slug|year`, so it always contains a literal `|` and may
+ * end in digits (`title:1917|2019`). It can never contain a `:` — `slug()`
+ * replaces every non-alphanumeric with `-`, and the year is digits. So:
+ *
+ *   1. split on the FIRST `:` — everything before it is the source;
+ *   2. season/episode are taken from the LAST two `:`-separated segments of the
+ *      remainder, and only when there are at least two `:` in the remainder AND
+ *      both trailing segments are pure digits;
+ *   3. otherwise the whole remainder is the key.
+ *
+ * `title:1917|2019` therefore keeps its year: the remainder holds no `:` at
+ * all, so rule 2 never fires. `tvdb:121361:1:3` splits into key 121361,
+ * season 1, episode 3. Season and episode are normalised to -1 here, matching
+ * `rating_aggregates`' primary key, which cannot hold NULLs.
+ */
+export function parseTargets(raw: readonly string[]): ParsedTarget[] | null {
+  if (raw.length === 0 || raw.length > MAX_TARGETS) return null;
+
+  const out: ParsedTarget[] = [];
+  for (const t of raw) {
+    const firstColon = t.indexOf(':');
+    if (firstColon <= 0) return null;
+    const source = t.slice(0, firstColon);
+    if (!isTargetSource(source)) return null;
+
+    let rest = t.slice(firstColon + 1);
+    let season = -1;
+    let episode = -1;
+
+    const parts = rest.split(':');
+    if (parts.length >= 3) {
+      const ep = parts[parts.length - 1]!;
+      const se = parts[parts.length - 2]!;
+      if (/^\d+$/.test(ep) && /^\d+$/.test(se)) {
+        season = Number(se);
+        episode = Number(ep);
+        rest = parts.slice(0, -2).join(':');
+      } else {
+        return null; // a `:` in the remainder that is not a season/episode pair
+      }
+    } else if (parts.length === 2) {
+      return null; // half a pair: unparseable, and guessing would be worse
+    }
+
+    if (rest.length === 0) return null;
+    out.push({ source, key: rest, season, episode });
+  }
+  return out;
+}

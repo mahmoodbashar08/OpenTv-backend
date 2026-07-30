@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { auth } from '@/routes/auth';
+import { ratings } from '@/routes/ratings';
 
 export type { Env } from '@/env';
 
@@ -30,6 +31,7 @@ app.get('/health', async (c) => {
 const v1 = new Hono<App>();
 
 v1.route('/', auth);
+v1.route('/', ratings);
 
 app.route('/v1', v1);
 
