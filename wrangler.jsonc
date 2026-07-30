@@ -9,6 +9,18 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // Public identifiers only — they appear in every client binary anyway.
+  // Secrets (SESSION_SECRET, later REVENUECAT_WEBHOOK_SECRET) go in with
+  // `wrangler secret put` and never live here. Locally they come from .dev.vars.
+  "vars": {
+    "APPLE_BUNDLE_ID": "com.insightfy.opentv",
+    // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
+    // returns the *web* client id as `aud`, which is the classic trap. Filled
+    // in when Google sign-in is wired up in the app; empty means every Google
+    // token is refused, which is the correct direction to fail.
+    "GOOGLE_CLIENT_IDS": ""
+  },
+
   // The social layer. Nothing a user owns is stored here — see docs/PLAN.md.
   "d1_databases": [
     {

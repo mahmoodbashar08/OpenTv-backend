@@ -4,7 +4,10 @@
     "lib": ["ES2022"],
     "module": "ES2022",
     "moduleResolution": "Bundler",
-    "types": ["@cloudflare/workers-types"],
+    // @types/node is for `node:buffer` only — base64url on JWT segments, which
+    // is what the nodejs_compat flag is enabled for. Workers types win where
+    // the two overlap, so they are listed last.
+    "types": ["node", "@cloudflare/workers-types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
