@@ -180,6 +180,16 @@ and the diacritic and Arabic rows must produce non-empty ones.
 from `mobile/src/pure.ts` next to `movieIdentityMatches`, with this table as its
 test. Do it in the same session as backend Step 2, so the two never drift.
 
+**Known divergence to resolve then** (found implementing Step 0): the mobile
+file splits the year rule in two — its `movieYearOf` tests the column with a
+bare `/^\d{4}$/` and does **not** slice, while the `.slice(0, 4)` lives in
+`movieYear` (~line 935), which is what `movieIdentityMatches` actually calls.
+The backend's `movieYearOf` folds the slice in, as this plan's vector table
+requires (`"2021-10-22"` → `2021`). The app-side `targetKey` MUST therefore be
+built on the sliced form (`movieYear`), not on the app's own `movieYearOf`,
+or the two sides will disagree on every film whose year column holds a full
+release date.
+
 ---
 
 ## Step 0 — finish the scaffold
