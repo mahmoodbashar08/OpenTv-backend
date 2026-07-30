@@ -1,0 +1,418 @@
+{
+  "version": "2.0.0",
+  "darkMode": true,
+  "gridEnabling": false,
+  "currentViewName": null,
+  "defaultView": {
+    "detailLevel": "All",
+    "tablePositions": [
+      {
+        "name": "profiles",
+        "schemaName": "public",
+        "x": 365.3398360472596,
+        "y": 67.16951970020597
+      },
+      {
+        "name": "follows",
+        "schemaName": "public",
+        "x": 816.4067449839779,
+        "y": 44.63288942868786
+      },
+      {
+        "name": "comments",
+        "schemaName": "public",
+        "x": 837.1731291658704,
+        "y": 475.9629943645998
+      },
+      {
+        "name": "comment_likes",
+        "schemaName": "public",
+        "x": 1280.90087890625,
+        "y": 12
+      },
+      {
+        "name": "ratings",
+        "schemaName": "public",
+        "x": 442.7249017032123,
+        "y": 943.6803454639094
+      },
+      {
+        "name": "rating_aggregates",
+        "schemaName": "public",
+        "x": -148.49405003735515,
+        "y": 12
+      },
+      {
+        "name": "lists",
+        "schemaName": "public",
+        "x": 988.4710710625142,
+        "y": -285.78159813469847
+      },
+      {
+        "name": "list_items",
+        "schemaName": "public",
+        "x": 1306.4619188151796,
+        "y": 452.9708612710415
+      },
+      {
+        "name": "reports",
+        "schemaName": "public",
+        "x": 220.114856332499,
+        "y": -394.02645287630844
+      },
+      {
+        "name": "blocks",
+        "schemaName": "public",
+        "x": 599.8430242299585,
+        "y": -203.90782899370535
+      },
+      {
+        "name": "comment_images",
+        "schemaName": "public",
+        "x": 173.2117938131461,
+        "y": 604.8242736303068
+      },
+      {
+        "name": "identities",
+        "schemaName": "public",
+        "x": -148.49405003735512,
+        "y": 445.15013012009587
+      },
+      {
+        "name": "notifications",
+        "schemaName": "public",
+        "x": -148.49405003735515,
+        "y": 1351.1966101827077
+      },
+      {
+        "name": "moderation_actions",
+        "schemaName": "public",
+        "x": 115.84139918139485,
+        "y": 1351.1966101827077
+      },
+      {
+        "name": "counter_repair",
+        "schemaName": "public",
+        "x": 391.9517507438949,
+        "y": 1351.1966101827077
+      }
+    ],
+    "tableGroupCollapseStates": [],
+    "stickyNoteLayouts": [],
+    "referencePaths": [
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "follower_id"
+        ],
+        "secondTableName": "follows",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "followee_id"
+        ],
+        "secondTableName": "follows",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "author_id"
+        ],
+        "secondTableName": "comments",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "comments",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "parent_id"
+        ],
+        "secondTableName": "comments",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "comments",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "comment_id"
+        ],
+        "secondTableName": "comment_likes",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "user_id"
+        ],
+        "secondTableName": "comment_likes",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "author_id"
+        ],
+        "secondTableName": "ratings",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "owner_id"
+        ],
+        "secondTableName": "lists",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "lists",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "list_id"
+        ],
+        "secondTableName": "list_items",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "reporter_id"
+        ],
+        "secondTableName": "reports",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "blocker_id"
+        ],
+        "secondTableName": "blocks",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "blocked_id"
+        ],
+        "secondTableName": "blocks",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "comments",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "comment_id"
+        ],
+        "secondTableName": "comment_images",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "target_type",
+          "target_id",
+          "season",
+          "episode"
+        ],
+        "firstTableName": "ratings",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "target_type",
+          "target_id",
+          "season",
+          "episode"
+        ],
+        "secondTableName": "rating_aggregates",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "profile_id"
+        ],
+        "secondTableName": "identities",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "recipient_id"
+        ],
+        "secondTableName": "notifications",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "actor_id"
+        ],
+        "secondTableName": "notifications",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "reports",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "report_id"
+        ],
+        "secondTableName": "moderation_actions",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "id"
+        ],
+        "firstTableName": "profiles",
+        "firstSchemaName": "public",
+        "firstRelation": "1",
+        "secondFieldNames": [
+          "moderator_id"
+        ],
+        "secondTableName": "moderation_actions",
+        "secondSchemaName": "public",
+        "secondRelation": "*",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "target_source",
+          "target_key",
+          "season",
+          "episode"
+        ],
+        "firstTableName": "ratings",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "target_source",
+          "target_key",
+          "season",
+          "episode"
+        ],
+        "secondTableName": "rating_aggregates",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      }
+    ]
+  },
+  "views": {}
+}

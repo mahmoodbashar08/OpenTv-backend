@@ -1,0 +1,358 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  OpenTV — social backend
+//  Cloudflare D1 (SQLite)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  The phone's SQLite database is the source of truth for a user's own library.
+//  This schema holds ONLY what is shared between people.
+//
+//  There is no watch-history table, and there never will be. That is what makes
+//  "the server can disappear and nothing breaks" structurally true rather than
+//  a promise someone has to keep.
+//
+//  LEGEND
+//    [v1]    ships in the first release
+//    [plus]  paid tier — modelled now, built later
+//    [law]   store policy / legal requirement, not a feature
+//    [job]   maintained by a scheduled Worker, not by request handlers
+//
+//  Preview: ⌘⇧P → "DBML: Open Preview to the Side"
+//  Same language as dbdiagram.io — the file pastes there unchanged.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  HOW A TITLE IS ADDRESSED  (read this before changing anything)
+//
+//  Shows are easy: TheTVDB gives every series a stable numeric id, and the app
+//  already keys on it.
+//
+//  Movies are not. In the app, `movies.name` is the PRIMARY KEY and both tmdbId
+//  and tvdbId are nullable columns added later — which is exactly how two films
+//  called "Amado" collided in 1.2.1. A server thread keyed on a numeric id
+//  would have nothing to attach to for most films.
+//
+//  So every comment and rating addresses its subject with a PAIR:
+//
+//      target_source   'tvdb' | 'tmdb' | 'title'
+//      target_key      the id as text, or  slug(title)|year  for 'title'
+//
+//  Both sides compute the key with the same documented rule, so they always
+//  agree. When a film later gains a TheTVDB id, a [job] migrates its threads
+//  from the 'title' key to the 'tvdb' one — possible precisely because the
+//  source is recorded rather than assumed.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+Project opentv {
+  database_type: 'SQLite (Cloudflare D1)'
+  Note: 'Social layer only. Nothing a user owns lives here.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  1 · IDENTITY
+// ───────────────────────────────────────────────────────────────────────────
+
+Table identities {
+  provider    text [not null, note: 'apple | google']
+  external_id text [not null, note: 'the subject claim from the provider token']
+  profile_id  text [ref: > profiles.id, not null]
+  email       text [note: 'as given by the provider — often an Apple private-relay address']
+  created_at  text [not null]
+
+  indexes {
+    (provider, external_id) [pk]
+    profile_id [name: 'idx_identities_profile']
+  }
+
+  Note: '[v1] One person, many logins.'
+}
+
+Table profiles {
+  id             text [pk, note: 'internal id — NOT the provider subject, see identities']
+  handle         text [unique, not null]
+  display_name   text
+  avatar_key     text [note: 'R2 key — FREE, not a Plus feature']
+  bio            text
+  is_private     integer [default: 0, note: 'hides activity from followers']
+
+  tvtime_user_id integer [note: 'numeric TV Time id — friend.csv references THIS, not the name']
+  tvtime_handle  text [note: 'old display name, for a human "is this you?" only']
+
+  links          text [note: '[plus] JSON array — Letterboxd, Instagram, site']
+  plus_until     text [note: '[plus] entitlement expiry. Written ONLY by the RevenueCat webhook, never by the client']
+
+  created_at     text [not null]
+  deleted_at     text [note: 'soft delete; purged by a [job]']
+
+  indexes {
+    tvtime_user_id [name: 'idx_profiles_tvtime']
+  }
+
+  Note: '[v1] Everything hangs off this.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  2 · SOCIAL GRAPH
+// ───────────────────────────────────────────────────────────────────────────
+
+Table follows {
+  follower_id text [ref: > profiles.id, not null]
+  followee_id text [ref: > profiles.id, not null]
+  created_at  text [not null]
+
+  indexes {
+    (follower_id, followee_id) [pk]
+    followee_id [name: 'idx_follows_reverse']
+  }
+
+  Note: '[v1] Edge list. Privacy lives on profiles.is_private.'
+}
+
+Table blocks {
+  blocker_id text [ref: > profiles.id, not null]
+  blocked_id text [ref: > profiles.id, not null]
+  created_at text [not null]
+
+  indexes {
+    (blocker_id, blocked_id) [pk]
+  }
+
+  Note: '[law] Required by Apple guideline 1.2.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  3 · DISCUSSION
+// ───────────────────────────────────────────────────────────────────────────
+
+Table comments {
+  id            text [pk]
+  author_id     text [ref: > profiles.id, not null]
+
+  target_source text [not null, note: 'tvdb | tmdb | title — see the header']
+  target_key    text [not null, note: 'the id as text, or slug(title)|year']
+  season        integer [note: 'episodes only']
+  episode       integer [note: 'episodes only']
+
+  body          text [not null]
+  is_spoiler    integer [default: 0]
+  lang          text [note: 'BCP-47 — the app ships in 6 languages; TV Time carried this too']
+  parent_id     text [ref: > comments.id, note: 'one level of replies only']
+
+  imported_at   text [note: 'set when seeded from the author own export']
+  like_count    integer [default: 0, note: '[job] reconciled — see counter_repair']
+  report_count  integer [default: 0, note: 'auto-hides past a threshold, before a human reads the queue']
+
+  created_at    text [not null]
+  edited_at     text [note: 'TV Time kept updated_at; an edited comment should say so']
+  deleted_at    text
+
+  indexes {
+    (target_source, target_key, season, episode) [name: 'idx_comments_thread']
+    author_id [name: 'idx_comments_author']
+  }
+
+  Note: '[v1] One thread per title. Replies stop at one level.'
+}
+
+Table comment_likes {
+  comment_id text [ref: > comments.id, not null]
+  user_id    text [ref: > profiles.id, not null]
+  created_at text [not null]
+
+  indexes {
+    (comment_id, user_id) [pk]
+  }
+
+  Note: '[v1] The source of truth for comments.like_count.'
+}
+
+Table comment_images {
+  comment_id  text [ref: > comments.id, not null]
+  r2_key      text [not null, note: 'object key, NOT a URL — the domain is built at read time']
+  width       integer
+  height      integer
+  is_gif      integer [default: 0]
+
+  scan_status text [default: 'pending', note: 'pending | clean | blocked']
+  scanned_at  text
+  created_at  text [not null]
+
+  indexes {
+    (comment_id) [pk]
+  }
+
+  Note: '[plus] Real running cost + criminal liability. Serves only when scan_status = clean.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  4 · RATINGS
+//     Individual votes in, percentages out. The app only ever reads the
+//     aggregate.
+// ───────────────────────────────────────────────────────────────────────────
+
+Table ratings {
+  id            text [pk]
+  author_id     text [ref: > profiles.id, not null]
+
+  target_source text [not null]
+  target_key    text [not null]
+  season        integer
+  episode       integer
+
+  score         integer [note: '1-10, nullable when only an emotion was given']
+  emotion       text [note: 'the TV Time-style reaction']
+  created_at    text [not null]
+
+  indexes {
+    (author_id, target_source, target_key, season, episode) [unique, name: 'idx_one_vote_per_person']
+  }
+
+  Note: '[v1] Individual votes. Read only via the aggregate.'
+}
+
+Table rating_aggregates {
+  target_source  text [not null]
+  target_key     text [not null]
+  season         integer
+  episode        integer
+
+  vote_count     integer [default: 0]
+  score_sum      integer [default: 0]
+  emotion_counts text [note: 'JSON: emotion -> count']
+  updated_at     text
+
+  indexes {
+    (target_source, target_key, season, episode) [pk]
+  }
+
+  Note: '[v1] Rollup of ratings. Computed on WRITE, never on read.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  5 · LISTS
+// ───────────────────────────────────────────────────────────────────────────
+
+Table lists {
+  id          text [pk]
+  owner_id    text [ref: > profiles.id, not null]
+  name        text [not null]
+  description text
+  is_public   integer [default: 0]
+  created_at  text [not null]
+
+  Note: '[v1] Only explicitly published lists reach the server.'
+}
+
+Table list_items {
+  list_id       text [ref: > lists.id, not null]
+  position      integer [not null]
+  target_source text [not null]
+  target_key    text [not null]
+  title         text [note: 'denormalised so rendering needs no metadata lookup']
+
+  indexes {
+    (list_id, position) [pk]
+  }
+
+  Note: '[v1] Ordered by position, which is what drag-to-reorder writes.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  6 · NOTIFICATIONS
+//     Without this the comment section is a wall, not a conversation: someone
+//     replies to you and you never find out. TV Time shipped
+//     notifications-prod-notifications.csv for the same reason.
+// ───────────────────────────────────────────────────────────────────────────
+
+Table notifications {
+  id           text [pk]
+  recipient_id text [ref: > profiles.id, not null]
+  actor_id     text [ref: > profiles.id, note: 'who caused it; null for system notices']
+
+  kind         text [not null, note: 'reply | like | follow | friend_found | moderation']
+  subject_type text [note: 'comment | profile']
+  subject_id   text
+
+  read_at      text
+  created_at   text [not null]
+
+  indexes {
+    (recipient_id, created_at) [name: 'idx_notifications_inbox']
+  }
+
+  Note: '[v1] Written alongside the reply/like/follow that caused it.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  7 · MODERATION
+// ───────────────────────────────────────────────────────────────────────────
+
+Table reports {
+  id            text [pk]
+  reporter_id   text [ref: > profiles.id, not null]
+
+  target_type   text [not null, note: 'comment | profile | list']
+  target_id     text [not null]
+  reason        text [not null]
+
+  status        text [default: 'open', note: 'open | actioned | dismissed']
+  created_at    text [not null]
+  first_seen_at text [note: 'when a moderator first opened it — this is the 24h clock']
+  resolved_at   text
+
+  indexes {
+    (status, created_at) [name: 'idx_reports_queue']
+  }
+
+  Note: '[law] Report queue. first_seen_at is the 24-hour clock.'
+}
+
+Table moderation_actions {
+  id          text [pk]
+  report_id   text [ref: > reports.id, note: 'null for proactive action with no report']
+  moderator_id text [ref: > profiles.id, not null]
+
+  action      text [not null, note: 'hide | delete | ban | dismiss | restore']
+  target_type text [not null]
+  target_id   text [not null]
+  note        text
+  created_at  text [not null]
+
+  Note: '[law] Append-only audit trail: who acted, when, why.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  8 · MAINTENANCE
+// ───────────────────────────────────────────────────────────────────────────
+
+Table counter_repair {
+  table_name     text [pk, note: 'comments | rating_aggregates']
+  last_run_at    text
+  rows_checked   integer
+  rows_corrected integer
+
+  Note: '[job] Recounts drifted counters from source tables.'
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+//  DERIVED RELATIONSHIP
+//
+//  rating_aggregates is a rollup of ratings on the same composite key, not a
+//  parent-child relationship. Drawn so the diagram shows where the percentages
+//  come from, but D1 gets NO foreign key for it: the aggregate row is created
+//  by the first vote and updated by every one after, so there is no parent to
+//  enforce against.
+// ───────────────────────────────────────────────────────────────────────────
+
+Ref rollup_of_votes {
+  ratings.(target_source, target_key, season, episode) > rating_aggregates.(target_source, target_key, season, episode)
+}
