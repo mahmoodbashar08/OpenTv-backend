@@ -156,10 +156,49 @@ describe('GET /v1/profiles/:handle/published', () => {
     expect(res.json.movies).toHaveLength(1);
   });
 
-  it('puts favourites first', async () => {
+  it('keeps the OWNER’S order — favourites are not sorted to the front', async () => {
+    // The shelf is drawn in the order the phone published it. Hoisting
+    // favourites would give a public profile a different order from the
+    // owner's own screen, which is the whole bug this replaced.
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: {
+        kind: 'show',
+        stats: {},
+        titles: [
+          title(1, { rank: 0 }),
+          title(2, { rank: 1, favourite: true, fav_rank: 0 }),
+          title(3, { rank: 2 }),
+        ],
+      },
+    });
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/published');
+    expect(res.json.shows.map((s: { target_key: string }) => s.target_key)).toEqual(['1001', '1002', '1003']);
+  });
+
+  it('sends fav_rank, so the favourites shelf can carry its own order', async () => {
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: {
+        kind: 'show',
+        stats: {},
+        // Published second but hearted first: the two orders disagree on
+        // purpose, which is exactly why one rank column was not enough.
+        titles: [title(1, { rank: 0, favourite: true, fav_rank: 1 }), title(2, { rank: 1, favourite: true, fav_rank: 0 })],
+      },
+    });
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/published');
+    expect(res.json.shows.map((s: { target_key: string }) => s.target_key)).toEqual(['1001', '1002']);
+    const byFav = [...res.json.shows].sort(
+      (a: { fav_rank: number }, b: { fav_rank: number }) => a.fav_rank - b.fav_rank,
+    );
+    expect(byFav.map((s: { target_key: string }) => s.target_key)).toEqual(['1002', '1001']);
+  });
+
+  it('leaves an unranked shelf stable, ordered by name', async () => {
     await publish();
     const res = await call(env, 'GET', '/v1/profiles/mahmood/published');
-    expect(res.json.shows[0]).toMatchObject({ target_key: '1002', favourite: true });
+    expect(res.json.shows).toHaveLength(2);
   });
 
   it('says stats are NULL when nothing has been published — not zero', async () => {

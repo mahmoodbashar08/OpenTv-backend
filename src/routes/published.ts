@@ -28,7 +28,7 @@ import { optionalViewer } from '@/routes/comments';
 export const published = new Hono<App>();
 
 /** One request replaces one kind's shelf. Chosen so 250 titles stay inside the
- *  100-parameter ceiling at 6 binds each — see `TITLE_BINDS`. */
+ *  100-parameter ceiling at 9 binds each — see `TITLE_BINDS`. */
 export const PUBLISH_MAX_TITLES = 250;
 
 /**
@@ -41,7 +41,7 @@ export const PUBLISH_MAX_TITLES = 250;
  * into the SQL text to save two binds. That saved nothing worth having and put
  * two values into a statement string, which is where injections come from.
  */
-const TITLE_BINDS = 8;
+const TITLE_BINDS = 9;
 const TITLES_PER_STATEMENT = Math.floor(D1_MAX_BOUND_PARAMS / TITLE_BINDS);
 
 type TitleInput = {
@@ -51,6 +51,7 @@ type TitleInput = {
   poster?: unknown;
   favourite?: unknown;
   rank?: unknown;
+  fav_rank?: unknown;
 };
 
 // ── PUT /v1/me/published — replace my summary ───────────────────────────────
@@ -84,12 +85,14 @@ published.put('/me/published', requireAuth, async (c) => {
     poster: string | null;
     favourite: number;
     rank: number | null;
+    favRank: number | null;
   }[] = [];
   for (const raw of b.titles as TitleInput[]) {
     if (!raw || typeof raw !== 'object') continue;
     if (!isTargetSource(raw.target_source)) continue;
     if (typeof raw.target_key !== 'string' || raw.target_key.length === 0) continue;
     const rank = numberOrNull(raw.rank);
+    const favRank = numberOrNull(raw.fav_rank);
     rows.push({
       source: raw.target_source,
       key: raw.target_key,
@@ -97,6 +100,7 @@ published.put('/me/published', requireAuth, async (c) => {
       poster: typeof raw.poster === 'string' && raw.poster.length > 0 ? raw.poster.slice(0, 500) : null,
       favourite: raw.favourite === true || raw.favourite === 1 ? 1 : 0,
       rank: rank === undefined ? null : rank,
+      favRank: favRank === undefined ? null : favRank,
     });
   }
 
@@ -110,10 +114,12 @@ published.put('/me/published', requireAuth, async (c) => {
       db
         .prepare(
           `INSERT OR REPLACE INTO profile_titles
-             (profile_id, kind, target_source, target_key, name, poster, favourite, rank)
-           VALUES ${group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+             (profile_id, kind, target_source, target_key, name, poster, favourite, rank, fav_rank)
+           VALUES ${group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
         )
-        .bind(...group.flatMap((r) => [me, kind, r.source, r.key, r.name, r.poster, r.favourite, r.rank])),
+        .bind(
+          ...group.flatMap((r) => [me, kind, r.source, r.key, r.name, r.poster, r.favourite, r.rank, r.favRank]),
+        ),
     ),
   ];
   await db.batch(statements);
@@ -161,6 +167,7 @@ type ShelfRow = {
   poster: string | null;
   favourite: number;
   rank: number | null;
+  fav_rank: number | null;
 };
 
 published.get('/profiles/:handle/published', async (c) => {
@@ -202,14 +209,18 @@ published.get('/profiles/:handle/published', async (c) => {
       updated_at: string;
     }>();
 
-  // Favourites first, then the owner's order, then by name — a shelf with no
-  // ranks is still stable rather than whatever SQLite felt like returning.
+  // THE OWNER'S ORDER, and nothing else's. `favourite DESC` used to come
+  // first, which reordered every shelf around a flag the shelf is not sorted
+  // by — so a public profile listed the same titles as the owner's own screen
+  // in a different order. Unranked rows fall to the end by name, so a shelf
+  // published before ranks existed is still stable rather than whatever SQLite
+  // felt like returning.
   const res = await db
     .prepare(
-      `SELECT kind, target_source, target_key, name, poster, favourite, rank
+      `SELECT kind, target_source, target_key, name, poster, favourite, rank, fav_rank
          FROM profile_titles
         WHERE profile_id = ?
-        ORDER BY kind, favourite DESC, rank IS NULL, rank, name`,
+        ORDER BY kind, rank IS NULL, rank, name`,
     )
     .bind(owner.id)
     .all<ShelfRow>();
@@ -220,6 +231,9 @@ published.get('/profiles/:handle/published', async (c) => {
     name: r.name,
     poster: r.poster,
     favourite: r.favourite === 1,
+    // Sent so the client can order the FAVOURITES shelf on its own terms —
+    // the owner's drag order, which is not the main shelf's order.
+    fav_rank: r.fav_rank,
   });
   const all = res.results ?? [];
 
