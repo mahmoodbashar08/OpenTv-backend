@@ -124,11 +124,13 @@ published.put('/me/published', requireAuth, async (c) => {
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
   await db
     .prepare(
-      `INSERT INTO profile_stats (profile_id, episodes_watched, minutes_watched, shows_count, movies_count, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO profile_stats
+         (profile_id, episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (profile_id) DO UPDATE SET
          episodes_watched = excluded.episodes_watched,
          minutes_watched  = excluded.minutes_watched,
+         movie_minutes    = excluded.movie_minutes,
          shows_count      = CASE WHEN ? = 'show'  THEN excluded.shows_count  ELSE profile_stats.shows_count  END,
          movies_count     = CASE WHEN ? = 'movie' THEN excluded.movies_count ELSE profile_stats.movies_count END,
          updated_at       = excluded.updated_at`,
@@ -137,6 +139,7 @@ published.put('/me/published', requireAuth, async (c) => {
       me,
       n(stats.episodes_watched),
       n(stats.minutes_watched),
+      n(stats.movie_minutes),
       kind === 'show' ? rows.length : 0,
       kind === 'movie' ? rows.length : 0,
       nowIso,
@@ -186,13 +189,14 @@ published.get('/profiles/:handle/published', async (c) => {
 
   const stats = await db
     .prepare(
-      `SELECT episodes_watched, minutes_watched, shows_count, movies_count, updated_at
+      `SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at
          FROM profile_stats WHERE profile_id = ?`,
     )
     .bind(owner.id)
     .first<{
       episodes_watched: number;
       minutes_watched: number;
+      movie_minutes: number;
       shows_count: number;
       movies_count: number;
       updated_at: string;
@@ -227,6 +231,7 @@ published.get('/profiles/:handle/published', async (c) => {
       ? {
           episodes_watched: stats.episodes_watched,
           minutes_watched: stats.minutes_watched,
+          movie_minutes: stats.movie_minutes,
           shows_count: stats.shows_count,
           movies_count: stats.movies_count,
           updated_at: stats.updated_at,

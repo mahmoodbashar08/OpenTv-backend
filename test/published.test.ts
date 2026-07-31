@@ -46,7 +46,7 @@ describe('PUT /v1/me/published', () => {
       token,
       body: {
         kind: 'show',
-        stats: { episodes_watched: 23560, minutes_watched: 850_000 },
+        stats: { episodes_watched: 23560, minutes_watched: 850_000, movie_minutes: 12_000 },
         titles: [title(1), title(2, { favourite: true })],
       },
     });
@@ -54,8 +54,12 @@ describe('PUT /v1/me/published', () => {
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true, kind: 'show', titles: 2 });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM profile_titles').get()).toEqual({ n: 2 });
-    expect(raw.prepare('SELECT episodes_watched, shows_count FROM profile_stats').get()).toEqual({
+    expect(raw.prepare('SELECT episodes_watched, minutes_watched, movie_minutes, shows_count FROM profile_stats').get()).toEqual({
       episodes_watched: 23560,
+      // Shows and films are stored APART: the profile draws four cards, two of
+      // which are about films alone, and a combined figure cannot be split back.
+      minutes_watched: 850_000,
+      movie_minutes: 12_000,
       shows_count: 2,
     });
   });
