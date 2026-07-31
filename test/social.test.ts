@@ -243,6 +243,29 @@ describe('POST /v1/me/friends/reconcile — past one statement\'s worth of ids',
  * endpoint NOT becoming a back door — everything the thread hides, a profile
  * must hide too.
  */
+describe('reconcile returns which friend each match is', () => {
+  it('carries tvtime_user_id back, so a match can be tied to the person', async () => {
+    const fresh = freshDatabase();
+    const env2 = makeEnv(fresh.db);
+    insertProfile(fresh.raw, 'p1', 'mahmood');
+    insertProfile(fresh.raw, 'p2', 'sara');
+    fresh.raw.prepare("UPDATE profiles SET tvtime_user_id = 53635487 WHERE id = 'p2'").run();
+    fresh.raw.prepare("UPDATE profiles SET tvtime_user_id = 50248888 WHERE id = 'p1'").run();
+
+    const res = await call(env2, 'POST', '/v1/me/friends/reconcile', {
+      token: await tokenFor(env2, 'p1'),
+      body: { friend_ids: [53635487, 12137674] },
+    });
+
+    expect(res.status).toBe(200);
+    // Without this the same human shows up twice in a merged follow list:
+    // once as a TV Time row and once as an OpenTV one.
+    expect(res.json.matched).toEqual([
+      { handle: 'sara', display_name: null, avatar_key: null, tvtime_user_id: 53635487 },
+    ]);
+  });
+});
+
 describe('a profile’s own comments', () => {
   let raw: import('better-sqlite3').Database;
   let env: import('@/env').Env;

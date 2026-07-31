@@ -21,6 +21,8 @@ type MatchRow = {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  /** Which of the caller's OWN friend ids this profile answers to. */
+  tvtime_user_id: number | null;
 };
 
 reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
@@ -98,7 +100,7 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
     chunk(friends.ids, RECONCILE_IDS_PER_QUERY).map((ids) =>
       db
         .prepare(
-          `SELECT id, handle, display_name, avatar_key
+          `SELECT id, handle, display_name, avatar_key, tvtime_user_id
        FROM profiles p
        WHERE p.tvtime_user_id IN (${ids.map(() => '?').join(',')})
          AND p.deleted_at IS NULL
@@ -131,6 +133,13 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
       handle: m.handle,
       display_name: m.display_name,
       avatar_key: m.avatar_key,
+      // WHICH friend this is. The caller sent these ids and already holds the
+      // name and avatar the export gave for each; without the id coming back,
+      // a matched handle cannot be tied to the person it belongs to, and the
+      // same human appears twice in a merged follow list — once as a TV Time
+      // row and once as an OpenTV one. Returning it discloses nothing: it is
+      // the caller's own input.
+      tvtime_user_id: m.tvtime_user_id,
     })),
   });
 });
