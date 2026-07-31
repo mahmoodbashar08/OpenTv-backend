@@ -1,88 +1,32 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '@/env';
 import {
   migrateTitleThreads,
   purgeSoftDeleted,
+  reconcileCharacterVoteAggregates,
   reconcileLikeCounts,
   reconcileRatingAggregates,
 } from '@/jobs';
 import { mergeEmotionCounts } from '@/pure';
+import { freshDatabase, insertProfile } from './harness';
 
 /**
  * docs/IMPLEMENTATION.md Step 5, "Unit tests": the reconcile statements are
  * plain SQLite, so they are tested against a real in-memory `better-sqlite3` —
- * a dev dependency of the tests only; nothing in `src/` may import it.
- *
- * The schema is READ FROM THE MIGRATION FILES, never restated here. A copied
- * schema drifts from the real one the first time a migration lands, and a test
- * that passes against a schema production does not have is worse than no test.
+ * a dev dependency of the tests only; nothing in `src/` may import it. The
+ * harness loads the real migration files; see `test/harness.ts`.
  */
-
-const MIGRATIONS = ['../migrations/0001_initial.sql', '../migrations/0002_comment_hidden.sql'].map(
-  (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8'),
-);
-
-/**
- * The smallest honest D1 shim: `prepare().bind().run()/all()/first()` with
- * `meta.changes`, which is the whole surface `src/jobs.ts` uses. Synchronous
- * underneath, async on the outside, exactly as D1 presents itself.
- */
-function d1(db: Database.Database): D1Database {
-  const prepare = (sql: string, binds: unknown[] = []): D1PreparedStatement => {
-    const stmt = () => db.prepare(sql);
-    const api = {
-      bind: (...values: unknown[]) => prepare(sql, values),
-      async run() {
-        const info = stmt().run(...(binds as never[]));
-        return { success: true, meta: { changes: info.changes } };
-      },
-      async all() {
-        return { success: true, results: stmt().all(...(binds as never[])), meta: {} };
-      },
-      async first(col?: string) {
-        const row = stmt().get(...(binds as never[])) as Record<string, unknown> | undefined;
-        if (!row) return null;
-        return col === undefined ? row : (row[col] ?? null);
-      },
-      async raw() {
-        return [];
-      },
-    };
-    return api as unknown as D1PreparedStatement;
-  };
-
-  const api = {
-    prepare: (sql: string) => prepare(sql),
-    async batch(stmts: D1PreparedStatement[]) {
-      const out = [];
-      for (const s of stmts) out.push(await (s as unknown as { run(): Promise<unknown> }).run());
-      return out;
-    },
-  };
-  return api as unknown as D1Database;
-}
 
 let raw: Database.Database;
 let db: D1Database;
 
 beforeEach(() => {
-  raw = new Database(':memory:');
-  raw.pragma('foreign_keys = ON');
-  for (const sql of MIGRATIONS) raw.exec(sql);
-  db = d1(raw);
+  ({ raw, db } = freshDatabase());
 });
 
-function profile(id: string, handle: string, deletedAt: string | null = null) {
-  raw
-    .prepare(
-      `INSERT INTO profiles (id, handle, handle_lower, created_at, deleted_at)
-       VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?)`,
-    )
-    .run(id, handle, handle.toLowerCase(), deletedAt);
-}
+const profile = (id: string, handle: string, deletedAt: string | null = null) =>
+  insertProfile(raw, id, handle, deletedAt);
 
 function comment(id: string, author: string, likeCount: number, key = 'k1', source = 'tvdb') {
   raw
@@ -241,6 +185,91 @@ describe('reconcileRatingAggregates', () => {
     expect(
       raw.prepare('SELECT emotion_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
     ).toEqual({ emotion_counts: '{"scared":1}' });
+  });
+});
+
+// ── 5a · character vote aggregates ───────────────────────────────────────────
+
+describe('reconcileCharacterVoteAggregates', () => {
+  function characterVote(id: string, voter: string, key: string, name: string, source = 'tvdb') {
+    raw
+      .prepare(
+        `INSERT INTO character_votes
+           (id, voter_id, target_source, target_key, character_name, created_at)
+         VALUES (?, ?, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
+      )
+      .run(id, voter, source, key, name);
+  }
+
+  function characterAggregate(key: string, counts: string | null, total: number, source = 'tvdb') {
+    raw
+      .prepare(
+        `INSERT INTO character_vote_aggregates (target_source, target_key, counts, total, updated_at)
+         VALUES (?, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
+      )
+      .run(source, key, counts, total);
+  }
+
+  const agg = (key: string) =>
+    raw
+      .prepare('SELECT counts, total FROM character_vote_aggregates WHERE target_key = ?')
+      .get(key) as { counts: string; total: number } | undefined;
+
+  it('rebuilds a drifted blob, fixes the total, and deletes the ghost row', async () => {
+    profile('p1', 'mahmood');
+    profile('p2', 'sara');
+    profile('p3', 'ali');
+
+    characterVote('v1', 'p1', '121361', 'Tyrion Lannister');
+    characterVote('v2', 'p2', '121361', 'Tyrion Lannister');
+    characterVote('v3', 'p3', '121361', 'Arya Stark');
+    characterAggregate('121361', '{"Tyrion Lannister":9}', 99); // the lie
+
+    // Every vote behind this one was cascaded away by an account deletion.
+    characterAggregate('999', '{"Nobody":4}', 4);
+
+    const res = await reconcileCharacterVoteAggregates(db);
+    expect(res.checked).toBe(2);
+    expect(res.corrected).toBe(2); // one updated, one ghost deleted
+
+    expect(agg('121361')).toEqual({
+      counts: '{"Arya Stark":1,"Tyrion Lannister":2}',
+      total: 3,
+    });
+    expect(agg('999')).toBeUndefined();
+
+    const row = repair('character_vote_aggregates');
+    expect(row?.rows_corrected).toBe(2);
+    expect(row?.rows_checked).toBe(2);
+  });
+
+  it('corrects nothing on a second pass — a zero here is the healthy number', async () => {
+    profile('p1', 'mahmood');
+    characterVote('v1', 'p1', '121361', 'Arya Stark');
+    characterAggregate('121361', '{"Arya Stark":1}', 1);
+
+    expect((await reconcileCharacterVoteAggregates(db)).corrected).toBe(0);
+    expect((await reconcileCharacterVoteAggregates(db)).corrected).toBe(0);
+  });
+
+  it('counts a NULL counts blob over real votes as drift', async () => {
+    profile('p1', 'mahmood');
+    characterVote('v1', 'p1', '121361', 'Arya Stark');
+    characterAggregate('121361', null, 1);
+
+    expect((await reconcileCharacterVoteAggregates(db)).corrected).toBe(1);
+    expect(agg('121361')?.counts).toBe('{"Arya Stark":1}');
+  });
+
+  it('recounts total from the votes, not from the sum of a blob that may be the thing that drifted', async () => {
+    profile('p1', 'mahmood');
+    profile('p2', 'sara');
+    characterVote('v1', 'p1', '121361', 'Arya Stark');
+    characterVote('v2', 'p2', '121361', 'Arya Stark');
+    characterAggregate('121361', '{"Arya Stark":500}', 500);
+
+    await reconcileCharacterVoteAggregates(db);
+    expect(agg('121361')).toEqual({ counts: '{"Arya Stark":2}', total: 2 });
   });
 });
 

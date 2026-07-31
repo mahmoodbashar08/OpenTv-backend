@@ -363,6 +363,39 @@ comments.get('/comments', async (c) => {
   return c.json({ items: page.map(shapeComment), next_cursor: nextCursor });
 });
 
+// ── GET /v1/comments/:id — one comment, open, block-aware ───────────────────
+//
+// A `reply` or `like` notification carries `subject_id` and nothing else, so
+// tapping it had no way to open the thread it belongs to. This is that lookup.
+//
+// It honours the thread read's rules to the letter — deleted, hidden, an author
+// whose account is gone, a block in either direction — and answers 404 for all
+// of them. Anything else would turn a notification into an oracle: "this
+// comment still exists, it is merely hidden from you" is exactly what a hide
+// and a block are meant not to say.
+
+comments.get('/comments/:id', async (c) => {
+  const me = await optionalViewer(c.env, c.req.header('Authorization'));
+
+  const row = await c.env.DB.prepare(
+    `SELECT ${COMMENT_COLUMNS},
+            EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
+            (SELECT COUNT(*) FROM comments r
+              WHERE r.parent_id = c.id AND r.deleted_at IS NULL AND r.hidden_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM blocks rb
+                                WHERE (rb.blocker_id = ? AND rb.blocked_id = r.author_id)
+                                   OR (rb.blocker_id = r.author_id AND rb.blocked_id = ?))) AS reply_count
+     FROM comments c JOIN profiles p ON p.id = c.author_id
+     WHERE c.id = ? AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND p.deleted_at IS NULL
+       AND ${NOT_BLOCKED}`,
+  )
+    .bind(me, me, me, c.req.param('id'), me, me)
+    .first<CommentRow>();
+
+  if (!row) return fail(c, 404, 'not_found', 'No such comment.');
+  return c.json(shapeComment(row));
+});
+
 // ── DELETE /v1/comments/:id ──────────────────────────────────────────────────
 
 comments.delete('/comments/:id', requireAuth, async (c) => {

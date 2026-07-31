@@ -1,7 +1,13 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { isPlus, normaliseHandle, visibleProfileFields } from '@/pure';
+import {
+  handlePrefixPattern,
+  isPlus,
+  normaliseHandle,
+  USER_SEARCH_LIMIT,
+  visibleProfileFields,
+} from '@/pure';
 import { optionalViewer } from '@/routes/comments';
 import { edgePage } from '@/routes/follows';
 
@@ -108,6 +114,61 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
 function maySeeDetail(row: ProfileReadRow, viewer: string): boolean {
   return row.is_private === 0 || row.id === viewer || row.followed_by_me === 1;
 }
+
+// ── GET /v1/users?q= — find a person by handle ──────────────────────────────
+//
+// The one endpoint the app needs before anything social is usable: you cannot
+// follow someone you cannot find, and until now the only way to reach a profile
+// was to already know its exact handle.
+//
+// A PREFIX search, deliberately — see `handlePrefixPattern` for why `%q%` is not
+// on the table and why the `_` in every placeholder handle has to be escaped.
+// Display names are NOT searched: they are unvalidated free text, they are not
+// indexed, and a search that matched them would be a table scan that also let
+// someone find a private account by the name they chose for their friends.
+
+type UserSearchRow = {
+  id: string;
+  handle: string;
+  display_name: string | null;
+  avatar_key: string | null;
+  is_private: number;
+};
+
+profiles.get('/users', async (c) => {
+  const pattern = handlePrefixPattern(new URL(c.req.url).searchParams.get('q'));
+  if (!pattern) return fail(c, 400, 'invalid_body', 'q is required.');
+
+  // Open route; the bearer is optional and buys only the block filter. A bad
+  // token reads as anonymous rather than 401ing a public search.
+  const viewer = await optionalViewer(c.env, c.req.header('Authorization'));
+
+  const res = await c.env.DB.prepare(
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_private
+       FROM profiles p
+      WHERE p.handle_lower LIKE ? ESCAPE '\\'
+        AND p.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM blocks b
+                        WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
+                           OR (b.blocker_id = p.id AND b.blocked_id = ?))
+      ORDER BY p.handle_lower
+      LIMIT ?`,
+  )
+    .bind(pattern, viewer, viewer, USER_SEARCH_LIMIT)
+    .all<UserSearchRow>();
+
+  // The shell only. A search result is a row in a list, not a profile — counts,
+  // bio and links stay behind `GET /v1/profiles/:handle` and its privacy matrix.
+  return c.json({
+    items: (res.results ?? []).map((r) => ({
+      id: r.id,
+      handle: r.handle,
+      display_name: r.display_name,
+      avatar_key: r.avatar_key,
+      is_private: r.is_private === 1,
+    })),
+  });
+});
 
 // ── GET /v1/profiles/:handle ────────────────────────────────────────────────
 

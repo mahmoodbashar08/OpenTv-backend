@@ -162,6 +162,76 @@ const DRIFTED = `
                      GROUP BY r.emotion))`;
 
 /**
+ * `character_vote_aggregates` from `character_votes`.
+ *
+ * The same job as `reconcileRatingAggregates` and it exists for the same
+ * reason: the rollup is written by delta on a request path that is allowed to
+ * lose a race, and account deletion cascades votes away without touching it. A
+ * favourite-character bar chart that slowly stops adding up is the failure this
+ * prevents.
+ *
+ * `total` counts PEOPLE and is recounted as `COUNT(*)`, not as the sum of the
+ * JSON counts — if the blob is what drifted, summing it would reconcile the
+ * table against its own mistake.
+ *
+ * Ghost rows go first, exactly as they do for ratings: an aggregate whose votes
+ * have all been cascaded away is deleted, not zeroed.
+ */
+export async function reconcileCharacterVoteAggregates(db: D1Database): Promise<ReconcileResult> {
+  const checkedRow = await db
+    .prepare('SELECT COUNT(*) AS n FROM character_vote_aggregates')
+    .first<{ n: number }>();
+  const checked = checkedRow?.n ?? 0;
+
+  let corrected = 0;
+
+  const ghosts = await db
+    .prepare(
+      `DELETE FROM character_vote_aggregates AS a
+        WHERE NOT EXISTS (
+          SELECT 1 FROM character_votes v
+           WHERE v.target_source = a.target_source AND v.target_key = a.target_key)`,
+    )
+    .run();
+  corrected += ghosts.meta.changes ?? 0;
+
+  const now = new Date().toISOString();
+  for (;;) {
+    const res = await db
+      .prepare(
+        `UPDATE character_vote_aggregates AS a SET
+           total = (SELECT COUNT(*) FROM character_votes v
+                     WHERE v.target_source = a.target_source AND v.target_key = a.target_key),
+           counts = (SELECT json_group_object(character_name, n) FROM (
+                      SELECT v.character_name AS character_name, COUNT(*) AS n
+                        FROM character_votes v
+                       WHERE v.target_source = a.target_source AND v.target_key = a.target_key
+                       GROUP BY v.character_name)),
+           updated_at = ?
+         WHERE a.rowid IN (
+           SELECT x.rowid FROM character_vote_aggregates x WHERE ${CHARACTER_DRIFTED} LIMIT ?)`,
+      )
+      .bind(now, BATCH)
+      .run();
+    const n = res.meta.changes ?? 0;
+    corrected += n;
+    if (n < BATCH) break;
+  }
+
+  await writeCounterRepair(db, 'character_vote_aggregates', checked, corrected);
+  return { checked, corrected };
+}
+
+/** Same shape as `DRIFTED`, same `IS NOT` on the JSON and for the same reason. */
+const CHARACTER_DRIFTED = `
+  x.total <> (SELECT COUNT(*) FROM character_votes v
+               WHERE v.target_source = x.target_source AND v.target_key = x.target_key)
+  OR x.counts IS NOT (SELECT json_group_object(character_name, n) FROM (
+               SELECT v.character_name AS character_name, COUNT(*) AS n FROM character_votes v
+                WHERE v.target_source = x.target_source AND v.target_key = x.target_key
+                GROUP BY v.character_name))`;
+
+/**
  * The audit row. `rows_corrected` is the number worth watching: consistently
  * zero means the write paths are correct, and a number that grows means a
  * handler is losing updates and this job is papering over it
@@ -368,6 +438,9 @@ export async function runMaintenance(env: Env): Promise<void> {
 
   const likes = await step('reconcileLikeCounts', () => reconcileLikeCounts(db));
   const aggregates = await step('reconcileRatingAggregates', () => reconcileRatingAggregates(db));
+  const characters = await step('reconcileCharacterVoteAggregates', () =>
+    reconcileCharacterVoteAggregates(db),
+  );
   const purge = await step('purgeSoftDeleted', () => purgeSoftDeleted(db, env));
   // Empty on purpose: the mechanism is proven, the mapping source is deferred
   // until the TheTVDB licence is settled (Step 5c, "Decision deferred").
@@ -377,6 +450,7 @@ export async function runMaintenance(env: Env): Promise<void> {
     '[maintenance] done in ' +
       `${Date.now() - started}ms — likes ${likes?.corrected ?? '!'}/${likes?.checked ?? '!'} ` +
       `corrected, aggregates ${aggregates?.corrected ?? '!'}/${aggregates?.checked ?? '!'} ` +
+      `corrected, characters ${characters?.corrected ?? '!'}/${characters?.checked ?? '!'} ` +
       `corrected, ${purge?.purged ?? '!'} profiles purged ` +
       `(${purge?.skipped.length ?? '!'} held back), ` +
       `${migrated?.comments ?? '!'} comments re-keyed`,

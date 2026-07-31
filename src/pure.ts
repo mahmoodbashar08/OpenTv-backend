@@ -468,6 +468,13 @@ export const REPORTS_PER_DAY = 20;
 /** One call's worth of seeding. The app chunks; the server refuses more. */
 export const IMPORT_MAX_ITEMS = 200;
 
+/**
+ * The same rule for votes, which are far smaller than comments: no body, no
+ * language, four small columns. 500 of them is a smaller payload than 200
+ * comments and halves the round trips on an archive with thousands of ratings.
+ */
+export const VOTE_IMPORT_MAX_ITEMS = 500;
+
 export type BodyFailure = 'empty' | 'too_long';
 
 /**
@@ -577,7 +584,7 @@ export async function stableImportId(input: {
   createdAt: string;
   body: string;
 }): Promise<string> {
-  const material = [
+  return `imp_${await hash32([
     input.authorId,
     input.targetSource,
     input.targetKey,
@@ -585,10 +592,138 @@ export async function stableImportId(input: {
     input.episode ?? '',
     input.createdAt,
     input.body,
-  ].join(' ');
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
+  ])}`;
+}
+
+/** The first 32 hex characters of SHA-256 over space-joined parts. */
+async function hash32(parts: readonly (string | number)[]): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(parts.join(' ')));
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  return `imp_${hex.slice(0, 32)}`;
+  return hex.slice(0, 32);
+}
+
+/**
+ * The id of an imported RATING — and note what is missing from the material:
+ * the score, the emotion and `created_at`.
+ *
+ * A person holds exactly one vote per title, so the identity of a rating IS its
+ * (author, target) address and nothing else. Hashing the score too would make
+ * "I re-imported after changing 7 to 9" produce a second row that the unique
+ * index would then have to refuse anyway, and the id would stop describing what
+ * it identifies.
+ *
+ * Unlike a comment, the derived id is therefore not the only guard: the row may
+ * already exist under a random `r_…` id from a live vote, which
+ * `idx_one_vote_per_person` catches. The derived id is what makes the *insert*
+ * idempotent; the index is what makes the *person* idempotent.
+ */
+export async function stableRatingId(input: {
+  authorId: string;
+  targetSource: string;
+  targetKey: string;
+  season: number | null;
+  episode: number | null;
+}): Promise<string> {
+  return `imr_${await hash32([
+    input.authorId,
+    input.targetSource,
+    input.targetKey,
+    input.season ?? '',
+    input.episode ?? '',
+  ])}`;
+}
+
+/**
+ * The id of an imported CHARACTER VOTE. The character is not in the material,
+ * for the same reason the score is not in `stableRatingId`: one person, one
+ * favourite, per show — changing your mind must update a row, never add one.
+ */
+export async function stableCharacterVoteId(input: {
+  voterId: string;
+  targetSource: string;
+  targetKey: string;
+}): Promise<string> {
+  return `imc_${await hash32([input.voterId, input.targetSource, input.targetKey])}`;
+}
+
+// ── character votes ──────────────────────────────────────────────────────────
+
+/** Long enough for "Daenerys Targaryen, Mother of Dragons"; short enough not to be a payload. */
+export const CHARACTER_NAME_MAX = 100;
+
+export type CharacterNameFailure = 'empty' | 'too_long' | 'unsafe';
+
+/**
+ * A character name is FREE TEXT — unlike an emotion, there is no allow-list to
+ * check it against — and it is interpolated into a JSON path as
+ * `'$."' || ? || '"'` so that "Dr. House" lands under one key instead of being
+ * read as a nested path. That quoting is what makes the dot safe; it is also
+ * what a `"` or a backslash in the name would break out of.
+ *
+ * So the name is bound as a parameter (no SQL injection is possible) AND
+ * refused if it could close the quote (no JSON-path injection is possible).
+ * Control characters go too: they would survive a round trip through
+ * `json_group_object` in the nightly recount as different bytes and make a
+ * clean row look permanently drifted.
+ *
+ * A rejected name is a skipped item, never a failed batch.
+ */
+export function validateCharacterName(
+  input: unknown,
+): { ok: true; name: string } | { ok: false; reason: CharacterNameFailure } {
+  if (typeof input !== 'string') return { ok: false, reason: 'empty' };
+  const name = input.trim();
+  if (name.length === 0) return { ok: false, reason: 'empty' };
+  if ([...name].length > CHARACTER_NAME_MAX) return { ok: false, reason: 'too_long' };
+  for (const ch of name) {
+    const code = ch.codePointAt(0)!;
+    if (ch === '"' || ch === '\\' || code < 0x20 || code === 0x7f) {
+      return { ok: false, reason: 'unsafe' };
+    }
+  }
+  return { ok: true, name };
+}
+
+/** The rollup blob, shaped for a client: biggest first, ties by name so a redraw is stable. */
+export function shapeCharacterCounts(raw: string | null): { character: string; votes: number }[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  return Object.entries(parsed as Record<string, unknown>)
+    .filter(([, v]) => typeof v === 'number' && Number.isFinite(v) && v > 0)
+    .map(([character, v]) => ({ character, votes: Math.floor(v as number) }))
+    .sort((a, b) => b.votes - a.votes || a.character.localeCompare(b.character));
+}
+
+// ── user search ──────────────────────────────────────────────────────────────
+
+/** One screenful. A handle search is a jump-to, not a directory to browse. */
+export const USER_SEARCH_LIMIT = 20;
+
+/**
+ * The `LIKE` argument for a handle prefix search, or null when there is nothing
+ * to search for.
+ *
+ * TWO THINGS THAT LOOK LIKE DETAILS AND ARE NOT.
+ *
+ *  1. The pattern is anchored — `q%`, never `%q%`. An unanchored LIKE cannot use
+ *     the `handle_lower` index and degrades to a full scan of the profiles
+ *     table, which is a 10ms CPU budget spent on one request.
+ *  2. `_` is a LIKE WILDCARD and a legal handle character — every placeholder
+ *     handle this server mints starts `user_`. Unescaped, a search for `user_`
+ *     matches `usera`, `userb` and everything else. So `\`, `%` and `_` are
+ *     escaped and the caller must emit `ESCAPE '\'`.
+ */
+export function handlePrefixPattern(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const q = normaliseHandle(raw);
+  if (q.length === 0) return null;
+  return `${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }
 
 // ── language ─────────────────────────────────────────────────────────────────

@@ -4,9 +4,10 @@ import { fail } from '@/http';
 import { runMaintenance } from '@/jobs';
 import { auth } from '@/routes/auth';
 import { blocks } from '@/routes/blocks';
+import { characterVotes } from '@/routes/characters';
 import { comments } from '@/routes/comments';
 import { follows } from '@/routes/follows';
-import { commentImport } from '@/routes/import';
+import { seeding } from '@/routes/import';
 import { notifications } from '@/routes/notifications';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
@@ -43,8 +44,10 @@ const v1 = new Hono<App>();
 v1.route('/', auth);
 v1.route('/', ratings);
 // Before `comments`, so POST /v1/comments/import is never read as a comment on
-// a thread keyed "import".
-v1.route('/', commentImport);
+// a thread keyed "import" — and before it now also carries POST
+// /v1/ratings/import, which for the same reason must precede nothing else.
+v1.route('/', seeding);
+v1.route('/', characterVotes);
 v1.route('/', comments);
 v1.route('/', reports);
 v1.route('/', blocks);
