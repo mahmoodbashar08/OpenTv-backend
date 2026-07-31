@@ -510,6 +510,41 @@ export type ParsedTarget = {
 export const MAX_TARGETS = 100;
 
 /**
+ * The ceiling on one rescued comment photo.
+ *
+ * These are phone photographs and screenshots from TV Time, most well under a
+ * megabyte; 8 MB is generous for the largest of them and small enough that a
+ * malformed or hostile upload cannot be used to fill a bucket. A Worker request
+ * body is capped at 100 MB regardless, so this is a product limit rather than a
+ * platform one, and it is enforced before the file is ever read into memory.
+ */
+export const MAX_COMMENT_IMAGE_BYTES = 8_000_000;
+
+/**
+ * The file extension for a content type, for the R2 object key.
+ *
+ * The extension is COSMETIC — R2 stores the real type in `httpMetadata` and
+ * that is what a future signed URL will serve — but an object key you can read
+ * is worth having when the only view of a bucket is a listing. The default is
+ * `bin` rather than `jpg`, so a type that slipped past the allow-list is
+ * visible as an oddity instead of masquerading as a photograph.
+ */
+export function imageExtension(contentType: string): string {
+  switch (contentType) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      return 'bin';
+  }
+}
+
+/**
  * `t=source:key[:season:episode]`, repeated, capped at 100. Any malformed
  * member poisons the whole call and returns null — a silently dropped target
  * would show a film with no votes rather than an error, which is worse.
@@ -598,12 +633,31 @@ export type BodyFailure = 'empty' | 'too_long';
  */
 export function validateCommentBody(
   input: unknown,
+  opts: { allowEmpty?: boolean } = {},
 ): { ok: true; body: string } | { ok: false; reason: BodyFailure } {
-  if (typeof input !== 'string') return { ok: false, reason: 'empty' };
+  if (typeof input !== 'string') return opts.allowEmpty ? { ok: true, body: '' } : { ok: false, reason: 'empty' };
   const body = input.trim();
-  if (body.length === 0) return { ok: false, reason: 'empty' };
+  if (body.length === 0 && !opts.allowEmpty) return { ok: false, reason: 'empty' };
   if ([...body].length > COMMENT_BODY_MAX) return { ok: false, reason: 'too_long' };
   return { ok: true, body };
+}
+
+/**
+ * A comment with a PICTURE and no words is a real comment.
+ *
+ * Two of the four comments in the reference TV Time export are exactly that:
+ * `text` is empty and the whole post is a photograph. Refusing an empty body
+ * everywhere — the obvious rule, and the right one for something typed into a
+ * box — silently discarded precisely the rows whose images the rescue exists
+ * to save, because an image is attached to a comment and those comments were
+ * never imported.
+ *
+ * So emptiness is allowed on the IMPORT path only, and only when the caller
+ * says an image is coming. Composing a new comment still requires words or a
+ * picture chosen in the same act; nothing here lets a blank post be typed.
+ */
+export function importedCommentBodyOk(input: unknown, hasImage: boolean) {
+  return validateCommentBody(input, { allowEmpty: hasImage });
 }
 
 /**

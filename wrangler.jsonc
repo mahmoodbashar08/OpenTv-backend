@@ -39,5 +39,14 @@
   // Caches provider JWKS so token verification does not fetch on every request.
   "kv_namespaces": [
     { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" }
+  ],
+
+  // Rescued TV Time comment photos. TV Time's CDN
+  // (d12qk6n9ersps4.cloudfront.net) no longer resolves, so the only surviving
+  // copies are the ones OpenTV downloaded to users' phones at import time —
+  // this is where they are preserved. Nothing is SERVED from here until
+  // `comment_images.scan_status` says 'clean'; see migration 0001.
+  "r2_buckets": [
+    { "binding": "COMMENT_IMAGES", "bucket_name": "opentv-comment-images" }
   ]
 }

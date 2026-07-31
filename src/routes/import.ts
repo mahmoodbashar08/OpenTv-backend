@@ -7,6 +7,7 @@ import {
   isTargetSource,
   isValidBcp47,
   numberOrNull,
+  importedCommentBodyOk,
   stableImportId,
   stableRatingId,
   validateCommentBody,
@@ -92,7 +93,10 @@ seeding.post('/comments/import', requireAuth, async (c) => {
     if (!isTargetSource(it.target_source)) continue;
     if (typeof it.target_key !== 'string' || it.target_key.length === 0) continue;
 
-    const text = validateCommentBody(it.body);
+    // An empty body is allowed only when the client says a photograph follows
+    // — TV Time let people post a picture with no caption, and refusing those
+    // rows here is what stranded their images. See `importedCommentBodyOk`.
+    const text = importedCommentBodyOk(it.body, it.has_image === true || it.has_image === 1);
     if (!text.ok) continue;
 
     const season = numberOrNull(it.season);

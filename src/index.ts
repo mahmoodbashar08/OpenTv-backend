@@ -5,6 +5,7 @@ import { runMaintenance } from '@/jobs';
 import { auth } from '@/routes/auth';
 import { blocks } from '@/routes/blocks';
 import { characterVotes } from '@/routes/characters';
+import { images } from '@/routes/images';
 import { comments } from '@/routes/comments';
 import { follows } from '@/routes/follows';
 import { seeding } from '@/routes/import';
@@ -48,6 +49,7 @@ v1.route('/', ratings);
 // /v1/ratings/import, which for the same reason must precede nothing else.
 v1.route('/', seeding);
 v1.route('/', characterVotes);
+v1.route('/', images);
 v1.route('/', comments);
 v1.route('/', reports);
 v1.route('/', blocks);

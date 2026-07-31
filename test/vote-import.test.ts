@@ -325,6 +325,80 @@ describe('POST /v1/character-votes', () => {
   });
 });
 
+describe('DELETE /v1/character-votes', () => {
+  const target = { target_source: 'tvdb', target_key: '121361' };
+
+  it('withdraws the vote and takes the count down with it', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    const res = await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true, removed: true });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 0 });
+    // `total` counts people, so a withdrawal is one fewer voter.
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":0}', total: 0 });
+  });
+
+  it('leaves everyone else standing', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    await call(env, 'POST', '/v1/character-votes', {
+      token: await tokenFor(env, 'p2'),
+      body: charVote(),
+    });
+    await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":1}', total: 1 });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 1 });
+  });
+
+  it('is a no-op when there was no vote — the caller asked for absence and got it', async () => {
+    const res = await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true, removed: false });
+  });
+
+  it('touches only the target named', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    await call(env, 'POST', '/v1/character-votes', {
+      token,
+      body: charVote({ target_key: '999', character: 'Arya Stark' }),
+    });
+    await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+
+    expect(charAggregate('999')).toEqual({ counts: '{"Arya Stark":1}', total: 1 });
+  });
+
+  it('never drives a count below zero, however many times it is called', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+    await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":0}', total: 0 });
+  });
+
+  it('re-picking after a withdrawal counts once, not twice', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    await call(env, 'DELETE', '/v1/character-votes', { token, body: target });
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":1}', total: 1 });
+  });
+
+  it('requires a token', async () => {
+    const res = await call(env, 'DELETE', '/v1/character-votes', { body: target });
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses an unusable target', async () => {
+    const res = await call(env, 'DELETE', '/v1/character-votes', {
+      token,
+      body: { target_source: 'nope', target_key: '1' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.json.error.code).toBe('target_invalid');
+  });
+});
+
 describe('POST /v1/character-votes/import', () => {
   it('imports one vote per show and skips the rest of that show’s episodes', async () => {
     // The archive holds a favourite per EPISODE; the community holds one per

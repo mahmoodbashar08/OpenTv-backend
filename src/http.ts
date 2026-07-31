@@ -21,6 +21,11 @@ export type ErrorCode =
   | 'target_invalid'
   | 'too_large'
   | 'blocked'
+  // The image binding is absent from this deployment — a capability that is
+  // off, not a request that was wrong.
+  | 'unavailable'
+  // An upload that is not one of the image types the bucket accepts.
+  | 'unsupported_type'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */

@@ -126,14 +126,56 @@ const noCache = {
 };
 (globalThis as unknown as { caches: unknown }).caches = { default: noCache };
 
-export function makeEnv(db: D1Database): Env {
+/**
+ * An R2 bucket that keeps what it is given, in a Map.
+ *
+ * Only `put` is implemented because only `put` is called: nothing in the API
+ * reads an image back out yet, by design (see `routes/images.ts`). `stored`
+ * is exposed so a test can assert the bytes and the content type actually
+ * reached storage rather than trusting the 200.
+ */
+export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; type?: string }> } {
+  const stored = new Map<string, { size: number; type?: string }>();
+  return {
+    stored,
+    async put(key: string, value: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }) {
+      stored.set(key, { size: value.byteLength, type: opts?.httpMetadata?.contentType });
+      return {} as never;
+    },
+  } as unknown as R2Bucket & { stored: Map<string, { size: number; type?: string }> };
+}
+
+export function makeEnv(db: D1Database, bucket?: R2Bucket): Env {
   return {
     DB: db,
     CACHE: {} as KVNamespace,
     SESSION_SECRET: 'test-secret-not-a-real-one',
     APPLE_BUNDLE_ID: 'com.insightfy.opentv',
     GOOGLE_CLIENT_IDS: '',
+    // Absent unless a suite asks for it, so every other suite keeps proving the
+    // guard: no binding must mean "off", never a crash.
+    COMMENT_IMAGES: bucket,
   };
+}
+
+/** A multipart request — the shape `POST /v1/comments/image` takes. */
+export async function callForm(
+  env: Env,
+  path: string,
+  form: FormData,
+  token?: string,
+): Promise<{ status: number; json: any }> {
+  const headers = new Headers();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  // Content-Type is deliberately NOT set: fetch derives it from the FormData,
+  // including the multipart boundary, which a hand-written header would omit.
+  const res = await worker.fetch(
+    new Request(`https://api.opentv.test${path}`, { method: 'POST', headers, body: form }),
+    env,
+    { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+  );
+  const text = await res.text();
+  return { status: res.status, json: text.length === 0 ? null : JSON.parse(text) };
 }
 
 /** A real session token for a profile id — signed by the same code the Worker verifies with. */

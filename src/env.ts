@@ -21,6 +21,15 @@ export type Env = {
 
   /** Not bound yet — avatars ship later. Guarded everywhere it is touched. */
   AVATARS?: R2Bucket;
+
+  /**
+   * Where a rescued TV Time comment photo is kept.
+   *
+   * OPTIONAL, and every use is guarded, for the same reason `AVATARS` is: a
+   * missing binding must degrade to "this feature is off" rather than throw on
+   * a request that had nothing to do with images.
+   */
+  COMMENT_IMAGES?: R2Bucket;
 };
 
 /** What `requireAuth` puts on the context. */

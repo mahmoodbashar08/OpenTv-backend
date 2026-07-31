@@ -147,6 +147,68 @@ characterVotes.post('/character-votes', requireAuth, async (c) => {
   return c.json({ ok: true, character: name.name });
 });
 
+// ── DELETE /v1/character-votes ──────────────────────────────────────────────
+
+/**
+ * Un-picking a favourite.
+ *
+ * WHY THIS EXISTS. The poll toggles: tapping your current favourite clears it,
+ * because a poll with no way back out is a trap. Without this route that clear
+ * was LOCAL ONLY, and the two sides silently disagreed — the phone showed
+ * nothing selected while the server still counted the vote, so re-opening the
+ * film showed a full bar next to an unhighlighted face and the feature looked
+ * broken when every part of it was working.
+ *
+ * Deleting the row and decrementing are one batch, and `total` comes down with
+ * the name's count: a person who has withdrawn is not a voter. Absent a vote
+ * this is a no-op that still answers 200 — the caller is saying "there should
+ * be no vote of mine here", and there is not.
+ */
+characterVotes.delete('/character-votes', requireAuth, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+
+  if (!isTargetSource(b.target_source)) {
+    return fail(c, 400, 'target_invalid', 'target_source must be tvdb, tmdb or title.');
+  }
+  if (typeof b.target_key !== 'string' || b.target_key.length === 0) {
+    return fail(c, 400, 'target_invalid', 'target_key is required.');
+  }
+
+  const db = c.env.DB;
+  const me = c.get('profileId');
+  const src = b.target_source;
+  const key = b.target_key;
+
+  const prev = await db
+    .prepare('SELECT character_name FROM character_votes WHERE voter_id = ? AND target_source = ? AND target_key = ?')
+    .bind(me, src, key)
+    .first<{ character_name: string }>();
+  if (!prev) return c.json({ ok: true, removed: false });
+
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE character_vote_aggregates
+            SET counts = ${DECREMENT('COALESCE(character_vote_aggregates.counts, \'{}\')')},
+                total = MAX(0, character_vote_aggregates.total - 1),
+                updated_at = ?
+          WHERE target_source = ? AND target_key = ?`,
+      )
+      .bind(prev.character_name, prev.character_name, new Date().toISOString(), src, key),
+    db
+      .prepare('DELETE FROM character_votes WHERE voter_id = ? AND target_source = ? AND target_key = ?')
+      .bind(me, src, key),
+  ]);
+
+  return c.json({ ok: true, removed: true });
+});
+
 // ── POST /v1/character-votes/import ─────────────────────────────────────────
 //
 // The same shape and the same rules as `POST /v1/ratings/import`: cap 500,
