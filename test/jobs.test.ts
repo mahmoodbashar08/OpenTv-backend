@@ -191,10 +191,10 @@ describe('reconcileRatingAggregates', () => {
     profile('p2', 'sara');
     profile('p3', 'ali');
 
-    rating('r1', 'p1', '111', 9, 'love');
-    rating('r2', 'p2', '111', 7, 'love');
+    rating('r1', 'p1', '111', 9, 'touched');
+    rating('r2', 'p2', '111', 7, 'touched');
     rating('r3', 'p3', '111', null, null); // emotion-less, score-less rows still count as people
-    aggregate('tvdb', '111', 2, 99, '{"wow":5}'); // wrong count, wrong sum, stale json
+    aggregate('tvdb', '111', 2, 99, '{"shocked":5}'); // wrong count, wrong sum, stale json
 
     // Every vote behind this one was cascaded away by an account deletion.
     aggregate('tvdb', '222', 4, 30, '{"sad":4}');
@@ -206,7 +206,7 @@ describe('reconcileRatingAggregates', () => {
     const fixed = raw
       .prepare('SELECT vote_count, score_sum, emotion_counts FROM rating_aggregates WHERE target_key = ?')
       .get('111');
-    expect(fixed).toEqual({ vote_count: 3, score_sum: 16, emotion_counts: '{"love":2}' });
+    expect(fixed).toEqual({ vote_count: 3, score_sum: 16, emotion_counts: '{"touched":2}' });
 
     expect(
       raw.prepare('SELECT COUNT(*) AS n FROM rating_aggregates WHERE target_key = ?').get('222'),
@@ -319,11 +319,11 @@ describe('migrateTitleThreads', () => {
     comment('c2', 'p2', 0, 'amado|2011', 'title');
     comment('c3', 'p1', 0, 'other|1999', 'title'); // untouched
 
-    rating('r1', 'p1', 'amado|2011', 9, 'love', 'title');
-    aggregate('title', 'amado|2011', 1, 9, '{"love":1,"wow":2}');
+    rating('r1', 'p1', 'amado|2011', 9, 'touched', 'title');
+    aggregate('title', 'amado|2011', 1, 9, '{"touched":1,"shocked":2}');
 
-    rating('r2', 'p2', '428391', 8, 'love');
-    aggregate('tvdb', '428391', 1, 8, '{"love":1}');
+    rating('r2', 'p2', '428391', 8, 'touched');
+    aggregate('tvdb', '428391', 1, 8, '{"touched":1}');
 
     const res = await migrateTitleThreads(db, [
       { old_key: 'amado|2011', new_source: 'tvdb', new_key: '428391' },
@@ -351,7 +351,7 @@ describe('migrateTitleThreads', () => {
           WHERE target_source = 'tvdb' AND target_key = '428391'`,
       )
       .get();
-    expect(merged).toEqual({ vote_count: 2, score_sum: 17, emotion_counts: '{"love":2,"wow":2}' });
+    expect(merged).toEqual({ vote_count: 2, score_sum: 17, emotion_counts: '{"touched":2,"shocked":2}' });
 
     // The source row is gone, not left behind as a second half of the thread.
     expect(
@@ -410,21 +410,21 @@ describe('migrateTitleThreads', () => {
 
 describe('mergeEmotionCounts', () => {
   it('sums shared keys and keeps the rest', () => {
-    expect(mergeEmotionCounts('{"love":2,"wow":1}', '{"love":3,"sad":1}')).toBe(
-      '{"love":5,"wow":1,"sad":1}',
+    expect(mergeEmotionCounts('{"touched":2,"shocked":1}', '{"touched":3,"sad":1}')).toBe(
+      '{"touched":5,"shocked":1,"sad":1}',
     );
   });
 
   it('treats null, empty and malformed sides as nothing', () => {
     expect(mergeEmotionCounts(null, null)).toBe('{}');
-    expect(mergeEmotionCounts('{"love":1}', null)).toBe('{"love":1}');
-    expect(mergeEmotionCounts(null, '{"love":1}')).toBe('{"love":1}');
-    expect(mergeEmotionCounts('{}', '{"love":1}')).toBe('{"love":1}');
-    expect(mergeEmotionCounts('not json', '{"love":1}')).toBe('{"love":1}');
-    expect(mergeEmotionCounts('[1,2]', '{"love":1}')).toBe('{"love":1}');
+    expect(mergeEmotionCounts('{"touched":1}', null)).toBe('{"touched":1}');
+    expect(mergeEmotionCounts(null, '{"touched":1}')).toBe('{"touched":1}');
+    expect(mergeEmotionCounts('{}', '{"touched":1}')).toBe('{"touched":1}');
+    expect(mergeEmotionCounts('not json', '{"touched":1}')).toBe('{"touched":1}');
+    expect(mergeEmotionCounts('[1,2]', '{"touched":1}')).toBe('{"touched":1}');
   });
 
   it('drops the zeroed keys the write path leaves behind', () => {
-    expect(mergeEmotionCounts('{"love":0,"wow":2}', '{"sad":-1}')).toBe('{"wow":2}');
+    expect(mergeEmotionCounts('{"touched":0,"shocked":2}', '{"sad":-1}')).toBe('{"shocked":2}');
   });
 });

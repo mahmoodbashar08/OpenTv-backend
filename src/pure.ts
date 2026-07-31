@@ -233,14 +233,38 @@ export function isTargetSource(v: unknown): v is TargetSource {
 }
 
 /**
- * The emotion allow-list — TV Time's own set, so an imported reaction has
- * somewhere to land and the app's existing icons keep their meaning.
+ * The emotion allow-list — TV Time's own twelve, exactly as the app presents
+ * them, so an imported reaction has somewhere to land and every tap a user
+ * makes actually counts for something.
+ *
+ * These names and this ORDER are index-locked to `EMOTIONS` in
+ * `mobile/src/app/episode/[id].tsx`, which is in turn index-locked to the
+ * local database. Reorder one and you must reorder all three.
+ *
+ * An earlier draft of this list had six invented names and the app folded its
+ * twelve onto them, which silently dropped reflective, bored, understood and
+ * confused and merged shocked with thrilled. Widening it costs nothing —
+ * `emotion_counts` is a JSON object, so new keys need no migration — and it
+ * means the community mirrors what TV Time actually had.
  *
  * This list is not decoration. Emotion names are interpolated into a JSON path
  * (`'$.' || :name`) in the aggregate upsert, so an unvalidated emotion is a
  * JSON-path injection. Nothing reaches that SQL without passing through here.
  */
-export const EMOTIONS = ['love', 'fun', 'wow', 'sad', 'scared', 'angry'] as const;
+export const EMOTIONS = [
+  'shocked',
+  'frustrated',
+  'sad',
+  'reflective',
+  'touched',
+  'amused',
+  'scared',
+  'bored',
+  'understood',
+  'thrilled',
+  'confused',
+  'tense',
+] as const;
 export type Emotion = (typeof EMOTIONS)[number];
 
 export function isEmotion(v: unknown): v is Emotion {

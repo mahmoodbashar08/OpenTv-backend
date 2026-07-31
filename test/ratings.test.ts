@@ -18,26 +18,26 @@ describe('aggregateDelta — the six rows of the table', () => {
   });
 
   it('new vote with a score and an emotion', () => {
-    expect(aggregateDelta(null, { score: 9, emotion: 'love' })).toEqual({
+    expect(aggregateDelta(null, { score: 9, emotion: 'touched' })).toEqual({
       dVotes: 1,
       dScore: 9,
       emotionFrom: null,
-      emotionTo: 'love',
+      emotionTo: 'touched',
     });
   });
 
   it('new vote, emotion only: still counts as a person', () => {
-    expect(aggregateDelta(null, { score: null, emotion: 'love' })).toEqual({
+    expect(aggregateDelta(null, { score: null, emotion: 'touched' })).toEqual({
       dVotes: 1,
       dScore: 0,
       emotionFrom: null,
-      emotionTo: 'love',
+      emotionTo: 'touched',
     });
   });
 
   it('changed score 7 → 9: no new person, +2', () => {
-    const d = aggregateDelta({ score: 7, emotion: 'love' }, { score: 9, emotion: 'love' });
-    expect(d).toEqual({ dVotes: 0, dScore: 2, emotionFrom: 'love', emotionTo: 'love' });
+    const d = aggregateDelta({ score: 7, emotion: 'touched' }, { score: 9, emotion: 'touched' });
+    expect(d).toEqual({ dVotes: 0, dScore: 2, emotionFrom: 'touched', emotionTo: 'touched' });
     // from === to, so the caller skips the emotion clause entirely.
     expect(d.emotionFrom).toBe(d.emotionTo);
   });
@@ -61,32 +61,32 @@ describe('aggregateDelta — the six rows of the table', () => {
   });
 
   it('emotion changed only', () => {
-    expect(aggregateDelta({ score: 9, emotion: 'love' }, { score: 9, emotion: 'angry' })).toEqual({
+    expect(aggregateDelta({ score: 9, emotion: 'touched' }, { score: 9, emotion: 'frustrated' })).toEqual({
       dVotes: 0,
       dScore: 0,
-      emotionFrom: 'love',
-      emotionTo: 'angry',
+      emotionFrom: 'touched',
+      emotionTo: 'frustrated',
     });
   });
 });
 
 describe('aggregateDelta — the cases the table leaves implicit', () => {
   it('emotion-only → score-only clears the emotion (decrement, no increment)', () => {
-    const d = aggregateDelta({ score: null, emotion: 'love' }, { score: 7, emotion: null });
-    expect(d).toEqual({ dVotes: 0, dScore: 7, emotionFrom: 'love', emotionTo: null });
+    const d = aggregateDelta({ score: null, emotion: 'touched' }, { score: 7, emotion: null });
+    expect(d).toEqual({ dVotes: 0, dScore: 7, emotionFrom: 'touched', emotionTo: null });
     expect(d.emotionFrom).not.toBe(d.emotionTo); // the clause runs, half of it
   });
 
   it('an identical re-vote moves nothing at all', () => {
-    const d = aggregateDelta({ score: 7, emotion: 'fun' }, { score: 7, emotion: 'fun' });
-    expect(d).toEqual({ dVotes: 0, dScore: 0, emotionFrom: 'fun', emotionTo: 'fun' });
+    const d = aggregateDelta({ score: 7, emotion: 'amused' }, { score: 7, emotion: 'amused' });
+    expect(d).toEqual({ dVotes: 0, dScore: 0, emotionFrom: 'amused', emotionTo: 'amused' });
   });
 });
 
 describe('validateVote', () => {
   it('accepts a score with an emotion', () => {
-    const r = validateVote({ score: 9, emotion: 'love', season: 1, episode: 3 });
-    expect(r).toEqual({ ok: true, vote: { score: 9, emotion: 'love', season: 1, episode: 3 } });
+    const r = validateVote({ score: 9, emotion: 'touched', season: 1, episode: 3 });
+    expect(r).toEqual({ ok: true, vote: { score: 9, emotion: 'touched', season: 1, episode: 3 } });
   });
 
   it('accepts a show-level vote with no season or episode', () => {
@@ -95,7 +95,7 @@ describe('validateVote', () => {
   });
 
   it('rejects score 0 and score 11 before any SQL is prepared', () => {
-    expect(validateVote({ score: 0, emotion: 'love' })).toEqual({ ok: false, reason: 'score_invalid' });
+    expect(validateVote({ score: 0, emotion: 'touched' })).toEqual({ ok: false, reason: 'score_invalid' });
     expect(validateVote({ score: 11 })).toEqual({ ok: false, reason: 'score_invalid' });
   });
 
