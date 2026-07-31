@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import type { App } from '@/env';
+import type { App, Env } from '@/env';
+import { runMaintenance } from '@/jobs';
 import { auth } from '@/routes/auth';
 import { blocks } from '@/routes/blocks';
 import { comments } from '@/routes/comments';
@@ -53,4 +54,16 @@ v1.route('/', reconcile);
 
 app.route('/v1', v1);
 
-export default app;
+/**
+ * The 04:00 UTC cron (docs/IMPLEMENTATION.md Step 5). All the work lives in
+ * `src/jobs.ts`; this is only the wiring. It awaits rather than handing the
+ * promise to `waitUntil`: a scheduled handler that returns early can have its
+ * remaining I/O cancelled, and `--test-scheduled` would then answer the curl
+ * before the night's work had landed.
+ */
+const scheduled: ExportedHandlerScheduledHandler<Env> = async (event, env) => {
+  console.log(`[maintenance] triggered by cron "${event.cron}"`);
+  await runMaintenance(env);
+};
+
+export default { fetch: app.fetch, scheduled };

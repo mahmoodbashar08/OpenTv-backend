@@ -9,6 +9,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough
+  // for a user base concentrated in Europe and the Middle East.
+  "triggers": { "crons": ["0 4 * * *"] },
+
   // Public identifiers only — they appear in every client binary anyway.
   // Secrets (SESSION_SECRET, later REVENUECAT_WEBHOOK_SECRET) go in with
   // `wrangler secret put` and never live here. Locally they come from .dev.vars.

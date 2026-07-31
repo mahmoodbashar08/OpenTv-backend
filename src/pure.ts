@@ -767,3 +767,36 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 }
+
+// ── maintenance ──────────────────────────────────────────────────────────────
+
+/**
+ * Merge two `rating_aggregates.emotion_counts` blobs, JSON string in, JSON
+ * string out. The 5c merge case (docs/IMPLEMENTATION.md Step 5c): when a
+ * `title` thread's aggregate row moves onto a `tvdb` key that already has one,
+ * the counts are summed rather than one side overwriting the other.
+ *
+ * Anything that is not a positive-integer count is dropped rather than trusted:
+ * the write path leaves zeroed keys behind (`json_set(..., MAX(0, n - 1))`), and
+ * a merge is the natural place to stop carrying them. Malformed JSON — which
+ * only a hand-edited row could produce — is treated as empty, because failing a
+ * whole overnight migration over one bad blob would be the worse outcome.
+ */
+export function mergeEmotionCounts(a: string | null, b: string | null): string {
+  const out: Record<string, number> = {};
+  for (const raw of [a, b]) {
+    if (!raw) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+      out[key] = (out[key] ?? 0) + Math.floor(value);
+    }
+  }
+  return JSON.stringify(out);
+}
