@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
+import { fail } from '@/http';
 import { runMaintenance } from '@/jobs';
 import { auth } from '@/routes/auth';
 import { blocks } from '@/routes/blocks';
@@ -53,6 +54,26 @@ v1.route('/', notifications);
 v1.route('/', reconcile);
 
 app.route('/v1', v1);
+
+/**
+ * The safety net. Every route builds its failures with `fail()`, but an
+ * *unhandled* throw — a D1 error mid-request, an unforeseen bug — would
+ * otherwise return Hono's default 500, which is not the `{error:{code,message}}`
+ * envelope the app parses and can echo the raw error text (a SQL message, a
+ * stack) straight back to the client. So: log the real thing server-side, where
+ * Workers observability keeps it, and hand the client a generic, conforming,
+ * leak-free 500.
+ */
+app.onError((err, c) => {
+  console.error('[unhandled]', err instanceof Error ? err.stack ?? err.message : String(err));
+  return fail(c, 500, 'internal', 'Something went wrong.');
+});
+
+/**
+ * Unknown routes answer in the same envelope, so the app's error handling —
+ * which switches on `error.code` — never meets a shape it cannot read.
+ */
+app.notFound((c) => fail(c, 404, 'not_found', 'No such route.'));
 
 /**
  * The 04:00 UTC cron (docs/IMPLEMENTATION.md Step 5). All the work lives in
