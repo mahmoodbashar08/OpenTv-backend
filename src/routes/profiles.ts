@@ -151,13 +151,18 @@ profiles.get('/users', async (c) => {
        FROM profiles p
       WHERE p.handle_lower LIKE ? ESCAPE '\\'
         AND p.deleted_at IS NULL
+        -- YOURSELF IS NOT SOMEBODY TO FOLLOW. IS NOT rather than != on
+        -- purpose: the viewer is NULL for an anonymous search, and p.id != NULL
+        -- evaluates to NULL rather than TRUE, which would empty every
+        -- signed-out search.
+        AND p.id IS NOT ?
         AND NOT EXISTS (SELECT 1 FROM blocks b
                         WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                            OR (b.blocker_id = p.id AND b.blocked_id = ?))
       ORDER BY p.handle_lower
       LIMIT ?`,
   )
-    .bind(pattern, viewer, viewer, USER_SEARCH_LIMIT)
+    .bind(pattern, viewer, viewer, viewer, USER_SEARCH_LIMIT)
     .all<UserSearchRow>();
 
   // The shell only. A search result is a row in a list, not a profile — counts,

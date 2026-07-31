@@ -31,6 +31,18 @@ describe('GET /v1/users', () => {
 
   const handles = (json: { items: { handle: string }[] }) => json.items.map((i) => i.handle);
 
+  it('never returns YOU — you are not somebody to follow', async () => {
+    const token = await tokenFor(env, 'p1');
+    expect(handles((await call(env, 'GET', '/v1/users?q=mah', { token })).json)).toEqual(['mahmoud']);
+  });
+
+  it('still returns everyone to a SIGNED-OUT search', async () => {
+    // The self-exclusion binds NULL when there is no viewer. `p.id != NULL` is
+    // NULL, not TRUE, so the naive form would empty every anonymous search —
+    // a whole feature switched off for anybody who has not joined.
+    expect(handles((await call(env, 'GET', '/v1/users?q=mah')).json)).toEqual(['mahmood', 'mahmoud']);
+  });
+
   it('matches on a prefix and returns the shell of each profile', async () => {
     const res = await call(env, 'GET', '/v1/users?q=mah');
     expect(res.status).toBe(200);
