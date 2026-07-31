@@ -743,12 +743,16 @@ problem, and `comment_likes` is the stated source of truth (`schema.dbml`).
 `SELECT … LIMIT 1` guard (the table has no unique index; do not add one, a
 person may legitimately re-report after a `dismissed` outcome).
 
-Batch: insert the report; `UPDATE comments SET report_count = report_count + 1`;
-then, in the same batch, the auto-hide:
+Batch: insert the report; the auto-hide check; then the increment — **in that
+order**. The `report_count + 1` in the predicate accounts for the report being
+filed *now*, so the check must read the pre-increment count; run it after the
+increment and it hides on the fourth report, not the fifth. (Found during
+implementation — the batch order originally written here was wrong.)
 
 ```sql
 UPDATE comments SET hidden_at = ?
 WHERE id = ? AND hidden_at IS NULL AND report_count + 1 >= 5;
+UPDATE comments SET report_count = report_count + 1 WHERE id = ?;
 ```
 
 Five distinct reporters hides a comment pending human review. The threshold is a
