@@ -2,7 +2,11 @@ import type Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '@/env';
 import {
+  AGGREGATE_PARAMS_PER_TARGET,
+  AGGREGATE_TARGETS_PER_QUERY,
   aggregateDelta,
+  chunk,
+  D1_MAX_BOUND_PARAMS,
   emotionSetDelta,
   EMOTIONS,
   MAX_TARGETS,
@@ -507,5 +511,121 @@ describe('GET /v1/aggregates — score_counts is exposed as an object', () => {
     const res = await call(env, 'GET', '/v1/aggregates?source=tvdb&key=121361&season=1');
     expect(res.json.items[0].score_counts).toEqual({});
     expect(res.json.items[0].score_counts).not.toBeNull();
+  });
+});
+
+/**
+ * THE TEST THAT WOULD HAVE CAUGHT IT.
+ *
+ * Every list-form test above asks for one or two targets. The route binds four
+ * parameters per target into a row-value `IN (VALUES …)`, D1 permits 100 bound
+ * parameters per statement, and so the 26th target was an unconditional 500
+ * while `MAX_TARGETS` went on advertising 100 and the app went on sending 100.
+ * A handful of targets can never see that; thirty can.
+ */
+describe('GET /v1/aggregates — the list form past one statement\'s worth', () => {
+  describe('the internal chunker', () => {
+    it('derives 25 from D1\'s limit and the width of a target key', () => {
+      expect(AGGREGATE_TARGETS_PER_QUERY).toBe(25);
+      expect(AGGREGATE_TARGETS_PER_QUERY * AGGREGATE_PARAMS_PER_TARGET).toBeLessThanOrEqual(
+        D1_MAX_BOUND_PARAMS,
+      );
+    });
+
+    it.each([
+      [0, []],
+      [1, [1]],
+      [25, [25]],
+      [26, [25, 1]],
+      [100, [25, 25, 25, 25]],
+    ])('%i targets becomes groups %j', (count, sizes) => {
+      const targets = Array.from({ length: count }, (_, i) => i);
+      const groups = chunk(targets, AGGREGATE_TARGETS_PER_QUERY);
+      expect(groups.map((g) => g.length)).toEqual(sizes);
+      // No group may exceed what one statement can bind…
+      for (const g of groups) expect(g.length).toBeLessThanOrEqual(AGGREGATE_TARGETS_PER_QUERY);
+      // …and flattening must give back exactly the input: order kept, nothing
+      // duplicated across a boundary, nothing dropped at one.
+      expect(groups.flat()).toEqual(targets);
+    });
+  });
+
+  describe('against the database', () => {
+    let raw: Database.Database;
+    let env: Env;
+
+    /** 30 distinct targets — five past the point a single statement can serve. */
+    const KEYS = Array.from({ length: 30 }, (_, i) => `t${String(i).padStart(2, '0')}`);
+
+    beforeEach(() => {
+      const fresh = freshDatabase();
+      raw = fresh.raw;
+      env = makeEnv(fresh.db);
+      const insert = raw.prepare(
+        `INSERT INTO rating_aggregates
+           (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts,
+            score_counts, updated_at)
+         VALUES ('tvdb', ?, 1, 3, ?, 0, '{}', '{}', '2026-07-01T00:00:00.000Z')`,
+      );
+      KEYS.forEach((k, i) => insert.run(k, i + 1));
+    });
+
+    const ask = (keys: readonly string[]) =>
+      call(env, 'GET', `/v1/aggregates?${keys.map((k) => `t=tvdb:${k}:1:3`).join('&')}`);
+
+    it('returns all 30 — every target once, none dropped at a group boundary', async () => {
+      const res = await ask(KEYS);
+      expect(res.status).toBe(200);
+      expect(res.json.items).toHaveLength(30);
+
+      const keys = res.json.items.map((i: { target_key: string }) => i.target_key);
+      // The contract the client relies on: every requested target that has a
+      // row comes back exactly once, carrying the `target_key` it matches on.
+      // A target duplicated across two groups, or lost at the seam between
+      // them, is what chunking could plausibly get wrong.
+      expect(new Set(keys).size).toBe(30);
+      expect([...keys].sort()).toEqual([...KEYS].sort());
+
+      // ORDER, honestly stated: rows come back in the database's order within
+      // each group, and the groups are concatenated in request order. Seeded
+      // here in request order, that makes the two coincide — which is what
+      // pins the seam at 25/26 rather than any promise the route makes. The
+      // route has never sorted, and the client matches on `target_key`.
+      expect(keys).toEqual([...KEYS]);
+
+      // The rows are real, not thirty empty shells stitched together.
+      expect(res.json.items.map((i: { vote_count: number }) => i.vote_count)).toEqual(
+        KEYS.map((_, i) => i + 1),
+      );
+    });
+
+    it('serves 25 and 26 alike — the boundary that used to be a 500', async () => {
+      const twentyFive = await ask(KEYS.slice(0, 25));
+      expect(twentyFive.status).toBe(200);
+      expect(twentyFive.json.items).toHaveLength(25);
+
+      const twentySix = await ask(KEYS.slice(0, 26));
+      expect(twentySix.status).toBe(200);
+      expect(twentySix.json.items).toHaveLength(26);
+    });
+
+    it('answers a target with no votes by omitting it, at 30 as at 1', async () => {
+      const res = await ask([...KEYS, 'never-voted-on']);
+      expect(res.status).toBe(200);
+      expect(res.json.items).toHaveLength(30);
+    });
+
+    it('still serves the full advertised 100 — the batch the app actually sends', async () => {
+      const padded = [...KEYS, ...Array.from({ length: 70 }, (_, i) => `pad${i}`)];
+      const res = await ask(padded);
+      expect(res.status).toBe(200);
+      expect(res.json.items).toHaveLength(30); // the 70 padding targets have no rows
+    });
+
+    it('still refuses 101: the public cap is unchanged', async () => {
+      const res = await ask(Array.from({ length: MAX_TARGETS + 1 }, (_, i) => `x${i}`));
+      expect(res.status).toBe(400);
+      expect(res.json.error.code).toBe('target_invalid');
+    });
   });
 });

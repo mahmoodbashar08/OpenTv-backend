@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { RECONCILE_MAX_IDS, validateFriendIds } from '@/pure';
+import { chunk, RECONCILE_IDS_PER_QUERY, RECONCILE_MAX_IDS, validateFriendIds } from '@/pure';
 import { newNotificationId } from '@/routes/comments';
 
 /**
@@ -86,22 +86,32 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
   // excluded — an export lists the exporter among its own friendships often
   // enough — and so is anyone on either side of a block: they are neither
   // notified nor returned, because a block predates any nostalgia.
-  const placeholders = friends.ids.map(() => '?').join(',');
-  const found = await db
-    .prepare(
-      `SELECT id, handle, display_name, avatar_key
+  //
+  // CHUNKED, because `RECONCILE_MAX_IDS` is 500 and a D1 statement binds at most
+  // 100 parameters. One placeholder per id plus the three fixed binds below made
+  // this a 500 from the 98th friend onward — the same arithmetic that broke the
+  // aggregate list form, at a different threshold. See `RECONCILE_IDS_PER_QUERY`.
+  //
+  // The groups go in one `db.batch()`, so this is still a single round trip, and
+  // an id appears in exactly one group, so no profile can come back twice.
+  const found = await db.batch<MatchRow>(
+    chunk(friends.ids, RECONCILE_IDS_PER_QUERY).map((ids) =>
+      db
+        .prepare(
+          `SELECT id, handle, display_name, avatar_key
        FROM profiles p
-       WHERE p.tvtime_user_id IN (${placeholders})
+       WHERE p.tvtime_user_id IN (${ids.map(() => '?').join(',')})
          AND p.deleted_at IS NULL
          AND p.id <> ?
          AND NOT EXISTS (SELECT 1 FROM blocks b
                          WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                             OR (b.blocker_id = p.id AND b.blocked_id = ?))`,
-    )
-    .bind(...friends.ids, me, me, me)
-    .all<MatchRow>();
+        )
+        .bind(...ids, me, me, me),
+    ),
+  );
 
-  const matches = found.results ?? [];
+  const matches = found.flatMap((r) => r.results ?? []);
 
   // BOTH sides, because the other person's app may never ask again — and a
   // one-sided "you were friends" is a hint only one of them can act on.

@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   chunk,
   coveredByWatermark,
+  D1_MAX_BOUND_PARAMS,
   type FullProfileView,
   isPlus,
+  RECONCILE_FIXED_BINDS,
+  RECONCILE_IDS_PER_QUERY,
   RECONCILE_MAX_IDS,
   validateFriendIds,
   visibleProfileFields,
 } from '@/pure';
+import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness';
 
 /**
  * docs/IMPLEMENTATION.md Step 4, "Unit tests". The decisions that can be
@@ -171,5 +175,61 @@ describe('chunk', () => {
 
   it('returns nothing for nothing', () => {
     expect(chunk([], 500)).toEqual([]);
+  });
+});
+
+/**
+ * The reconcile route had the aggregate list form's bug at a different
+ * threshold: one bound parameter per friend id in an `IN`, plus three fixed
+ * binds, against D1's ceiling of 100 per statement. `RECONCILE_MAX_IDS` is 500,
+ * so it broke from the 98th id — and a TV Time export with a hundred friends in
+ * it is an ordinary export.
+ */
+describe('POST /v1/me/friends/reconcile — past one statement\'s worth of ids', () => {
+  it('derives its per-query cap from D1\'s limit and the three fixed binds', () => {
+    expect(RECONCILE_IDS_PER_QUERY).toBe(D1_MAX_BOUND_PARAMS - RECONCILE_FIXED_BINDS);
+    expect(RECONCILE_IDS_PER_QUERY + RECONCILE_FIXED_BINDS).toBeLessThanOrEqual(
+      D1_MAX_BOUND_PARAMS,
+    );
+  });
+
+  it('matches a friend whose id sits past the chunk boundary', async () => {
+    const { raw, db } = freshDatabase();
+    const env = makeEnv(db);
+    insertProfile(raw, 'p_me', 'mahmood');
+    insertProfile(raw, 'p_far', 'sara');
+    // Sara's TV Time id is the 200th in the list, well past the 97 a single
+    // statement can bind. Before chunking this whole call was a 500.
+    raw.prepare('UPDATE profiles SET tvtime_user_id = 4242 WHERE id = ?').run('p_far');
+
+    const ids = Array.from({ length: RECONCILE_MAX_IDS }, (_, i) => i + 1);
+    ids[199] = 4242;
+
+    const res = await call(env, 'POST', '/v1/me/friends/reconcile', {
+      token: await tokenFor(env, 'p_me'),
+      body: { friend_ids: ids },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.json.matched.map((m: { handle: string }) => m.handle)).toEqual(['sara']);
+  });
+
+  it('returns each match once, never once per chunk', async () => {
+    const { raw, db } = freshDatabase();
+    const env = makeEnv(db);
+    insertProfile(raw, 'p_me', 'mahmood');
+    insertProfile(raw, 'p_a', 'aya');
+    insertProfile(raw, 'p_b', 'basim');
+    raw.prepare('UPDATE profiles SET tvtime_user_id = 5 WHERE id = ?').run('p_a');
+    raw.prepare('UPDATE profiles SET tvtime_user_id = 300 WHERE id = ?').run('p_b');
+
+    const res = await call(env, 'POST', '/v1/me/friends/reconcile', {
+      token: await tokenFor(env, 'p_me'),
+      body: { friend_ids: Array.from({ length: RECONCILE_MAX_IDS }, (_, i) => i + 1) },
+    });
+
+    expect(res.status).toBe(200);
+    const handles = res.json.matched.map((m: { handle: string }) => m.handle).sort();
+    expect(handles).toEqual(['aya', 'basim']);
   });
 });

@@ -1041,6 +1041,54 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+// ── D1's bound-parameter ceiling ─────────────────────────────────────────────
+
+/**
+ * **A D1 query may bind at most 100 parameters.**
+ * https://developers.cloudflare.com/d1/platform/limits/
+ *
+ * It is a limit on ONE statement, not on a `db.batch()`, which is why the
+ * import routes — fifty small statements a batch, a handful of binds each —
+ * have never come near it. The routes that can are the ones that build a
+ * variable-length placeholder list out of user input, and there are exactly two
+ * of them.
+ *
+ * This is not a tuning knob. It is a number Cloudflare owns; the derived
+ * per-query caps below are what this codebase is allowed to choose.
+ */
+export const D1_MAX_BOUND_PARAMS = 100;
+
+/**
+ * `GET /v1/aggregates?t=…` binds FOUR columns per target — target_source,
+ * target_key, season, episode — into a row-value `IN (VALUES …)`.
+ *
+ * 25 targets is 100 parameters and passes. 26 is 104 and is a 500. `MAX_TARGETS`
+ * is 100, so the route advertised four times what a single statement could
+ * serve and the client's 100-target prefetch could never once have worked.
+ *
+ * The public cap stays at 100 — the app batches at exactly that, and quartering
+ * it would quadruple its request count (docs/PLAN.md §4). The handler chunks
+ * INTERNALLY to this size instead and runs the groups in one `db.batch()`.
+ *
+ * Derived rather than written as `25` so that adding a column to the target key
+ * moves this number with it, instead of leaving a literal that is quietly wrong
+ * by one query.
+ */
+export const AGGREGATE_PARAMS_PER_TARGET = 4;
+export const AGGREGATE_TARGETS_PER_QUERY = Math.floor(
+  D1_MAX_BOUND_PARAMS / AGGREGATE_PARAMS_PER_TARGET,
+);
+
+/**
+ * The same arithmetic for `POST /v1/me/friends/reconcile`, which had the same
+ * latent bug at a different threshold: one placeholder per friend id in an `IN`,
+ * plus three fixed binds for the self-exclusion and the two halves of the block
+ * check. `RECONCILE_MAX_IDS` is 500, so it broke at 98 ids — and an export with
+ * a hundred friends in it is an ordinary export, not an edge case.
+ */
+export const RECONCILE_FIXED_BINDS = 3;
+export const RECONCILE_IDS_PER_QUERY = D1_MAX_BOUND_PARAMS - RECONCILE_FIXED_BINDS;
+
 // ── maintenance ──────────────────────────────────────────────────────────────
 
 /**

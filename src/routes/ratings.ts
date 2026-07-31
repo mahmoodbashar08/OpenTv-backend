@@ -3,7 +3,9 @@ import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
 import {
+  AGGREGATE_TARGETS_PER_QUERY,
   aggregateDelta,
+  chunk,
   emotionSetDelta,
   isTargetSource,
   MAX_TARGETS,
@@ -380,17 +382,41 @@ ratings.get('/aggregates', async (c) => {
   return res;
 });
 
-/** One statement for the whole list: a row-value IN (VALUES …), capped at 100. */
+/**
+ * The list form's read: a row-value `IN (VALUES …)` per group of at most
+ * `AGGREGATE_TARGETS_PER_QUERY` targets, all groups in one `db.batch()`.
+ *
+ * IT USED TO BE ONE STATEMENT FOR ALL 100, AND THAT COULD NEVER HAVE WORKED.
+ * Four binds a target against D1's 100-parameter ceiling means 25 targets was
+ * the real limit and the 26th was an unconditional 500 — while `MAX_TARGETS`
+ * went on advertising 100 and the app went on asking for 100. Every prefetch the
+ * client has ever made failed, silently, and the user saw no community numbers
+ * until they opened a title one at a time.
+ *
+ * The chunking is INTERNAL. The public cap is untouched, the batch is still one
+ * round trip, and the groups are concatenated in order, so a call of 25 or fewer
+ * produces byte-identical bytes to before: one group, one statement, one result
+ * set, unchanged.
+ */
 async function listAggregates(db: D1Database, targets: readonly ParsedTarget[]): Promise<AggregateRow[]> {
-  const tuples = targets.map(() => '(?, ?, ?, ?)').join(', ');
-  const binds = targets.flatMap((t) => [t.source, t.key, t.season, t.episode]);
-  const res = await db
-    .prepare(
-      `SELECT season, episode, target_source, target_key, ${AGGREGATE_COLUMNS}
+  const groups = chunk(targets, AGGREGATE_TARGETS_PER_QUERY);
+
+  const results = await db.batch<AggregateRow & { target_source: string; target_key: string }>(
+    groups.map((group) =>
+      db
+        .prepare(
+          `SELECT season, episode, target_source, target_key, ${AGGREGATE_COLUMNS}
        FROM rating_aggregates
-       WHERE (target_source, target_key, season, episode) IN (VALUES ${tuples})`,
-    )
-    .bind(...binds)
-    .all<AggregateRow & { target_source: string; target_key: string }>();
-  return res.results ?? [];
+       WHERE (target_source, target_key, season, episode) IN (VALUES ${group
+         .map(() => '(?, ?, ?, ?)')
+         .join(', ')})`,
+        )
+        .bind(...group.flatMap((t) => [t.source, t.key, t.season, t.episode])),
+    ),
+  );
+
+  // Concatenated in group order, and each group's rows in the order the database
+  // gave them — the same order the single statement produced, one slice at a
+  // time.
+  return results.flatMap((r) => r.results ?? []);
 }
