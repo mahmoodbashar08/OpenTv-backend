@@ -4,6 +4,7 @@ import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
 import {
   aggregateDelta,
+  emotionSetDelta,
   isTargetSource,
   MAX_TARGETS,
   parseTargets,
@@ -18,6 +19,14 @@ import {
  * The write path keeps `rating_aggregates` up to date by *delta*, inside one
  * `db.batch()` so the vote and its rollup move together or not at all. D1's
  * batch is an implicit transaction; there is no BEGIN/COMMIT to write by hand.
+ *
+ * FEELINGS ARE A SET (migrations/0005_emotion_votes.sql). `emotions` is the
+ * person's WHOLE selection for this target and REPLACES whatever they had: the
+ * handler diffs stored against sent, decrements what they dropped, increments
+ * what they added, and does both in the same batch as the vote itself. Every
+ * selection counts once, so `emotion_counts` counts SELECTIONS while
+ * `vote_count` still counts PEOPLE, and the app renders each feeling as a share
+ * of the total selections.
  *
  * DRIFT IS EXPECTED AND ACCOUNTED FOR. Two simultaneous votes by the same
  * person, or `DELETE /v1/me` removing ratings without touching rollups, will
@@ -115,38 +124,68 @@ ratings.post('/ratings', requireAuth, async (c) => {
   const me = c.get('profileId');
   const now = new Date().toISOString();
 
-  // The previous vote, alone: a batch cannot branch on a result.
+  // The previous vote and the previous set of feelings, read first: a batch
+  // cannot branch on a result, so every decision is made here in JS.
   const prev = await db
     .prepare(
-      `SELECT id, score, emotion FROM ratings
+      `SELECT id, score FROM ratings
        WHERE author_id = ? AND target_source = ? AND target_key = ?
          AND COALESCE(season, -1) = ? AND COALESCE(episode, -1) = ?`,
     )
     .bind(me, src, key, s, e)
     .first<{ id: string } & Vote>();
 
+  const held = await db
+    .prepare(
+      `SELECT emotion FROM emotion_votes
+       WHERE author_id = ? AND target_source = ? AND target_key = ?
+         AND season = ? AND episode = ?`,
+    )
+    .bind(me, src, key, s, e)
+    .all<{ emotion: string }>();
+  const prevEmotions = (held.results ?? []).map((r) => r.emotion);
+
+  // "Clear my feelings" when there are none and no vote either is an empty
+  // vote after all — `validateVote` cannot see that, because only a read can.
+  // Without this, `{score: null, emotions: []}` would mint a `ratings` row with
+  // nothing in it and put +1 on a `vote_count` that stands for a person who
+  // expressed nothing.
+  if (next.score === null && next.emotions?.length === 0 && !prev && prevEmotions.length === 0) {
+    return fail(c, 400, 'invalid_body', 'Vote rejected (empty_vote).');
+  }
+
   const d = aggregateDelta(prev, next);
+  const em = emotionSetDelta(prevEmotions, next.emotions);
 
   // The emotion blob is JSON, and a read-modify-write of it across users is
-  // racy. Done in SQL it is not. Applied only when the emotion actually moved;
-  // the decrement half is skipped when there was no previous emotion, the
-  // increment half when the new vote has none (score-only over an emotion).
+  // racy. Done in SQL it is not — one `json_set` per feeling the person dropped
+  // and one per feeling they added, folded into a single expression. An
+  // unchanged set emits nothing at all, which is what makes re-submitting the
+  // same selection a no-op rather than a slow upward drift.
+  //
+  // The path is QUOTED (`'$."shocked"'`) like `score_counts` and the
+  // character-vote rollup, so the two blobs on this table are maintained by one
+  // idiom; every name has already passed `isEmotion`, and a quoted path can be
+  // nothing but a single key regardless.
   const emotionBinds: string[] = [];
   let emotionSet = '';
-  if (d.emotionFrom !== d.emotionTo) {
+  if (em.added.length > 0 || em.removed.length > 0) {
     let expr = "COALESCE(rating_aggregates.emotion_counts, '{}')";
-    if (d.emotionFrom !== null) {
-      expr = `json_set(${expr}, '$.' || ?, MAX(0, COALESCE(json_extract(rating_aggregates.emotion_counts, '$.' || ?), 0) - 1))`;
-      emotionBinds.push(d.emotionFrom, d.emotionFrom);
+    for (const gone of em.removed) {
+      expr = `json_set(${expr}, '$."' || ? || '"', MAX(0, COALESCE(json_extract(rating_aggregates.emotion_counts, '$."' || ? || '"'), 0) - 1))`;
+      emotionBinds.push(gone, gone);
     }
-    if (d.emotionTo !== null) {
-      expr = `json_set(${expr}, '$.' || ?, COALESCE(json_extract(rating_aggregates.emotion_counts, '$.' || ?), 0) + 1)`;
-      emotionBinds.push(d.emotionTo, d.emotionTo);
+    for (const added of em.added) {
+      expr = `json_set(${expr}, '$."' || ? || '"', COALESCE(json_extract(rating_aggregates.emotion_counts, '$."' || ? || '"'), 0) + 1)`;
+      emotionBinds.push(added, added);
     }
     emotionSet = `emotion_counts = ${expr},`;
   }
 
-  const initialEmotionJson = d.emotionTo === null ? '{}' : JSON.stringify({ [d.emotionTo]: 1 });
+  // The INSERT half of the upsert: this target had no rollup row, so the
+  // person's whole new set is the whole blob. Nothing to decrement — there was
+  // nothing there.
+  const initialEmotionJson = JSON.stringify(Object.fromEntries(em.added.map((x) => [x, 1])));
 
   // The score distribution moves exactly as the emotion blob does, and for the
   // same reason: a read-modify-write across users is racy, done in SQL it is
@@ -189,10 +228,15 @@ ratings.post('/ratings', requireAuth, async (c) => {
         // EXPRESSION, COALESCE included: SQLite matches expression indexes by
         // expression, not by name. Get it wrong and the upsert silently
         // becomes a duplicate-key error.
-        `INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, emotion, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        //
+        // `emotion` is not named at all any more — the column is stranded NULL
+        // by 0005 and the feelings live in `emotion_votes` below. A row with a
+        // NULL score is still written and still wanted: it is what makes
+        // `vote_count` count the person who only tapped a feeling.
+        `INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (author_id, target_source, target_key, COALESCE(season, -1), COALESCE(episode, -1))
-         DO UPDATE SET score = excluded.score, emotion = excluded.emotion`,
+         DO UPDATE SET score = excluded.score`,
       )
       .bind(
         `r_${crypto.randomUUID().replace(/-/g, '')}`,
@@ -202,9 +246,31 @@ ratings.post('/ratings', requireAuth, async (c) => {
         next.season,
         next.episode,
         next.score,
-        next.emotion,
         now,
       ),
+
+    // The set, replaced: one DELETE per feeling let go, one INSERT per feeling
+    // picked up. `OR IGNORE` on the insert because a double-submit of the same
+    // selection must be a no-op and not a 500 — the primary key is the set
+    // semantics, and it is allowed to say no.
+    ...em.removed.map((gone) =>
+      db
+        .prepare(
+          `DELETE FROM emotion_votes
+            WHERE author_id = ? AND target_source = ? AND target_key = ?
+              AND season = ? AND episode = ? AND emotion = ?`,
+        )
+        .bind(me, src, key, s, e, gone),
+    ),
+    ...em.added.map((added) =>
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO emotion_votes
+             (author_id, target_source, target_key, season, episode, emotion, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(me, src, key, s, e, added, now),
+    ),
 
     db
       .prepare(

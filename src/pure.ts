@@ -248,8 +248,13 @@ export function isTargetSource(v: unknown): v is TargetSource {
  * means the community mirrors what TV Time actually had.
  *
  * This list is not decoration. Emotion names are interpolated into a JSON path
- * (`'$.' || :name`) in the aggregate upsert, so an unvalidated emotion is a
- * JSON-path injection. Nothing reaches that SQL without passing through here.
+ * (`'$."' || :name || '"'`) in the aggregate upsert, so an unvalidated emotion
+ * is a JSON-path injection. Nothing reaches that SQL without passing through
+ * here.
+ *
+ * A person may hold ANY SUBSET of this list on one target — see
+ * migrations/0005_emotion_votes.sql. The length of the list is therefore also
+ * the largest set anybody can send.
  */
 export const EMOTIONS = [
   'shocked',
@@ -270,6 +275,9 @@ export type Emotion = (typeof EMOTIONS)[number];
 export function isEmotion(v: unknown): v is Emotion {
   return typeof v === 'string' && (EMOTIONS as readonly string[]).includes(v);
 }
+
+/** Nobody can select a feeling twice, so the whole list is the ceiling. */
+export const MAX_EMOTIONS = EMOTIONS.length;
 
 export const SCORE_MIN = 1;
 export const SCORE_MAX = 10;
@@ -292,49 +300,79 @@ export function isScore(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= SCORE_MIN && v <= SCORE_MAX;
 }
 
-/** A vote as it is stored: either half may be null, never both. */
-export type Vote = { score: number | null; emotion: string | null };
+/**
+ * A vote's SCORE half, as it is stored. The feelings half is no longer part of
+ * this shape: since 0005 a person's feelings are rows in `emotion_votes` and a
+ * set moves by `emotionSetDelta`, not by a from/to pair.
+ */
+export type Vote = { score: number | null };
 
 /**
- * How a vote moves the rollup. `emotionFrom`/`emotionTo` are names, not counts:
- * the caller turns them into the `json_set` pair, skipping the decrement when
- * `emotionFrom` is null, the increment when `emotionTo` is null, and both when
- * they are equal.
+ * How a vote's score moves the rollup.
  *
- * `scoreFrom`/`scoreTo` are the same idea for `score_counts`, and they are NOT
- * redundant with `dScore`: `dScore` moves a sum and can only ever yield a mean,
- * while these two move a bucket each and are what makes "82% gave it five stars"
- * renderable at all.
+ * `scoreFrom`/`scoreTo` drive `score_counts` and are NOT redundant with
+ * `dScore`: `dScore` moves a sum and can only ever yield a mean, while these two
+ * move a bucket each and are what makes "82% gave it five stars" renderable at
+ * all.
  */
 export type AggregateDelta = {
   dVotes: number;
   dScore: number;
-  emotionFrom: string | null;
-  emotionTo: string | null;
   scoreFrom: number | null;
   scoreTo: number | null;
 };
 
 /**
+ * How a person's SET of feelings moves the rollup: the ones they let go of and
+ * the ones they picked up, which the caller turns into one `json_set` decrement
+ * per `removed` and one increment per `added`.
+ *
+ * `next === undefined` means the request did not mention feelings at all, which
+ * is not the same request as one that sent `[]`. Absent leaves the set exactly
+ * where it is (both lists empty); empty CLEARS it (everything removed, nothing
+ * added). A client that only changes a score must never be able to wipe the
+ * feelings it did not send.
+ *
+ * Re-sending an identical set yields two empty lists, so a repeated write moves
+ * no counter — the property that keeps `emotion_counts` from drifting upward
+ * every time a screen re-submits what it already has.
+ */
+export type EmotionSetDelta = { added: Emotion[]; removed: Emotion[] };
+
+export function emotionSetDelta(
+  prev: readonly string[],
+  next: readonly Emotion[] | undefined,
+): EmotionSetDelta {
+  if (next === undefined) return { added: [], removed: [] };
+  const before = new Set(prev);
+  const after = new Set<string>(next);
+  return {
+    added: next.filter((e) => !before.has(e)),
+    // Anything stored that is no longer selected goes, including a name that is
+    // no longer on the allow-list: `isEmotion` guards what goes IN, and a row
+    // that predates a list change must still be removable by its owner.
+    removed: prev.filter((e) => !after.has(e)) as Emotion[],
+  };
+}
+
+/**
  * docs/IMPLEMENTATION.md Step 2, "The delta logic", row for row:
  *
- * | new vote with a score        | +1 | +next.score  | null → next.emotion |
- * | new vote, emotion only       | +1 |  0           | null → next.emotion |
- * | changed score 7 → 9          |  0 | +2           | unchanged           |
- * | score added to emotion-only  |  0 | +next.score  | unchanged           |
- * | score removed (score → null) |  0 | -prev.score  | unchanged           |
- * | emotion changed only         |  0 |  0           | prev → next         |
+ * | new vote with a score        | +1 | +next.score  |
+ * | new vote, feelings only      | +1 |  0           |
+ * | changed score 7 → 9          |  0 | +2           |
+ * | score added to a feeling     |  0 | +next.score  |
+ * | score removed (score → null) |  0 | -prev.score  |
+ * | feelings changed only        |  0 |  0           |
  *
- * `vote_count` counts *people*, which is why an emotion-only vote still adds
- * one and a re-vote adds none. The two extra cases the table does not name fall
- * out of the same arithmetic: emotion-only → score-only clears the emotion
- * (from = e, to = null, so only the decrement runs), and an identical re-vote
- * is all zeroes with from === to, so the emotion clause is skipped entirely.
+ * `vote_count` counts *people*, which is why a feelings-only vote still adds
+ * one (the `ratings` row exists with a NULL score for exactly that) and a
+ * re-vote adds none.
  *
- * `scoreFrom`/`scoreTo` follow the identical rule, one column to the right:
- * decrement `scoreFrom`'s bucket, increment `scoreTo`'s, skip either half that
- * is null and skip both when they are equal. An emotion-only vote moves no
- * bucket (both null); an identical re-vote moves none (from === to).
+ * `scoreFrom`/`scoreTo` follow the same rule one column to the right: decrement
+ * `scoreFrom`'s bucket, increment `scoreTo`'s, skip either half that is null and
+ * skip both when they are equal. A feelings-only vote moves no bucket (both
+ * null); an identical re-vote moves none (from === to).
  *
  * Both go through `isScore`, so a row that somehow holds an out-of-range score —
  * only a hand-edited database could — decrements nothing rather than opening a
@@ -347,8 +385,6 @@ export function aggregateDelta(prev: Vote | null, next: Vote): AggregateDelta {
   return {
     dVotes: prev ? 0 : 1,
     dScore: (nextScore ?? 0) - (prevScore ?? 0),
-    emotionFrom: prev?.emotion ?? null,
-    emotionTo: next.emotion ?? null,
     scoreFrom: isScore(prevScore) ? prevScore : null,
     scoreTo: isScore(nextScore) ? nextScore : null,
   };
@@ -364,10 +400,50 @@ export type VoteFailure =
 
 export type ValidatedVote = {
   score: number | null;
-  emotion: Emotion | null;
+  /**
+   * The person's WHOLE set of feelings for this target, or `undefined` when the
+   * body did not mention feelings at all. `[]` is a real value — "I have none
+   * any more" — and is not the same as absent. See `emotionSetDelta`.
+   */
+  emotions: Emotion[] | undefined;
   season: number | null;
   episode: number | null;
 };
+
+/**
+ * Feelings out of a request body, in both spellings the contract accepts.
+ *
+ * `emotions: string[]` is the real one: 0..12 members, every one on the
+ * allow-list, deduped (a client sending `["sad","sad"]` means one sad, and the
+ * primary key would refuse the second anyway).
+ *
+ * `emotion: string | null` is the OLD single-choice field, kept working because
+ * a build of the app that only knows it is on people's phones today. It is read
+ * as a one-member set, and `emotion: null` is read as ABSENT rather than as a
+ * clear — that build sends null to mean "I am not touching feelings", and
+ * treating it as a clear would delete a set the app never knew it had.
+ * `emotions` wins whenever both are present.
+ */
+function parseEmotions(input: {
+  emotion?: unknown;
+  emotions?: unknown;
+}): { ok: true; emotions: Emotion[] | undefined } | { ok: false } {
+  const raw = input.emotions;
+  if (raw !== undefined && raw !== null) {
+    if (!Array.isArray(raw) || raw.length > MAX_EMOTIONS) return { ok: false };
+    const out: Emotion[] = [];
+    for (const e of raw) {
+      if (!isEmotion(e)) return { ok: false };
+      if (!out.includes(e)) out.push(e);
+    }
+    return { ok: true, emotions: out };
+  }
+
+  const legacy = input.emotion ?? null;
+  if (legacy === null) return { ok: true, emotions: undefined };
+  if (!isEmotion(legacy)) return { ok: false };
+  return { ok: true, emotions: [legacy] };
+}
 
 /**
  * Everything a vote body must satisfy before a statement is prepared. Score 0
@@ -377,6 +453,7 @@ export type ValidatedVote = {
 export function validateVote(input: {
   score?: unknown;
   emotion?: unknown;
+  emotions?: unknown;
   season?: unknown;
   episode?: unknown;
 }): { ok: true; vote: ValidatedVote } | { ok: false; reason: VoteFailure } {
@@ -390,16 +467,16 @@ export function validateVote(input: {
     score = rawScore;
   }
 
-  const rawEmotion = input.emotion ?? null;
-  let emotion: Emotion | null = null;
-  if (rawEmotion !== null) {
-    if (!isEmotion(rawEmotion)) return { ok: false, reason: 'emotion_invalid' };
-    emotion = rawEmotion;
-  }
+  const feelings = parseEmotions(input);
+  if (!feelings.ok) return { ok: false, reason: 'emotion_invalid' };
+  const emotions = feelings.emotions;
 
-  // A vote that says nothing is not a vote; it is a delete, and deleting is
-  // not this endpoint's job.
-  if (score === null && emotion === null) return { ok: false, reason: 'empty_vote' };
+  // A body that mentions NOTHING is not a vote; it is a delete, and deleting is
+  // not this endpoint's job. `emotions: []` is deliberately NOT nothing — it is
+  // "clear my feelings", a real instruction with a real effect — so it passes
+  // here even with a null score. The caller is the only layer that can tell
+  // whether there is anything to clear, and rejects a clear of nothing itself.
+  if (score === null && emotions === undefined) return { ok: false, reason: 'empty_vote' };
 
   const season = numberOrNull(input.season);
   if (season === undefined) return { ok: false, reason: 'season_invalid' };
@@ -408,7 +485,7 @@ export function validateVote(input: {
   // Episode 3 of nothing in particular is not addressable.
   if (episode !== null && season === null) return { ok: false, reason: 'episode_without_season' };
 
-  return { ok: true, vote: { score, emotion, season, episode } };
+  return { ok: true, vote: { score, emotions, season, episode } };
 }
 
 /**

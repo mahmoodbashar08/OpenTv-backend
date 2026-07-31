@@ -56,10 +56,26 @@ function rating(
 ) {
   raw
     .prepare(
-      `INSERT INTO ratings (id, author_id, target_source, target_key, score, emotion, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
+      `INSERT INTO ratings (id, author_id, target_source, target_key, score, created_at)
+       VALUES (?, ?, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
     )
-    .run(id, author, source, key, score, emotion);
+    .run(id, author, source, key, score);
+  // A feeling is a row in its own table since 0005, never a column on the vote —
+  // `ratings.emotion` is stranded NULL and nothing reads it any more. The helper
+  // keeps the old call shape so these cases still read as "this person voted
+  // this, feeling that".
+  if (emotion !== null) feeling(author, key, emotion, source);
+}
+
+/** One selection. Several calls for one person on one target is the point of 0005. */
+function feeling(author: string, key: string, emotion: string, source = 'tvdb') {
+  raw
+    .prepare(
+      `INSERT INTO emotion_votes
+         (author_id, target_source, target_key, season, episode, emotion, created_at)
+       VALUES (?, ?, ?, -1, -1, ?, '2026-07-01T00:00:00.000Z')`,
+    )
+    .run(author, source, key, emotion);
 }
 
 function aggregate(
@@ -416,7 +432,16 @@ describe('migrateTitleThreads', () => {
     const res = await migrateTitleThreads(db, [
       { old_key: 'amado|2011', new_source: 'tvdb', new_key: '428391' },
     ]);
-    expect(res).toEqual({ comments: 2, ratings: 1, aggregates: 1 });
+    // p1's feeling moves with their rating: one row re-keyed, one merged blob.
+    expect(res).toEqual({ comments: 2, ratings: 1, emotions: 1, aggregates: 1 });
+    expect(
+      raw
+        .prepare(
+          `SELECT COUNT(*) AS n FROM emotion_votes
+            WHERE target_source = 'tvdb' AND target_key = '428391'`,
+        )
+        .get(),
+    ).toEqual({ n: 2 });
 
     expect(
       raw
@@ -493,6 +518,7 @@ describe('migrateTitleThreads', () => {
     expect(await migrateTitleThreads(db, [])).toEqual({
       comments: 0,
       ratings: 0,
+      emotions: 0,
       aggregates: 0,
     });
     expect(raw.prepare(`SELECT target_source FROM comments WHERE id = 'c1'`).get()).toEqual({

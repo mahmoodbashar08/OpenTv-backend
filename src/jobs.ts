@@ -75,10 +75,18 @@ export async function reconcileLikeCounts(db: D1Database): Promise<ReconcileResu
  *
  * One pass sets `vote_count`, `score_sum`, `emotion_counts` and `score_counts`
  * together, so a row that is wrong in two ways still counts as one corrected
- * row. `emotion_counts` is rebuilt with `json_group_object(emotion, n)` over a
- * `GROUP BY emotion` sub-select that skips NULL emotions — an empty set yields
- * `'{}'`, which is exactly what the write path stores for a vote with no
- * emotion, so a clean row never looks drifted.
+ * row.
+ *
+ * `emotion_counts` is rebuilt from `emotion_votes` — one row per person per
+ * FEELING since 0005 — with `json_group_object(emotion, n)` over a `GROUP BY
+ * emotion`. It therefore counts SELECTIONS while `vote_count` next to it counts
+ * PEOPLE, and the two are not expected to agree: somebody who tapped three
+ * feelings is one person and three selections. An empty set yields `'{}'`,
+ * exactly what the write path stores, so a clean row never looks drifted.
+ * `ratings.emotion` is not read here at all; 0005 emptied it.
+ *
+ * No COALESCE on `emotion_votes.season`/`episode`: that table is keyed like this
+ * one, with the -1 sentinel rather than NULLs.
  *
  * `score_counts` is rebuilt identically, `GROUP BY score` skipping NULL scores,
  * with a `CAST(score AS TEXT)` because `json_group_object` will not take an
@@ -105,11 +113,19 @@ export async function reconcileRatingAggregates(db: D1Database): Promise<Reconci
 
   const ghosts = await db
     .prepare(
+      // Both underlying tables have to be empty, not just `ratings`. A row with
+      // feelings on it is not a ghost even if every score has been cascaded
+      // away, and deleting it would throw away percentages that are still
+      // being rendered.
       `DELETE FROM rating_aggregates AS a
         WHERE NOT EXISTS (
           SELECT 1 FROM ratings r
            WHERE r.target_source = a.target_source AND r.target_key = a.target_key
-             AND COALESCE(r.season, -1) = a.season AND COALESCE(r.episode, -1) = a.episode)`,
+             AND COALESCE(r.season, -1) = a.season AND COALESCE(r.episode, -1) = a.episode)
+          AND NOT EXISTS (
+          SELECT 1 FROM emotion_votes ev
+           WHERE ev.target_source = a.target_source AND ev.target_key = a.target_key
+             AND ev.season = a.season AND ev.episode = a.episode)`,
     )
     .run();
   corrected += ghosts.meta.changes ?? 0;
@@ -128,13 +144,12 @@ export async function reconcileRatingAggregates(db: D1Database): Promise<Reconci
                             AND COALESCE(r.season, -1) = a.season
                             AND COALESCE(r.episode, -1) = a.episode),
            emotion_counts = (SELECT json_group_object(emotion, n) FROM (
-                              SELECT r.emotion AS emotion, COUNT(*) AS n FROM ratings r
-                               WHERE r.target_source = a.target_source
-                                 AND r.target_key = a.target_key
-                                 AND COALESCE(r.season, -1) = a.season
-                                 AND COALESCE(r.episode, -1) = a.episode
-                                 AND r.emotion IS NOT NULL
-                               GROUP BY r.emotion)),
+                              SELECT ev.emotion AS emotion, COUNT(*) AS n FROM emotion_votes ev
+                               WHERE ev.target_source = a.target_source
+                                 AND ev.target_key = a.target_key
+                                 AND ev.season = a.season
+                                 AND ev.episode = a.episode
+                               GROUP BY ev.emotion)),
            score_counts = (SELECT json_group_object(score, n) FROM (
                               SELECT CAST(r.score AS TEXT) AS score, COUNT(*) AS n FROM ratings r
                                WHERE r.target_source = a.target_source
@@ -173,11 +188,10 @@ const DRIFTED = `
                     WHERE r.target_source = x.target_source AND r.target_key = x.target_key
                       AND COALESCE(r.season, -1) = x.season AND COALESCE(r.episode, -1) = x.episode)
   OR x.emotion_counts IS NOT (SELECT json_group_object(emotion, n) FROM (
-                    SELECT r.emotion AS emotion, COUNT(*) AS n FROM ratings r
-                     WHERE r.target_source = x.target_source AND r.target_key = x.target_key
-                       AND COALESCE(r.season, -1) = x.season AND COALESCE(r.episode, -1) = x.episode
-                       AND r.emotion IS NOT NULL
-                     GROUP BY r.emotion))
+                    SELECT ev.emotion AS emotion, COUNT(*) AS n FROM emotion_votes ev
+                     WHERE ev.target_source = x.target_source AND ev.target_key = x.target_key
+                       AND ev.season = x.season AND ev.episode = x.episode
+                     GROUP BY ev.emotion))
   OR x.score_counts IS NOT (SELECT json_group_object(score, n) FROM (
                     SELECT CAST(r.score AS TEXT) AS score, COUNT(*) AS n FROM ratings r
                      WHERE r.target_source = x.target_source AND r.target_key = x.target_key
@@ -287,7 +301,10 @@ export type PurgeResult = { purged: number; skipped: string[] };
 /**
  * Soft-deleted accounts stop existing at 30 days. The cascades take
  * `identities`, `follows`, `blocks`, `comments`, `comment_likes`, `ratings`,
- * `lists`, `list_items`, `notifications` and the reports they filed; at 30 days
+ * `emotion_votes`, `lists`, `list_items`, `notifications` and the reports they
+ * filed — every one of them by an `ON DELETE CASCADE` on `profiles (id)`, which
+ * is why a new table that holds anything a person said needs that clause and
+ * nothing here; at 30 days
  * the moderation queue is long since resolved, which is what makes the report
  * cascade acceptable here and not at deletion time.
  *
@@ -333,7 +350,12 @@ export async function purgeSoftDeleted(db: D1Database, _env: Env): Promise<Purge
 // ── 5c · title → tvdb thread migration ───────────────────────────────────────
 
 export type ThreadMapping = { old_key: string; new_source: string; new_key: string };
-export type MigrateResult = { comments: number; ratings: number; aggregates: number };
+export type MigrateResult = {
+  comments: number;
+  ratings: number;
+  emotions: number;
+  aggregates: number;
+};
 
 /** The countable half of a `rating_aggregates` row — everything a merge has to add up. */
 type AggregateBlobs = {
@@ -348,10 +370,10 @@ type AggregateBlobs = {
  * key while new clients address it by `tvdb`, splitting the conversation. Three
  * UPDATEs put them back together.
  *
- * `comments` and `ratings` are straight re-keys. `rating_aggregates` is a
- * MERGE, not a rename, whenever the destination key already has a row: counts
- * and sums add, `emotion_counts` merges through `mergeEmotionCounts`, and the
- * source row is then deleted.
+ * `comments`, `ratings` and `emotion_votes` are straight re-keys.
+ * `rating_aggregates` is a MERGE, not a rename, whenever the destination key
+ * already has a row: counts and sums add, `emotion_counts` merges through
+ * `mergeEmotionCounts`, and the source row is then deleted.
  *
  * Ratings re-key with `UPDATE OR IGNORE`: one person can hold a vote on both
  * keys, and `idx_one_vote_per_person` would abort the whole migration for that
@@ -359,6 +381,15 @@ type AggregateBlobs = {
  * wins; the stranded `title` vote is left in place rather than silently
  * deleted, because deleting someone's rating to tidy an index is not this job's
  * call.
+ *
+ * `emotion_votes` moves the same way and needs `OR IGNORE` for the same reason,
+ * one cardinality up: a person who felt SHOCKED on both keys collides on the
+ * primary key, and a set that already holds the feeling has nothing to learn
+ * from the duplicate. The merged blob then reads one selection high for that
+ * collision — the summed counts still include the row that stayed behind — and
+ * that is left to `reconcileRatingAggregates`, which runs from the same cron and
+ * recounts from the rows that actually exist. Exactly the accepted position
+ * `vote_count` is already in for a stranded duplicate rating.
  *
  * **The mapping source is deferred**, not forgotten: nothing on the server
  * knows that `amado|2011` is now TheTVDB 428391, and both candidates (the app
@@ -371,7 +402,7 @@ export async function migrateTitleThreads(
   db: D1Database,
   mapping: readonly ThreadMapping[],
 ): Promise<MigrateResult> {
-  const out: MigrateResult = { comments: 0, ratings: 0, aggregates: 0 };
+  const out: MigrateResult = { comments: 0, ratings: 0, emotions: 0, aggregates: 0 };
 
   for (const m of mapping) {
     const c = await db
@@ -391,6 +422,15 @@ export async function migrateTitleThreads(
       .bind(m.new_source, m.new_key, m.old_key)
       .run();
     out.ratings += r.meta.changes ?? 0;
+
+    const ev = await db
+      .prepare(
+        `UPDATE OR IGNORE emotion_votes SET target_source = ?, target_key = ?
+          WHERE target_source = 'title' AND target_key = ?`,
+      )
+      .bind(m.new_source, m.new_key, m.old_key)
+      .run();
+    out.emotions += ev.meta.changes ?? 0;
 
     const sources = await db
       .prepare(

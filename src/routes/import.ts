@@ -181,6 +181,14 @@ seeding.post('/comments/import', requireAuth, async (c) => {
 // An import never overwrites a live vote. Someone who rated an episode 9 in the
 // app this morning and then seeds a 6 from a 2019 archive keeps the 9 — the
 // newer, deliberate act wins over the older, bulk one.
+//
+// FEELINGS ARE A SET here too (migrations/0005_emotion_votes.sql), and an
+// archive is where the multi-selections actually are: TV Time let people tap
+// several on one episode and every one of them is in the export. An item's
+// `emotions` array seeds one `emotion_votes` row each, guarded individually —
+// see the batch below. Unlike the live route, an import never REPLACES a set:
+// bulk history may only add feelings a person does not already hold, for the
+// same reason it may not overwrite a score.
 
 type PreparedVote = {
   id: string;
@@ -189,7 +197,7 @@ type PreparedVote = {
   season: number | null;
   episode: number | null;
   score: number | null;
-  emotion: string | null;
+  emotions: string[];
   createdAt: string;
 };
 
@@ -255,7 +263,11 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
       season: v.season,
       episode: v.episode,
       score: v.score,
-      emotion: v.emotion,
+      // `undefined` (the item mentioned no feelings) and `[]` mean the same
+      // thing to an importer: there is nothing to add. The absent/empty
+      // distinction only matters where a set can be REPLACED, and this endpoint
+      // never replaces one.
+      emotions: v.emotions ?? [],
       createdAt,
     });
   }
@@ -263,6 +275,11 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
   let imported = 0;
   for (let i = 0; i < prepared.length; i += BATCH_CHUNK) {
     const statements: D1PreparedStatement[] = [];
+    // Which statements in the batch are the vote insert whose `changes` counts
+    // as "imported". An item no longer contributes a fixed number of statements
+    // — it contributes two per feeling as well — so the old every-second-result
+    // rule cannot survive, and the positions are recorded as they are built.
+    const voteInsertAt: number[] = [];
     const chunk = prepared.slice(i, i + BATCH_CHUNK);
 
     for (const p of chunk) {
@@ -298,13 +315,6 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
                vote_count = rating_aggregates.vote_count + 1,
                score_sum  = rating_aggregates.score_sum + excluded.score_sum,
                ${
-                 p.emotion === null
-                   ? ''
-                   : `emotion_counts = json_set(
-                        COALESCE(rating_aggregates.emotion_counts, '{}'), '$.' || ?,
-                        COALESCE(json_extract(rating_aggregates.emotion_counts, '$.' || ?), 0) + 1),`
-               }
-               ${
                  // The distribution, seeded by the same statement that seeds the
                  // sum. Without this half, importing an archive would fill
                  // `score_counts` for nobody: every star bar would read 0% while
@@ -326,7 +336,10 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
             s,
             e,
             p.score ?? 0,
-            p.emotion === null ? '{}' : JSON.stringify({ [p.emotion]: 1 }),
+            // The feelings no longer ride along in this statement: one archive
+            // item can carry several, and a single `json_set` pair can seed one.
+            // They get a guarded statement each, below.
+            '{}',
             p.score === null ? '{}' : JSON.stringify({ [p.score]: 1 }),
             nowIso,
             me,
@@ -334,7 +347,6 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
             p.key,
             s,
             e,
-            ...(p.emotion === null ? [] : [p.emotion, p.emotion]),
             // As a STRING, for the reason spelled out in routes/ratings.ts: a
             // number bound into `'$."' || ? || '"'` can arrive as a float and
             // open a `$."10.0"` bucket nothing will ever read.
@@ -342,23 +354,81 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
           ),
       );
 
+      // ONE PAIR PER FEELING, on the same rollup-first principle: each rollup is
+      // guarded by `WHERE NOT EXISTS (that exact emotion_votes row)`, so a
+      // re-import — or the same feeling twice inside one payload — adds nothing,
+      // and the `INSERT OR IGNORE` that follows it makes the guard true for
+      // every later attempt.
+      //
+      // `vote_count` is 0 in the INSERT half: this statement seeds a SELECTION,
+      // never a person. The person is counted once, by the statement above, out
+      // of their `ratings` row.
+      for (const emotion of p.emotions) {
+        statements.push(
+          db
+            .prepare(
+              `INSERT INTO rating_aggregates
+                 (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts,
+                  score_counts, updated_at)
+               SELECT ?, ?, ?, ?, 0, 0, ?, '{}', ?
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM emotion_votes ev
+                   WHERE ev.author_id = ? AND ev.target_source = ? AND ev.target_key = ?
+                     AND ev.season = ? AND ev.episode = ? AND ev.emotion = ?)
+               ON CONFLICT (target_source, target_key, season, episode) DO UPDATE SET
+                 emotion_counts = json_set(
+                   COALESCE(rating_aggregates.emotion_counts, '{}'), '$."' || ? || '"',
+                   COALESCE(json_extract(rating_aggregates.emotion_counts, '$."' || ? || '"'), 0) + 1),
+                 updated_at = excluded.updated_at`,
+            )
+            .bind(
+              p.source,
+              p.key,
+              s,
+              e,
+              JSON.stringify({ [emotion]: 1 }),
+              nowIso,
+              me,
+              p.source,
+              p.key,
+              s,
+              e,
+              emotion,
+              emotion,
+              emotion,
+            ),
+        );
+
+        statements.push(
+          db
+            .prepare(
+              `INSERT OR IGNORE INTO emotion_votes
+                 (author_id, target_source, target_key, season, episode, emotion, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .bind(me, p.source, p.key, s, e, emotion, p.createdAt),
+        );
+      }
+
+      voteInsertAt.push(statements.length);
       statements.push(
         db
           .prepare(
+            // `emotion` is not written: the column is stranded NULL by 0005.
             `INSERT INTO ratings
-               (id, author_id, target_source, target_key, season, episode, score, emotion, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (id, author_id, target_source, target_key, season, episode, score, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (author_id, target_source, target_key,
                           COALESCE(season, -1), COALESCE(episode, -1)) DO NOTHING`,
           )
-          .bind(p.id, me, p.source, p.key, p.season, p.episode, p.score, p.emotion, p.createdAt),
+          .bind(p.id, me, p.source, p.key, p.season, p.episode, p.score, p.createdAt),
       );
     }
 
     const results = await db.batch(statements);
-    // Every second result is an insert; the odd ones are the rollup and their
-    // `changes` must not be counted as an imported vote.
-    for (let n = 1; n < results.length; n += 2) imported += results[n]?.meta?.changes ?? 0;
+    // Only the vote inserts count. A feeling seeded onto a vote that already
+    // existed is not an imported item, and the rollups are not items at all.
+    for (const n of voteInsertAt) imported += results[n]?.meta?.changes ?? 0;
   }
 
   return c.json({ imported, skipped: items.length - imported });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '@/env';
 import {
   aggregateDelta,
+  emotionSetDelta,
   EMOTIONS,
   MAX_TARGETS,
   parseTargets,
@@ -19,81 +20,58 @@ import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness
  */
 
 describe('aggregateDelta — the six rows of the table', () => {
-  it('new vote with a score: +1 vote, +score, no emotion to move', () => {
-    expect(aggregateDelta(null, { score: 9, emotion: null })).toEqual({
+  it('new vote with a score: +1 vote, +score', () => {
+    expect(aggregateDelta(null, { score: 9 })).toEqual({
       dVotes: 1,
       dScore: 9,
-      emotionFrom: null,
-      emotionTo: null,
       scoreFrom: null,
       scoreTo: 9,
     });
   });
 
-  it('new vote with a score and an emotion', () => {
-    expect(aggregateDelta(null, { score: 9, emotion: 'touched' })).toEqual({
-      dVotes: 1,
-      dScore: 9,
-      emotionFrom: null,
-      emotionTo: 'touched',
-      scoreFrom: null,
-      scoreTo: 9,
-    });
-  });
-
-  it('new vote, emotion only: still counts as a person', () => {
-    expect(aggregateDelta(null, { score: null, emotion: 'touched' })).toEqual({
+  it('new vote, feelings only: still counts as a person', () => {
+    // The `ratings` row with a NULL score exists for exactly this: the person
+    // is counted once in `vote_count`, and their feelings are counted in
+    // `emotion_counts` by `emotionSetDelta`, not here.
+    expect(aggregateDelta(null, { score: null })).toEqual({
       dVotes: 1,
       dScore: 0,
-      emotionFrom: null,
-      emotionTo: 'touched',
       scoreFrom: null,
       scoreTo: null,
     });
   });
 
   it('changed score 7 → 9: no new person, +2', () => {
-    const d = aggregateDelta({ score: 7, emotion: 'touched' }, { score: 9, emotion: 'touched' });
-    expect(d).toEqual({
+    expect(aggregateDelta({ score: 7 }, { score: 9 })).toEqual({
       dVotes: 0,
       dScore: 2,
-      emotionFrom: 'touched',
-      emotionTo: 'touched',
       scoreFrom: 7,
       scoreTo: 9,
     });
-    // from === to, so the caller skips the emotion clause entirely.
-    expect(d.emotionFrom).toBe(d.emotionTo);
   });
 
-  it('score added to an emotion-only vote', () => {
-    expect(aggregateDelta({ score: null, emotion: 'sad' }, { score: 8, emotion: 'sad' })).toEqual({
+  it('score added to a feelings-only vote', () => {
+    expect(aggregateDelta({ score: null }, { score: 8 })).toEqual({
       dVotes: 0,
       dScore: 8,
-      emotionFrom: 'sad',
-      emotionTo: 'sad',
       scoreFrom: null,
       scoreTo: 8,
     });
   });
 
   it('score removed: -prev.score, person stays counted', () => {
-    expect(aggregateDelta({ score: 8, emotion: 'sad' }, { score: null, emotion: 'sad' })).toEqual({
+    expect(aggregateDelta({ score: 8 }, { score: null })).toEqual({
       dVotes: 0,
       dScore: -8,
-      emotionFrom: 'sad',
-      emotionTo: 'sad',
       scoreFrom: 8,
       scoreTo: null,
     });
   });
 
-  it('emotion changed only', () => {
-    expect(aggregateDelta({ score: 9, emotion: 'touched' }, { score: 9, emotion: 'frustrated' })).toEqual({
+  it('feelings changed only: the score half moves nothing', () => {
+    expect(aggregateDelta({ score: 9 }, { score: 9 })).toEqual({
       dVotes: 0,
       dScore: 0,
-      emotionFrom: 'touched',
-      emotionTo: 'frustrated',
       scoreFrom: 9,
       scoreTo: 9,
     });
@@ -101,47 +79,84 @@ describe('aggregateDelta — the six rows of the table', () => {
 });
 
 describe('aggregateDelta — the cases the table leaves implicit', () => {
-  it('emotion-only → score-only clears the emotion (decrement, no increment)', () => {
-    const d = aggregateDelta({ score: null, emotion: 'touched' }, { score: 7, emotion: null });
-    expect(d).toEqual({
-      dVotes: 0,
-      dScore: 7,
-      emotionFrom: 'touched',
-      emotionTo: null,
-      scoreFrom: null,
-      scoreTo: 7,
-    });
-    expect(d.emotionFrom).not.toBe(d.emotionTo); // the clause runs, half of it
-  });
-
   it('an identical re-vote moves nothing at all', () => {
-    const d = aggregateDelta({ score: 7, emotion: 'amused' }, { score: 7, emotion: 'amused' });
-    expect(d).toEqual({
-      dVotes: 0,
-      dScore: 0,
-      emotionFrom: 'amused',
-      emotionTo: 'amused',
-      scoreFrom: 7,
-      scoreTo: 7,
-    });
-    // from === to on BOTH blobs, so neither json_set clause is emitted at all.
+    const d = aggregateDelta({ score: 7 }, { score: 7 });
+    expect(d).toEqual({ dVotes: 0, dScore: 0, scoreFrom: 7, scoreTo: 7 });
+    // from === to, so no json_set clause is emitted at all.
     expect(d.scoreFrom).toBe(d.scoreTo);
   });
 });
 
+// ── the set, in the pure layer ───────────────────────────────────────────────
+//
+// migrations/0005_emotion_votes.sql. The bug this replaced: the server kept the
+// lowest-indexed selection and dropped the rest, so SHOCKED + THRILLED was
+// stored, aggregated and returned as SHOCKED alone.
+
+describe('emotionSetDelta', () => {
+  it('a first set is all additions', () => {
+    expect(emotionSetDelta([], ['shocked', 'thrilled'])).toEqual({
+      added: ['shocked', 'thrilled'],
+      removed: [],
+    });
+  });
+
+  it('adding one to an existing set moves only that one', () => {
+    expect(emotionSetDelta(['shocked'], ['shocked', 'thrilled'])).toEqual({
+      added: ['thrilled'],
+      removed: [],
+    });
+  });
+
+  it('an empty array clears the whole set', () => {
+    expect(emotionSetDelta(['shocked', 'thrilled'], [])).toEqual({
+      added: [],
+      removed: ['shocked', 'thrilled'],
+    });
+  });
+
+  it('an absent field leaves the set exactly where it is', () => {
+    // Not the same request as `[]`. A client changing only a score must not be
+    // able to wipe the feelings it never sent.
+    expect(emotionSetDelta(['shocked'], undefined)).toEqual({ added: [], removed: [] });
+  });
+
+  it('re-sending the same set is a no-op, order and all', () => {
+    expect(emotionSetDelta(['shocked', 'thrilled'], ['thrilled', 'shocked'])).toEqual({
+      added: [],
+      removed: [],
+    });
+  });
+
+  it('swapping one feeling for another decrements and increments once each', () => {
+    expect(emotionSetDelta(['sad'], ['amused'])).toEqual({ added: ['amused'], removed: ['sad'] });
+  });
+});
+
 describe('validateVote', () => {
-  it('accepts a score with an emotion', () => {
-    const r = validateVote({ score: 9, emotion: 'touched', season: 1, episode: 3 });
-    expect(r).toEqual({ ok: true, vote: { score: 9, emotion: 'touched', season: 1, episode: 3 } });
+  it('accepts a score with a set of feelings', () => {
+    const r = validateVote({ score: 9, emotions: ['touched', 'sad'], season: 1, episode: 3 });
+    expect(r).toEqual({
+      ok: true,
+      vote: { score: 9, emotions: ['touched', 'sad'], season: 1, episode: 3 },
+    });
   });
 
   it('accepts a show-level vote with no season or episode', () => {
     const r = validateVote({ score: 10 });
-    expect(r.ok && r.vote).toEqual({ score: 10, emotion: null, season: null, episode: null });
+    expect(r.ok && r.vote).toEqual({
+      score: 10,
+      emotions: undefined,
+      season: null,
+      episode: null,
+    });
   });
 
   it('rejects score 0 and score 11 before any SQL is prepared', () => {
-    expect(validateVote({ score: 0, emotion: 'touched' })).toEqual({ ok: false, reason: 'score_invalid' });
+    expect(validateVote({ score: 0, emotions: ['touched'] })).toEqual({
+      ok: false,
+      reason: 'score_invalid',
+    });
     expect(validateVote({ score: 11 })).toEqual({ ok: false, reason: 'score_invalid' });
   });
 
@@ -151,17 +166,75 @@ describe('validateVote', () => {
   });
 
   it('rejects an emotion outside the allow-list — it becomes a JSON path', () => {
-    expect(validateVote({ emotion: 'shock' })).toEqual({ ok: false, reason: 'emotion_invalid' });
-    expect(validateVote({ emotion: "love'] , '$.x" })).toEqual({ ok: false, reason: 'emotion_invalid' });
+    expect(validateVote({ emotions: ['shock'] })).toEqual({ ok: false, reason: 'emotion_invalid' });
+    expect(validateVote({ emotions: ["love\"] , '$.x"] })).toEqual({
+      ok: false,
+      reason: 'emotion_invalid',
+    });
+    // One bad member poisons the whole set: a partially-applied selection would
+    // be a silent discard, which is the bug this design exists to end.
+    expect(validateVote({ emotions: ['sad', 'nope'] })).toEqual({
+      ok: false,
+      reason: 'emotion_invalid',
+    });
+  });
+
+  it('rejects an emotions field that is not an array of strings', () => {
+    expect(validateVote({ emotions: 'sad' })).toEqual({ ok: false, reason: 'emotion_invalid' });
+    expect(validateVote({ emotions: [1, 2] })).toEqual({ ok: false, reason: 'emotion_invalid' });
+    expect(validateVote({ emotions: [['sad']] })).toEqual({ ok: false, reason: 'emotion_invalid' });
+  });
+
+  it('accepts the whole list at once and refuses more members than there are feelings', () => {
+    expect(validateVote({ emotions: [...EMOTIONS] }).ok).toBe(true);
+    expect(validateVote({ emotions: [...EMOTIONS, 'sad'] })).toEqual({
+      ok: false,
+      reason: 'emotion_invalid',
+    });
+  });
+
+  it('dedupes: two sads are one sad', () => {
+    const r = validateVote({ emotions: ['sad', 'sad', 'amused'] });
+    expect(r.ok && r.vote.emotions).toEqual(['sad', 'amused']);
   });
 
   it('accepts every emotion on the list', () => {
-    for (const e of EMOTIONS) expect(validateVote({ emotion: e }).ok).toBe(true);
+    for (const e of EMOTIONS) expect(validateVote({ emotions: [e] }).ok).toBe(true);
+  });
+
+  it('still accepts the old single `emotion` field, as a one-member set', () => {
+    const r = validateVote({ emotion: 'touched' });
+    expect(r.ok && r.vote.emotions).toEqual(['touched']);
+    expect(validateVote({ emotion: 'shock' })).toEqual({ ok: false, reason: 'emotion_invalid' });
+  });
+
+  it('lets `emotions` win when a client sends both', () => {
+    const r = validateVote({ emotion: 'sad', emotions: ['amused', 'tense'] });
+    expect(r.ok && r.vote.emotions).toEqual(['amused', 'tense']);
+  });
+
+  it('reads the old `emotion: null` as ABSENT, never as a clear', () => {
+    // The build on people's phones sends it to mean "not touching feelings".
+    expect(validateVote({ score: 7, emotion: null }).ok && true).toBe(true);
+    const r = validateVote({ score: 7, emotion: null });
+    expect(r.ok && r.vote.emotions).toBeUndefined();
   });
 
   it('rejects a vote that says nothing', () => {
     expect(validateVote({})).toEqual({ ok: false, reason: 'empty_vote' });
-    expect(validateVote({ score: null, emotion: null })).toEqual({ ok: false, reason: 'empty_vote' });
+    expect(validateVote({ score: null, emotion: null })).toEqual({
+      ok: false,
+      reason: 'empty_vote',
+    });
+  });
+
+  it('accepts a bare clear — an empty array is an instruction, not silence', () => {
+    // Whether there is anything to clear is a question only a read can answer,
+    // so the route makes that call; the pure layer lets it through.
+    expect(validateVote({ score: null, emotions: [] })).toEqual({
+      ok: true,
+      vote: { score: null, emotions: [], season: null, episode: null },
+    });
   });
 
   it('rejects negative or fractional season and episode', () => {
@@ -255,40 +328,34 @@ describe('parseTargets', () => {
 
 describe('aggregateDelta — the score bucket', () => {
   it('a new scored vote opens a bucket and decrements none', () => {
-    const d = aggregateDelta(null, { score: 10, emotion: null });
+    const d = aggregateDelta(null, { score: 10 });
     expect(d.scoreFrom).toBeNull();
     expect(d.scoreTo).toBe(10);
   });
 
   it('a changed score moves the bucket, 10 → 8', () => {
-    const d = aggregateDelta({ score: 10, emotion: null }, { score: 8, emotion: null });
+    const d = aggregateDelta({ score: 10 }, { score: 8 });
     expect(d.scoreFrom).toBe(10);
     expect(d.scoreTo).toBe(8);
   });
 
   it('a removed score decrements and opens nothing', () => {
-    const d = aggregateDelta({ score: 6, emotion: 'sad' }, { score: null, emotion: 'sad' });
+    const d = aggregateDelta({ score: 6 }, { score: null });
     expect(d.scoreFrom).toBe(6);
     expect(d.scoreTo).toBeNull();
   });
 
-  it('an emotion-only vote moves no bucket at all', () => {
-    const d = aggregateDelta(null, { score: null, emotion: 'thrilled' });
+  it('a feelings-only vote moves no bucket at all', () => {
+    const d = aggregateDelta(null, { score: null });
     expect(d.scoreFrom).toBeNull();
     expect(d.scoreTo).toBeNull();
     expect(d.scoreFrom).toBe(d.scoreTo); // the caller skips the clause entirely
   });
 
-  it('an emotion change over a steady score moves no bucket', () => {
-    const d = aggregateDelta({ score: 4, emotion: 'bored' }, { score: 4, emotion: 'tense' });
-    expect(d.scoreFrom).toBe(d.scoreTo);
-    expect(d.scoreTo).toBe(4);
-  });
-
   it('an out-of-range stored score decrements nothing rather than inventing a bucket', () => {
     // Only a hand-edited row could hold this; the CHECK on `ratings.score`
     // forbids it. `dScore` is left honest so the nightly recount still sees it.
-    const d = aggregateDelta({ score: 42, emotion: null }, { score: 8, emotion: null });
+    const d = aggregateDelta({ score: 42 }, { score: 8 });
     expect(d.scoreFrom).toBeNull();
     expect(d.scoreTo).toBe(8);
     expect(d.dScore).toBe(-34);
@@ -298,7 +365,7 @@ describe('aggregateDelta — the score bucket', () => {
     // 1..10, deliberately. The app maps five stars onto 2/4/6/8/10 today; a
     // half-star build must not need a migration.
     for (let n = SCORE_MIN; n <= SCORE_MAX; n++) {
-      expect(aggregateDelta(null, { score: n, emotion: null }).scoreTo).toBe(n);
+      expect(aggregateDelta(null, { score: n }).scoreTo).toBe(n);
     }
   });
 });

@@ -225,7 +225,12 @@ describe('POST /v1/ratings/import', () => {
     expect(aggregate()).toEqual({
       vote_count: 1,
       score_sum: 9,
-      emotion_counts: '{"shocked":1}',
+      // The SCORE is not overwritten — the live 9 stands, the archive's 4 is
+      // dropped, and the item is `skipped`. The FEELING is a different question:
+      // feelings are a set (0005), and adding one the person does not hold
+      // overwrites nothing. The archive says they were bored in 2019 and they
+      // said shocked today; both are true, both count, and each is one selection.
+      emotion_counts: '{"shocked":1,"bored":1}',
       score_counts: '{"9":1}',
     });
   });
