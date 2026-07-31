@@ -30,6 +30,17 @@ export type Env = {
    * a request that had nothing to do with images.
    */
   COMMENT_IMAGES?: R2Bucket;
+
+  /**
+   * The test sign-in's key, and the switch that decides whether it exists.
+   *
+   * ABSENT IN PRODUCTION — that is the whole design. `POST /v1/auth/dev`
+   * answers 404 unless this is set, so a deployment that never sets it does not
+   * have the route at all. Set it with `wrangler secret put DEV_AUTH_SECRET`
+   * for a multi-account test and DELETE it afterwards: while it exists, anyone
+   * holding it can mint a session for a test account here.
+   */
+  DEV_AUTH_SECRET?: string;
 };
 
 /** What `requireAuth` puts on the context. */

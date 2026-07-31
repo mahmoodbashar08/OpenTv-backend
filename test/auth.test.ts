@@ -9,6 +9,7 @@ import {
 } from '@/pure';
 import { sign, verify } from '@/session';
 import type { Env } from '@/env';
+import { call, freshDatabase, makeEnv } from './harness';
 
 /**
  * The decisions in Step 1 that can be quietly wrong. The crypto around them
@@ -196,5 +197,81 @@ describe('session sign / verify', () => {
   it('rejects garbage', async () => {
     expect(await verify(env, 'not-a-token', NOW)).toBeNull();
     expect(await verify(env, '', NOW)).toBeNull();
+  });
+});
+
+/**
+ * The development sign-in, and the guard that keeps it out of production.
+ *
+ * `POST /v1/auth/dev` mints a session with no Apple or Google account behind
+ * it. That is an authentication bypass, so what matters is not that it works
+ * but that it CANNOT work anywhere the secret is absent — and that the accounts
+ * it makes stay in a namespace that can be deleted wholesale without touching a
+ * real one. Every assertion below is one of those two things.
+ */
+describe('POST /v1/auth/dev', () => {
+  const withSecret = (db: D1Database) => ({ ...makeEnv(db), DEV_AUTH_SECRET: 'test-dev-secret' });
+
+  it('DOES NOT EXIST without the secret — 404, not 403', async () => {
+    // 403 would confirm to a stranger that the endpoint is there and locked.
+    const fresh = freshDatabase();
+    const res = await call(makeEnv(fresh.db), 'POST', '/v1/auth/dev', { body: { name: 'amanda' } });
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses a wrong secret', async () => {
+    const fresh = freshDatabase();
+    const res = await call(withSecret(fresh.db), 'POST', '/v1/auth/dev', {
+      body: { name: 'amanda' },
+      headers: { 'X-Dev-Secret': 'not-it' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('signs in a test account and returns an ordinary session', async () => {
+    const fresh = freshDatabase();
+    const res = await call(withSecret(fresh.db), 'POST', '/v1/auth/dev', {
+      body: { name: 'amanda' },
+      headers: { 'X-Dev-Secret': 'test-dev-secret' },
+    });
+    expect(res.status).toBe(200);
+    expect(typeof res.json.token).toBe('string');
+    expect(res.json.needs_handle).toBe(true);
+  });
+
+  it('keeps every account it makes in the dev namespace, so they can be purged together', async () => {
+    const fresh = freshDatabase();
+    await call(withSecret(fresh.db), 'POST', '/v1/auth/dev', {
+      body: { name: 'amanda' },
+      headers: { 'X-Dev-Secret': 'test-dev-secret' },
+    });
+    const row = fresh.raw.prepare('SELECT provider, external_id FROM identities').get() as {
+      provider: string;
+      external_id: string;
+    };
+    // DELETE FROM identities WHERE provider = 'dev' must be enough, and must
+    // never be able to catch a real Apple or Google identity.
+    expect(row).toEqual({ provider: 'dev', external_id: 'dev_amanda' });
+  });
+
+  it('returns the SAME account for the same name, and a different one otherwise', async () => {
+    const fresh = freshDatabase();
+    const env2 = withSecret(fresh.db);
+    const h = { 'X-Dev-Secret': 'test-dev-secret' };
+    const a1 = await call(env2, 'POST', '/v1/auth/dev', { body: { name: 'amanda' }, headers: h });
+    const a2 = await call(env2, 'POST', '/v1/auth/dev', { body: { name: 'amanda' }, headers: h });
+    const b = await call(env2, 'POST', '/v1/auth/dev', { body: { name: 'twitterfriend' }, headers: h });
+
+    expect(a2.json.profile.id).toBe(a1.json.profile.id);
+    expect(b.json.profile.id).not.toBe(a1.json.profile.id);
+  });
+
+  it('refuses a name that could steer the identity somewhere else', async () => {
+    const fresh = freshDatabase();
+    const h = { 'X-Dev-Secret': 'test-dev-secret' };
+    for (const name of ['', 'a', 'has space', '../../etc', 'x'.repeat(25), 'UPPER!']) {
+      const res = await call(withSecret(fresh.db), 'POST', '/v1/auth/dev', { body: { name }, headers: h });
+      expect(res.status).toBe(400);
+    }
   });
 });

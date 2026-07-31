@@ -103,6 +103,74 @@ async function overAuthLimit(env: Env, ip: string, nowMs: number): Promise<boole
   return false;
 }
 
+/**
+ * The profile behind an identity — found, or created together with it.
+ *
+ * Shared by the real sign-in and the development one below, so the two cannot
+ * drift: a test account built even slightly differently from a real one would
+ * be testing something the app never does.
+ */
+async function resolveProfile(
+  db: D1Database,
+  provider: string,
+  subject: string,
+  email: string | null,
+  nowIso: string,
+): Promise<ProfileRow | null> {
+  const lookup = db
+    .prepare(
+      `SELECT p.* FROM identities i JOIN profiles p ON p.id = i.profile_id
+       WHERE i.provider = ? AND i.external_id = ?`,
+    )
+    .bind(provider, subject);
+
+  // 1. The lookup runs first, alone: a batch() cannot branch on a result.
+  let row = await lookup.first<ProfileRow>();
+
+  if (row && row.deleted_at) {
+    // Defensive only — DELETE /v1/me removes the identity row, so a deleted
+    // profile should never still be reachable through one. Treat it as absent
+    // and re-point the identity at a fresh profile.
+    const id = newProfileId();
+    await db.batch([
+      db
+        .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+        .bind(id, placeholderHandle(id), placeholderHandle(id), nowIso),
+      db
+        .prepare(
+          'UPDATE identities SET profile_id = ?, email = ?, created_at = ? WHERE provider = ? AND external_id = ?',
+        )
+        .bind(id, email, nowIso, provider, subject),
+    ]);
+    return db.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<ProfileRow>();
+  }
+
+  if (!row) {
+    // 2. Not found → one batch, so a crash cannot orphan an identity.
+    const id = newProfileId();
+    const handle = placeholderHandle(id);
+    try {
+      await db.batch([
+        db
+          .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+          .bind(id, handle, handle, nowIso),
+        db
+          .prepare(
+            'INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)',
+          )
+          .bind(provider, subject, id, email, nowIso),
+      ]);
+      row = await db.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<ProfileRow>();
+    } catch {
+      // The race — two devices, first sign-in, same instant — resolves at the
+      // identities primary key. The loser re-runs the lookup and returns the
+      // winner's profile.
+      row = await lookup.first<ProfileRow>();
+    }
+  }
+  return row;
+}
+
 // ── POST /v1/auth/session ────────────────────────────────────────────────────
 
 auth.post('/auth/session', async (c) => {
@@ -135,57 +203,79 @@ auth.post('/auth/session', async (c) => {
   const verified = await verifyIdToken(c.env, provider as Provider, b.id_token, now);
   if (!verified.ok) return fail(c, 401, 'unauthenticated', 'ID token rejected.');
 
-  const db = c.env.DB;
-  const lookup = db
-    .prepare(
-      `SELECT p.* FROM identities i JOIN profiles p ON p.id = i.profile_id
-       WHERE i.provider = ? AND i.external_id = ?`,
-    )
-    .bind(provider, verified.token.sub);
+  const row = await resolveProfile(c.env.DB, provider, verified.token.sub, verified.token.email ?? null, nowIso);
+  if (!row) return fail(c, 500, 'internal', 'Could not establish a profile.');
 
-  // 1. The lookup runs first, alone: a batch() cannot branch on a result.
-  let row = await lookup.first<ProfileRow>();
+  const { token, expiresAt } = await sign(c.env, row.id, now);
+  return c.json({
+    token,
+    expires_at: expiresAt,
+    profile: ownProfile(row),
+    needs_handle: needsHandle(row.handle),
+  });
+});
 
-  if (row && row.deleted_at) {
-    // Defensive only — DELETE /v1/me removes the identity row, so a deleted
-    // profile should never still be reachable through one. Treat it as absent
-    // and re-point the identity at a fresh profile.
-    const id = newProfileId();
-    await db.batch([
-      db
-        .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
-        .bind(id, placeholderHandle(id), placeholderHandle(id), nowIso),
-      db
-        .prepare(
-          'UPDATE identities SET profile_id = ?, email = ?, created_at = ? WHERE provider = ? AND external_id = ?',
-        )
-        .bind(id, verified.token.email, nowIso, provider, verified.token.sub),
-    ]);
-    row = await db.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<ProfileRow>();
-  } else if (!row) {
-    // 2. Not found → one batch, so a crash cannot orphan an identity.
-    const id = newProfileId();
-    const handle = placeholderHandle(id);
-    try {
-      await db.batch([
-        db
-          .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
-          .bind(id, handle, handle, nowIso),
-        db
-          .prepare(
-            'INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)',
-          )
-          .bind(provider, verified.token.sub, id, verified.token.email, nowIso),
-      ]);
-      row = await db.prepare('SELECT * FROM profiles WHERE id = ?').bind(id).first<ProfileRow>();
-    } catch {
-      // The race — two devices, first sign-in, same instant — resolves at the
-      // identities primary key. The loser re-runs the lookup and returns the
-      // winner's profile.
-      row = await lookup.first<ProfileRow>();
-    }
+// ── POST /v1/auth/dev — exists only where DEV_AUTH_SECRET is set ────────────
+
+/**
+ * A sign-in with no Apple or Google account behind it, for testing.
+ *
+ * WHY. The community cannot be exercised by one person: a percentage needs two
+ * opinions, a thread needs two voices, a follow needs somebody to follow.
+ * Provider accounts are the honest way to get them and they are slow — a
+ * two-factor prompt on a simulator with no phone, an Apple ID per tester — so
+ * the multi-account paths kept going untested. This makes a second and third
+ * account instant.
+ *
+ * THIS IS AN AUTHENTICATION BYPASS, and it is written to be impossible to leave
+ * on by accident:
+ *
+ *  - NO SECRET, NO ROUTE. Without a `DEV_AUTH_SECRET` binding it answers 404 —
+ *    not 403, which would confirm to a stranger that the endpoint exists and is
+ *    merely locked. Production never sets it. `auth.test.ts` asserts the 404.
+ *  - ITS OWN NAMESPACE. Every account lands under provider `dev` with a `dev_`
+ *    subject, which no Apple or Google identity can collide with, so
+ *    `DELETE FROM identities WHERE provider = 'dev'` removes every account it
+ *    has ever created and touches nothing real.
+ *  - IT GRANTS NOTHING EXTRA. The session it signs is an ordinary one for an
+ *    ordinary profile. It cannot reach an existing account: the subject is
+ *    derived from the name given, inside a namespace real providers never use.
+ *
+ * DELETE THE SECRET WHEN THE TEST IS OVER (`wrangler secret delete
+ * DEV_AUTH_SECRET`). While it is set, anyone holding it can mint a session for
+ * a test account on this server.
+ */
+auth.post('/auth/dev', async (c) => {
+  const secret = c.env.DEV_AUTH_SECRET;
+  if (!secret) return c.notFound();
+
+  const offered = c.req.header('X-Dev-Secret') ?? '';
+  if (offered.length !== secret.length || offered !== secret) {
+    return fail(c, 401, 'unauthenticated', 'Bad dev secret.');
   }
 
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const who = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '';
+  // Constrained so the subject cannot be steered anywhere interesting: the
+  // whole identity is `dev_` plus these characters.
+  if (!/^[a-z0-9_-]{2,24}$/.test(who)) {
+    return fail(c, 400, 'invalid_body', 'name must be 2-24 characters of a-z, 0-9, _ or -.');
+  }
+
+  const now = Date.now();
+  const row = await resolveProfile(
+    c.env.DB,
+    'dev',
+    `dev_${who}`,
+    `${who}@dev.invalid`,
+    new Date(now).toISOString(),
+  );
   if (!row) return fail(c, 500, 'internal', 'Could not establish a profile.');
 
   const { token, expiresAt } = await sign(c.env, row.id, now);
