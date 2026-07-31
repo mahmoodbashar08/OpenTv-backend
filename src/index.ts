@@ -1,7 +1,11 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { auth } from '@/routes/auth';
+import { blocks } from '@/routes/blocks';
+import { comments } from '@/routes/comments';
+import { commentImport } from '@/routes/import';
 import { ratings } from '@/routes/ratings';
+import { reports } from '@/routes/reports';
 
 export type { Env } from '@/env';
 
@@ -32,6 +36,12 @@ const v1 = new Hono<App>();
 
 v1.route('/', auth);
 v1.route('/', ratings);
+// Before `comments`, so POST /v1/comments/import is never read as a comment on
+// a thread keyed "import".
+v1.route('/', commentImport);
+v1.route('/', comments);
+v1.route('/', reports);
+v1.route('/', blocks);
 
 app.route('/v1', v1);
 

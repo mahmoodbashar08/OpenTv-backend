@@ -350,8 +350,12 @@ export function validateVote(input: {
   return { ok: true, vote: { score, emotion, season, episode } };
 }
 
-/** null for absent, the number for a valid one, `undefined` for invalid. */
-function numberOrNull(v: unknown): number | null | undefined {
+/**
+ * null for absent, the number for a valid one, `undefined` for invalid.
+ * Exported because comments address the same season/episode space as ratings
+ * and must reject the same bodies.
+ */
+export function numberOrNull(v: unknown): number | null | undefined {
   if (v === null || v === undefined) return null;
   if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return undefined;
   return v;
@@ -422,4 +426,223 @@ export function parseTargets(raw: readonly string[]): ParsedTarget[] | null {
     out.push({ source, key: rest, season, episode });
   }
   return out;
+}
+
+// ── comments ─────────────────────────────────────────────────────────────────
+
+/** 1–2,000 characters after trim. Emoji-only is a legitimate comment. */
+export const COMMENT_BODY_MAX = 2000;
+
+/** The thread page. 25 by default, never more than 50 (docs/IMPLEMENTATION.md Step 3). */
+export const COMMENT_PAGE_DEFAULT = 25;
+export const COMMENT_PAGE_MAX = 50;
+
+/** Per-user write limits, enforced in D1 where the data already lives. */
+export const COMMENTS_PER_HOUR = 30;
+export const REPORTS_PER_DAY = 20;
+
+/** One call's worth of seeding. The app chunks; the server refuses more. */
+export const IMPORT_MAX_ITEMS = 200;
+
+export type BodyFailure = 'empty' | 'too_long';
+
+/**
+ * Counted in code points, not UTF-16 units: an emoji-only body is allowed, and
+ * a limit that counted surrogate halves would make "2,000 characters" mean
+ * something different for Arabic and for emoji than it does for English.
+ */
+export function validateCommentBody(
+  input: unknown,
+): { ok: true; body: string } | { ok: false; reason: BodyFailure } {
+  if (typeof input !== 'string') return { ok: false, reason: 'empty' };
+  const body = input.trim();
+  if (body.length === 0) return { ok: false, reason: 'empty' };
+  if ([...body].length > COMMENT_BODY_MAX) return { ok: false, reason: 'too_long' };
+  return { ok: true, body };
+}
+
+/**
+ * Replies are one level deep (docs/PLAN.md §3 — "deeper threading is a
+ * moderation problem wearing a feature costume"). A reply to a reply is
+ * refused, never silently re-parented: the client that sent it is wrong and
+ * needs to hear so.
+ *
+ * Takes the parent row as loaded (or null when the id resolved to nothing).
+ */
+export function replyDepthOk(parent: { parent_id: string | null } | null | undefined): boolean {
+  return !!parent && parent.parent_id === null;
+}
+
+// ── cursors ──────────────────────────────────────────────────────────────────
+//
+// `base64url(created_at + '|' + id)`. The id is in there because an imported
+// seeding batch writes hundreds of rows in the same second, and `created_at`
+// alone would then skip or repeat rows across a page boundary. The pair is a
+// total order; `created_at` alone is not.
+
+export type Cursor = { createdAt: string; id: string };
+
+function toBase64Url(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function fromBase64Url(s: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) return null;
+  try {
+    const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+export function makeCursor(createdAt: string, id: string): string {
+  return toBase64Url(`${createdAt}|${id}`);
+}
+
+/**
+ * null for anything that is not a cursor this server made. NEVER throws: a
+ * cursor arrives in a URL, and a URL is edited by hand, by proxies and by
+ * link previewers. A malformed one is a first page, not a 500.
+ */
+export function parseCursor(raw: string | null | undefined): Cursor | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  const decoded = fromBase64Url(raw);
+  if (decoded === null) return null;
+  const bar = decoded.indexOf('|');
+  if (bar <= 0) return null;
+  const createdAt = decoded.slice(0, bar);
+  const id = decoded.slice(bar + 1);
+  if (createdAt.length === 0 || id.length === 0) return null;
+  return { createdAt, id };
+}
+
+/** The page size a `limit` param asks for, clamped. Anything unparseable is the default. */
+export function pageSize(raw: string | null | undefined): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return COMMENT_PAGE_DEFAULT;
+  return Math.min(n, COMMENT_PAGE_MAX);
+}
+
+// ── seeding ──────────────────────────────────────────────────────────────────
+
+/**
+ * DEDUPE BY CONSTRUCTION, NOT BY QUERY.
+ *
+ * The id of an imported comment is derived from its content, so re-importing
+ * the same GDPR export is a no-op no matter how many times it runs — with no
+ * read-before-write and no unique index to add. `INSERT OR IGNORE` does the
+ * rest. This mirrors the app's own merge-safe import rule.
+ *
+ *   'imp_' + hex(SHA-256(author ‖ ' ' ‖ source ‖ ' ' ‖ key ‖ ' ' ‖ season
+ *                        ‖ ' ' ‖ episode ‖ ' ' ‖ created_at ‖ ' ' ‖ body))[0..32]
+ *
+ * A null season or episode renders as the empty string. Async because WebCrypto
+ * is; it hashes and nothing else, so this file stays free of bindings.
+ */
+export async function stableImportId(input: {
+  authorId: string;
+  targetSource: string;
+  targetKey: string;
+  season: number | null;
+  episode: number | null;
+  createdAt: string;
+  body: string;
+}): Promise<string> {
+  const material = [
+    input.authorId,
+    input.targetSource,
+    input.targetKey,
+    input.season ?? '',
+    input.episode ?? '',
+    input.createdAt,
+    input.body,
+  ].join(' ');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `imp_${hex.slice(0, 32)}`;
+}
+
+// ── language ─────────────────────────────────────────────────────────────────
+
+/**
+ * Loose on purpose. `lang` is a hint for filtering a thread, not a
+ * localisation decision, and a strict registry check would reject valid tags
+ * the day IANA adds one. It exists to keep junk — and anything with a quote in
+ * it — out of the column.
+ *
+ * Never guessed from the text: language detection does not fit in a Worker's
+ * 10 ms CPU budget, and a wrong stamp is worse than none.
+ */
+export function isValidBcp47(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(v);
+}
+
+/**
+ * The first tag of an `Accept-Language` header, quality values and whitespace
+ * removed, or null. `*` is not a language.
+ */
+export function firstAcceptLanguage(header: string | null | undefined): string | null {
+  if (typeof header !== 'string') return null;
+  for (const part of header.split(',')) {
+    const tag = part.split(';')[0]!.trim();
+    if (isValidBcp47(tag)) return tag;
+  }
+  return null;
+}
+
+// ── moderation ───────────────────────────────────────────────────────────────
+
+/**
+ * Five distinct reporters hide a comment pending human review. A constant, not
+ * a literal in SQL, so it can be tuned without hunting through statements.
+ *
+ * This is the mechanism that makes Apple's 24-hour response requirement
+ * survivable for a solo moderator: the bad comment is invisible within minutes,
+ * and `reports.first_seen_at` still starts the clock when a human opens the
+ * queue.
+ */
+export const AUTO_HIDE_REPORTS = 5;
+
+export const REPORT_REASONS = [
+  'spam',
+  'harassment',
+  'hate',
+  'sexual',
+  'violence',
+  'spoiler',
+  'other',
+] as const;
+export type ReportReason = (typeof REPORT_REASONS)[number];
+
+export function isReportReason(v: unknown): v is ReportReason {
+  return typeof v === 'string' && (REPORT_REASONS as readonly string[]).includes(v);
+}
+
+/** Only a comment can be auto-hidden; profiles and lists are recorded for a human. */
+export const REPORT_TARGET_TYPES = ['comment', 'profile', 'list'] as const;
+export type ReportTargetType = (typeof REPORT_TARGET_TYPES)[number];
+
+export function isReportTargetType(v: unknown): v is ReportTargetType {
+  return typeof v === 'string' && (REPORT_TARGET_TYPES as readonly string[]).includes(v);
+}
+
+/** Whether `n` reports in the table plus this one is enough to hide. */
+export function autoHides(existingReports: number): boolean {
+  return existingReports + 1 >= AUTO_HIDE_REPORTS;
+}
+
+// ── notifications ────────────────────────────────────────────────────────────
+
+/**
+ * Never notify yourself. Every write path checks this first
+ * (docs/IMPLEMENTATION.md Step 4, "Notification write paths"). Imported
+ * comments never notify anybody at all, which is the caller's business.
+ */
+export function shouldNotify(actorId: string, recipientId: string): boolean {
+  return actorId.length > 0 && recipientId.length > 0 && actorId !== recipientId;
 }
