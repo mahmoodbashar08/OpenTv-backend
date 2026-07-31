@@ -46,11 +46,16 @@ const rating = (over: Record<string, unknown> = {}) => ({
 const aggregate = (season = 1, episode = 3) =>
   raw
     .prepare(
-      `SELECT vote_count, score_sum, emotion_counts FROM rating_aggregates
+      `SELECT vote_count, score_sum, emotion_counts, score_counts FROM rating_aggregates
         WHERE target_source = 'tvdb' AND target_key = '121361' AND season = ? AND episode = ?`,
     )
     .get(season, episode) as
-    | { vote_count: number; score_sum: number; emotion_counts: string }
+    | {
+        vote_count: number;
+        score_sum: number;
+        emotion_counts: string;
+        score_counts: string | null;
+      }
     | undefined;
 
 const countRatings = () =>
@@ -98,7 +103,26 @@ describe('POST /v1/ratings/import', () => {
       vote_count: 3,
       score_sum: 16,
       emotion_counts: '{"shocked":2,"sad":1}',
+      // And the DISTRIBUTION, not just the sum. Seeding an archive that filled
+      // `score_counts` for nobody would leave every star bar at 0% while
+      // `vote_count` climbed into the thousands — the same bug this endpoint
+      // was written to fix, one column over.
+      score_counts: '{"9":1,"7":1}',
     });
+  });
+
+  it('a re-import adds nothing to the distribution either', async () => {
+    const item = rating({ score: 6, emotion: 'tense' });
+    await call(env, 'POST', '/v1/ratings/import', { token, body: { items: [item] } });
+    const second = await call(env, 'POST', '/v1/ratings/import', { token, body: { items: [item] } });
+    expect(second.json).toEqual({ imported: 0, skipped: 1 });
+    expect(aggregate()?.score_counts).toBe('{"6":1}');
+  });
+
+  it('an emotion-only import leaves the distribution empty rather than absent', async () => {
+    const item = rating({ score: null, emotion: 'reflective' });
+    await call(env, 'POST', '/v1/ratings/import', { token, body: { items: [item] } });
+    expect(aggregate()?.score_counts).toBe('{}');
   });
 
   it('moves the aggregate for three items inside ONE call, too', async () => {
@@ -115,12 +139,18 @@ describe('POST /v1/ratings/import', () => {
     });
 
     const rows = raw
-      .prepare('SELECT target_key, vote_count, score_sum, emotion_counts FROM rating_aggregates ORDER BY target_key')
+      .prepare(
+        'SELECT target_key, vote_count, score_sum, emotion_counts, score_counts FROM rating_aggregates ORDER BY target_key',
+      )
       .all();
     expect(rows).toEqual([
-      { target_key: '1', vote_count: 1, score_sum: 10, emotion_counts: '{"thrilled":1}' },
-      { target_key: '2', vote_count: 1, score_sum: 4, emotion_counts: '{"bored":1}' },
-      { target_key: '3', vote_count: 1, score_sum: 8, emotion_counts: '{}' },
+      // score_counts is a "10" and not a "10.0": the bucket key is bound as a
+      // string, because a number concatenated into a JSON path by SQLite takes
+      // the bound value's own type and a float would open a second bucket for
+      // the same star that no read would ever find.
+      { target_key: '1', vote_count: 1, score_sum: 10, emotion_counts: '{"thrilled":1}', score_counts: '{"10":1}' },
+      { target_key: '2', vote_count: 1, score_sum: 4, emotion_counts: '{"bored":1}', score_counts: '{"4":1}' },
+      { target_key: '3', vote_count: 1, score_sum: 8, emotion_counts: '{}', score_counts: '{"8":1}' },
     ]);
   });
 
@@ -171,7 +201,12 @@ describe('POST /v1/ratings/import', () => {
     const items = [rating(), rating(), rating()];
     const res = await call(env, 'POST', '/v1/ratings/import', { token, body: { items } });
     expect(res.json).toEqual({ imported: 1, skipped: 2 });
-    expect(aggregate()).toEqual({ vote_count: 1, score_sum: 9, emotion_counts: '{"shocked":1}' });
+    expect(aggregate()).toEqual({
+      vote_count: 1,
+      score_sum: 9,
+      emotion_counts: '{"shocked":1}',
+      score_counts: '{"9":1}',
+    });
   });
 
   it('never overwrites a live vote, and never double-counts it', async () => {
@@ -187,7 +222,12 @@ describe('POST /v1/ratings/import', () => {
     });
     expect(res.json).toEqual({ imported: 0, skipped: 1 });
     expect(countRatings()).toBe(1);
-    expect(aggregate()).toEqual({ vote_count: 1, score_sum: 9, emotion_counts: '{"shocked":1}' });
+    expect(aggregate()).toEqual({
+      vote_count: 1,
+      score_sum: 9,
+      emotion_counts: '{"shocked":1}',
+      score_counts: '{"9":1}',
+    });
   });
 
   it('answers an empty list without touching the database', async () => {

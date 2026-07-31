@@ -73,12 +73,20 @@ export async function reconcileLikeCounts(db: D1Database): Promise<ReconcileResu
 /**
  * `rating_aggregates` from `ratings`.
  *
- * One pass sets `vote_count`, `score_sum` and `emotion_counts` together, so a
- * row that is wrong in two ways still counts as one corrected row.
- * `emotion_counts` is rebuilt with `json_group_object(emotion, n)` over a
+ * One pass sets `vote_count`, `score_sum`, `emotion_counts` and `score_counts`
+ * together, so a row that is wrong in two ways still counts as one corrected
+ * row. `emotion_counts` is rebuilt with `json_group_object(emotion, n)` over a
  * `GROUP BY emotion` sub-select that skips NULL emotions — an empty set yields
  * `'{}'`, which is exactly what the write path stores for a vote with no
  * emotion, so a clean row never looks drifted.
+ *
+ * `score_counts` is rebuilt identically, `GROUP BY score` skipping NULL scores,
+ * with a `CAST(score AS TEXT)` because `json_group_object` will not take an
+ * integer as a label. THIS IS ALSO THE BACKFILL: 0004 added the column NULL for
+ * every existing row because a distribution cannot be reconstructed from a sum,
+ * and NULL counts as drift below, so the first run after that migration rebuilds
+ * every one of them from `ratings` — which has each individual score — rather
+ * than from a fabricated guess.
  *
  * **Recorded decision (the plan is silent):** an aggregate row whose key no
  * longer has a single vote is DELETED, not zeroed. Account deletion cascades
@@ -127,6 +135,14 @@ export async function reconcileRatingAggregates(db: D1Database): Promise<Reconci
                                  AND COALESCE(r.episode, -1) = a.episode
                                  AND r.emotion IS NOT NULL
                                GROUP BY r.emotion)),
+           score_counts = (SELECT json_group_object(score, n) FROM (
+                              SELECT CAST(r.score AS TEXT) AS score, COUNT(*) AS n FROM ratings r
+                               WHERE r.target_source = a.target_source
+                                 AND r.target_key = a.target_key
+                                 AND COALESCE(r.season, -1) = a.season
+                                 AND COALESCE(r.episode, -1) = a.episode
+                                 AND r.score IS NOT NULL
+                               GROUP BY r.score)),
            updated_at = ?
          WHERE a.rowid IN (SELECT x.rowid FROM rating_aggregates x WHERE ${DRIFTED} LIMIT ?)`,
       )
@@ -145,7 +161,9 @@ export async function reconcileRatingAggregates(db: D1Database): Promise<Reconci
  * "This aggregate row disagrees with the votes underneath it", in one place so
  * the row picked for correction and the row that needed it can never diverge.
  * `IS NOT` rather than `<>` on the JSON, because a NULL `emotion_counts` on a
- * row that has emotions must count as drift and `<>` would answer NULL.
+ * row that has emotions must count as drift and `<>` would answer NULL. The
+ * same operator is what makes every pre-0004 row — `score_counts` NULL by
+ * design — drifted on the first run, and therefore backfilled.
  */
 const DRIFTED = `
   x.vote_count <> (SELECT COUNT(*) FROM ratings r
@@ -159,7 +177,13 @@ const DRIFTED = `
                      WHERE r.target_source = x.target_source AND r.target_key = x.target_key
                        AND COALESCE(r.season, -1) = x.season AND COALESCE(r.episode, -1) = x.episode
                        AND r.emotion IS NOT NULL
-                     GROUP BY r.emotion))`;
+                     GROUP BY r.emotion))
+  OR x.score_counts IS NOT (SELECT json_group_object(score, n) FROM (
+                    SELECT CAST(r.score AS TEXT) AS score, COUNT(*) AS n FROM ratings r
+                     WHERE r.target_source = x.target_source AND r.target_key = x.target_key
+                       AND COALESCE(r.season, -1) = x.season AND COALESCE(r.episode, -1) = x.episode
+                       AND r.score IS NOT NULL
+                     GROUP BY r.score))`;
 
 /**
  * `character_vote_aggregates` from `character_votes`.
@@ -311,6 +335,14 @@ export async function purgeSoftDeleted(db: D1Database, _env: Env): Promise<Purge
 export type ThreadMapping = { old_key: string; new_source: string; new_key: string };
 export type MigrateResult = { comments: number; ratings: number; aggregates: number };
 
+/** The countable half of a `rating_aggregates` row — everything a merge has to add up. */
+type AggregateBlobs = {
+  vote_count: number;
+  score_sum: number;
+  emotion_counts: string | null;
+  score_counts: string | null;
+};
+
 /**
  * When a film that had no id gains a TheTVDB one, its threads sit on a `title`
  * key while new clients address it by `tvdb`, splitting the conversation. Three
@@ -362,39 +394,38 @@ export async function migrateTitleThreads(
 
     const sources = await db
       .prepare(
-        `SELECT season, episode, vote_count, score_sum, emotion_counts
+        `SELECT season, episode, vote_count, score_sum, emotion_counts, score_counts
            FROM rating_aggregates WHERE target_source = 'title' AND target_key = ?`,
       )
       .bind(m.old_key)
-      .all<{
-        season: number;
-        episode: number;
-        vote_count: number;
-        score_sum: number;
-        emotion_counts: string | null;
-      }>();
+      .all<AggregateBlobs & { season: number; episode: number }>();
 
     for (const src of sources.results ?? []) {
       const dest = await db
         .prepare(
-          `SELECT vote_count, score_sum, emotion_counts FROM rating_aggregates
+          `SELECT vote_count, score_sum, emotion_counts, score_counts FROM rating_aggregates
             WHERE target_source = ? AND target_key = ? AND season = ? AND episode = ?`,
         )
         .bind(m.new_source, m.new_key, src.season, src.episode)
-        .first<{ vote_count: number; score_sum: number; emotion_counts: string | null }>();
+        .first<AggregateBlobs>();
 
       if (dest) {
         await db.batch([
           db
             .prepare(
               `UPDATE rating_aggregates SET vote_count = ?, score_sum = ?,
-                 emotion_counts = ?, updated_at = ?
+                 emotion_counts = ?, score_counts = ?, updated_at = ?
                 WHERE target_source = ? AND target_key = ? AND season = ? AND episode = ?`,
             )
             .bind(
               dest.vote_count + src.vote_count,
               dest.score_sum + src.score_sum,
               mergeEmotionCounts(dest.emotion_counts, src.emotion_counts),
+              // Both distributions on this table merge by the same rule — the
+              // function is about summing two counts blobs, not about emotions.
+              // Dropping the source's here would throw away a distribution that
+              // nothing could rebuild until 04:00.
+              mergeEmotionCounts(dest.score_counts, src.score_counts),
               new Date().toISOString(),
               m.new_source,
               m.new_key,

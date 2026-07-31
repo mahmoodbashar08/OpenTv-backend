@@ -1,0 +1,43 @@
+-- A star rating needs a DISTRIBUTION, not an average.
+--
+-- `rating_aggregates` was born with `vote_count` and `score_sum`, and from a sum
+-- and a count exactly one number is obtainable: the mean. The product's own
+-- reference screen (design/referance/12-episode-page-top.png) does not show a
+-- mean. Under the five stars it shows a percentage for EACH of them —
+-- "BAD 0% · OK 0% · GOOD 5% · GREAT 13% · WOW 82%" — and "82% of people gave it
+-- five stars" cannot be derived from `score_sum / vote_count` at any price.
+--
+-- `emotion_counts` has been a distribution since 0001. The score side simply
+-- never got the same treatment, and every star bar the app could draw has been
+-- unrenderable because of it.
+--
+-- Same convention, deliberately: a JSON object of score → count, so the shape of
+-- the scale is data and not schema. The server's contract is the integers 1..10
+-- (the CHECK on `ratings.score`); today's app sends 2, 4, 6, 8 and 10 for its
+-- five stars, but that is the CLIENT's mapping and it is not hard-coded here. A
+-- future half-star build sending 1, 3, 5, 7 and 9 needs no migration — it just
+-- starts filling five more keys.
+--
+-- Keys are written quoted (`'$."' || ? || '"'`) by the write path, exactly as
+-- `character_vote_aggregates.counts` is, so the JSON path can never be anything
+-- but a single key. A score reaches that SQL only after `validateVote` has
+-- proved it an integer in range.
+
+-- BACKFILL: DELIBERATELY NONE.
+--
+-- Existing rows carry a `vote_count` and a `score_sum` and nothing else. There
+-- is no arithmetic that recovers a distribution from them — {10, 6} and {8, 8}
+-- are the same sum over the same count — and inventing a plausible spread would
+-- put fabricated percentages in front of users, which is worse than showing
+-- none. So `score_counts` is left NULL here.
+--
+-- The real backfill is `reconcileRatingAggregates` in src/jobs.ts, which
+-- recounts this column from `ratings` — the table that HAS every individual
+-- score — on the 04:00 UTC cron. NULL is treated as drift there, so every
+-- pre-existing row is rebuilt on the first run after this migration lands.
+--
+-- Read a NULL as "not yet recounted", never as "nobody scored this". A target
+-- with no scores at all reconciles to '{}', which is what the write path stores
+-- too, so an empty object is the honest "no scores" and NULL is the honest
+-- "ask again after 04:00".
+ALTER TABLE rating_aggregates ADD COLUMN score_counts TEXT;

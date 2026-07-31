@@ -274,6 +274,24 @@ export function isEmotion(v: unknown): v is Emotion {
 export const SCORE_MIN = 1;
 export const SCORE_MAX = 10;
 
+/**
+ * The server's score contract, in one predicate: an integer in 1..10.
+ *
+ * The app sends 2/4/6/8/10 for its five stars, but that is the CLIENT's mapping
+ * of a five-star widget onto a ten-point scale and it is deliberately not
+ * encoded here — a half-star build sending odd numbers must need no server
+ * change (see migrations/0004_score_distribution.sql).
+ *
+ * Exported because the score is now interpolated into a JSON path in the
+ * aggregate upsert, the same way an emotion is, and nothing may reach that SQL
+ * without passing through a check. A bare number is far less dangerous than a
+ * free-text name, but "far less dangerous" is not the standard the character
+ * vote work set.
+ */
+export function isScore(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= SCORE_MIN && v <= SCORE_MAX;
+}
+
 /** A vote as it is stored: either half may be null, never both. */
 export type Vote = { score: number | null; emotion: string | null };
 
@@ -282,12 +300,19 @@ export type Vote = { score: number | null; emotion: string | null };
  * the caller turns them into the `json_set` pair, skipping the decrement when
  * `emotionFrom` is null, the increment when `emotionTo` is null, and both when
  * they are equal.
+ *
+ * `scoreFrom`/`scoreTo` are the same idea for `score_counts`, and they are NOT
+ * redundant with `dScore`: `dScore` moves a sum and can only ever yield a mean,
+ * while these two move a bucket each and are what makes "82% gave it five stars"
+ * renderable at all.
  */
 export type AggregateDelta = {
   dVotes: number;
   dScore: number;
   emotionFrom: string | null;
   emotionTo: string | null;
+  scoreFrom: number | null;
+  scoreTo: number | null;
 };
 
 /**
@@ -305,6 +330,16 @@ export type AggregateDelta = {
  * out of the same arithmetic: emotion-only → score-only clears the emotion
  * (from = e, to = null, so only the decrement runs), and an identical re-vote
  * is all zeroes with from === to, so the emotion clause is skipped entirely.
+ *
+ * `scoreFrom`/`scoreTo` follow the identical rule, one column to the right:
+ * decrement `scoreFrom`'s bucket, increment `scoreTo`'s, skip either half that
+ * is null and skip both when they are equal. An emotion-only vote moves no
+ * bucket (both null); an identical re-vote moves none (from === to).
+ *
+ * Both go through `isScore`, so a row that somehow holds an out-of-range score —
+ * only a hand-edited database could — decrements nothing rather than opening a
+ * bucket that should not exist. `dScore` is left alone in that case: the sum is
+ * the nightly recount's problem, and guessing here would hide the corruption.
  */
 export function aggregateDelta(prev: Vote | null, next: Vote): AggregateDelta {
   const prevScore = prev?.score ?? null;
@@ -314,6 +349,8 @@ export function aggregateDelta(prev: Vote | null, next: Vote): AggregateDelta {
     dScore: (nextScore ?? 0) - (prevScore ?? 0),
     emotionFrom: prev?.emotion ?? null,
     emotionTo: next.emotion ?? null,
+    scoreFrom: isScore(prevScore) ? prevScore : null,
+    scoreTo: isScore(nextScore) ? nextScore : null,
   };
 }
 

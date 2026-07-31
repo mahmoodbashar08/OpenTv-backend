@@ -40,9 +40,19 @@ type AggregateRow = {
   vote_count: number;
   score_sum: number;
   emotion_counts: string | null;
+  score_counts: string | null;
 };
 
-function emotionCounts(raw: string | null): Record<string, number> {
+/** The columns every read of this table selects, so the two forms cannot diverge. */
+const AGGREGATE_COLUMNS = 'vote_count, score_sum, emotion_counts, score_counts';
+
+/**
+ * A counts blob, parsed. Anything that is not a JSON object — including the NULL
+ * a `score_counts` row carries until the nightly recount backfills it — becomes
+ * `{}`, never null, so the client renders one shape and never special-cases the
+ * migration window.
+ */
+function countsObject(raw: string | null): Record<string, number> {
   if (!raw) return {};
   try {
     const v = JSON.parse(raw);
@@ -63,7 +73,12 @@ function shapeAggregate(row: AggregateRow) {
     // server-computed average would silently be the wrong one
     // (docs/IMPLEMENTATION.md Step 2, "The delta logic").
     score_sum: row.score_sum,
-    emotion_counts: emotionCounts(row.emotion_counts),
+    emotion_counts: countsObject(row.emotion_counts),
+    // The distribution. Additive — `score_sum` and `vote_count` stay exactly
+    // where they were, because the app already reads them — but this is the one
+    // the design actually needs: a mean cannot render "82% gave five stars".
+    // See migrations/0004_score_distribution.sql.
+    score_counts: countsObject(row.score_counts),
   };
 }
 
@@ -133,6 +148,40 @@ ratings.post('/ratings', requireAuth, async (c) => {
 
   const initialEmotionJson = d.emotionTo === null ? '{}' : JSON.stringify({ [d.emotionTo]: 1 });
 
+  // The score distribution moves exactly as the emotion blob does, and for the
+  // same reason: a read-modify-write across users is racy, done in SQL it is
+  // not. The path is QUOTED (`'$."10"'`) like the character-vote rollup's, even
+  // though a score is a number and `'$.' || 10` would parse — the two blobs on
+  // this table should not be maintained by two different-looking idioms, and
+  // `aggregateDelta` has already run both ends through `isScore`.
+  //
+  // The bucket key is bound as a STRING, and that is not cosmetic. A JS number
+  // bound into `'$."' || ? || '"'` is concatenated by SQLite using the bound
+  // value's own type: bind 10 as a float — which is all a JSON body ever
+  // carries, and what a driver is free to hand the database — and the path
+  // becomes `$."10.0"`, a second bucket for the same star that no read would
+  // ever find. `String()` on an already-validated integer makes the key exactly
+  // the "10" that `JSON.stringify` and the nightly `CAST(score AS TEXT)` both
+  // produce.
+  const scoreBinds: string[] = [];
+  let scoreSet = '';
+  if (d.scoreFrom !== d.scoreTo) {
+    let expr = "COALESCE(rating_aggregates.score_counts, '{}')";
+    if (d.scoreFrom !== null) {
+      const k = String(d.scoreFrom);
+      expr = `json_set(${expr}, '$."' || ? || '"', MAX(0, COALESCE(json_extract(rating_aggregates.score_counts, '$."' || ? || '"'), 0) - 1))`;
+      scoreBinds.push(k, k);
+    }
+    if (d.scoreTo !== null) {
+      const k = String(d.scoreTo);
+      expr = `json_set(${expr}, '$."' || ? || '"', COALESCE(json_extract(rating_aggregates.score_counts, '$."' || ? || '"'), 0) + 1)`;
+      scoreBinds.push(k, k);
+    }
+    scoreSet = `score_counts = ${expr},`;
+  }
+
+  const initialScoreJson = d.scoreTo === null ? '{}' : JSON.stringify({ [d.scoreTo]: 1 });
+
   await db.batch([
     db
       .prepare(
@@ -160,20 +209,34 @@ ratings.post('/ratings', requireAuth, async (c) => {
     db
       .prepare(
         `INSERT INTO rating_aggregates
-           (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts,
+            score_counts, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (target_source, target_key, season, episode) DO UPDATE SET
            vote_count = rating_aggregates.vote_count + excluded.vote_count,
            score_sum  = rating_aggregates.score_sum  + excluded.score_sum,
            ${emotionSet}
+           ${scoreSet}
            updated_at = excluded.updated_at`,
       )
-      .bind(src, key, s, e, d.dVotes, d.dScore, initialEmotionJson, now, ...emotionBinds),
+      .bind(
+        src,
+        key,
+        s,
+        e,
+        d.dVotes,
+        d.dScore,
+        initialEmotionJson,
+        initialScoreJson,
+        now,
+        ...emotionBinds,
+        ...scoreBinds,
+      ),
   ]);
 
   const row = await db
     .prepare(
-      `SELECT season, episode, vote_count, score_sum, emotion_counts FROM rating_aggregates
+      `SELECT season, episode, ${AGGREGATE_COLUMNS} FROM rating_aggregates
        WHERE target_source = ? AND target_key = ? AND season = ? AND episode = ?`,
     )
     .bind(src, key, s, e)
@@ -232,7 +295,7 @@ ratings.get('/aggregates', async (c) => {
       return fail(c, 400, 'target_invalid', 'season must be a non-negative integer.');
     }
     const res = await c.env.DB.prepare(
-      `SELECT season, episode, vote_count, score_sum, emotion_counts FROM rating_aggregates
+      `SELECT season, episode, ${AGGREGATE_COLUMNS} FROM rating_aggregates
        WHERE target_source = ? AND target_key = ? AND season = ?
        ORDER BY episode`,
     )
@@ -257,7 +320,7 @@ async function listAggregates(db: D1Database, targets: readonly ParsedTarget[]):
   const binds = targets.flatMap((t) => [t.source, t.key, t.season, t.episode]);
   const res = await db
     .prepare(
-      `SELECT season, episode, target_source, target_key, vote_count, score_sum, emotion_counts
+      `SELECT season, episode, target_source, target_key, ${AGGREGATE_COLUMNS}
        FROM rating_aggregates
        WHERE (target_source, target_key, season, episode) IN (VALUES ${tuples})`,
     )

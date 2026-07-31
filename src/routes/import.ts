@@ -287,8 +287,9 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
         db
           .prepare(
             `INSERT INTO rating_aggregates
-               (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts, updated_at)
-             SELECT ?, ?, ?, ?, 1, ?, ?, ?
+               (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts,
+                score_counts, updated_at)
+             SELECT ?, ?, ?, ?, 1, ?, ?, ?, ?
               WHERE NOT EXISTS (
                 SELECT 1 FROM ratings r
                  WHERE r.author_id = ? AND r.target_source = ? AND r.target_key = ?
@@ -303,6 +304,20 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
                         COALESCE(rating_aggregates.emotion_counts, '{}'), '$.' || ?,
                         COALESCE(json_extract(rating_aggregates.emotion_counts, '$.' || ?), 0) + 1),`
                }
+               ${
+                 // The distribution, seeded by the same statement that seeds the
+                 // sum. Without this half, importing an archive would fill
+                 // `score_counts` for nobody: every star bar would read 0% while
+                 // `vote_count` climbed into the thousands — `ratings` full, `%`
+                 // empty, the exact bug this endpoint was written to fix, one
+                 // column over. The path is quoted; `p.score` came through
+                 // `validateVote` and is an integer in 1..10.
+                 p.score === null
+                   ? ''
+                   : `score_counts = json_set(
+                        COALESCE(rating_aggregates.score_counts, '{}'), '$."' || ? || '"',
+                        COALESCE(json_extract(rating_aggregates.score_counts, '$."' || ? || '"'), 0) + 1),`
+               }
                updated_at = excluded.updated_at`,
           )
           .bind(
@@ -312,6 +327,7 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
             e,
             p.score ?? 0,
             p.emotion === null ? '{}' : JSON.stringify({ [p.emotion]: 1 }),
+            p.score === null ? '{}' : JSON.stringify({ [p.score]: 1 }),
             nowIso,
             me,
             p.source,
@@ -319,6 +335,10 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
             s,
             e,
             ...(p.emotion === null ? [] : [p.emotion, p.emotion]),
+            // As a STRING, for the reason spelled out in routes/ratings.ts: a
+            // number bound into `'$."' || ? || '"'` can arrive as a float and
+            // open a `$."10.0"` bucket nothing will ever read.
+            ...(p.score === null ? [] : [String(p.score), String(p.score)]),
           ),
       );
 

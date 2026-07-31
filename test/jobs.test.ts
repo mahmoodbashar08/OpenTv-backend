@@ -68,14 +68,18 @@ function aggregate(
   votes: number,
   sum: number,
   emotions: string | null,
+  // Defaults to NULL — the shape every row has the moment 0004 lands, and the
+  // shape the reconciliation is expected to treat as drift and backfill.
+  scores: string | null = null,
 ) {
   raw
     .prepare(
       `INSERT INTO rating_aggregates
-         (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts, updated_at)
-       VALUES (?, ?, -1, -1, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
+         (target_source, target_key, season, episode, vote_count, score_sum, emotion_counts,
+          score_counts, updated_at)
+       VALUES (?, ?, -1, -1, ?, ?, ?, ?, '2026-07-01T00:00:00.000Z')`,
     )
-    .run(source, key, votes, sum, emotions);
+    .run(source, key, votes, sum, emotions, scores);
 }
 
 const repair = (table: string) =>
@@ -164,7 +168,7 @@ describe('reconcileRatingAggregates', () => {
   it('is idempotent, and writes {} where the write path would', async () => {
     profile('p1', 'mahmood');
     rating('r1', 'p1', '111', 8, null);
-    aggregate('tvdb', '111', 1, 8, '{}');
+    aggregate('tvdb', '111', 1, 8, '{}', '{"8":1}');
 
     const first = await reconcileRatingAggregates(db);
     expect(first.corrected).toBe(0); // already true — nothing to do
@@ -172,19 +176,74 @@ describe('reconcileRatingAggregates', () => {
     const again = await reconcileRatingAggregates(db);
     expect(again.corrected).toBe(0);
     expect(
-      raw.prepare('SELECT emotion_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
-    ).toEqual({ emotion_counts: '{}' });
+      raw
+        .prepare('SELECT emotion_counts, score_counts FROM rating_aggregates WHERE target_key = ?')
+        .get('111'),
+    ).toEqual({ emotion_counts: '{}', score_counts: '{"8":1}' });
   });
 
   it('counts a NULL emotion_counts over real emotions as drift', async () => {
     profile('p1', 'mahmood');
     rating('r1', 'p1', '111', null, 'scared');
-    aggregate('tvdb', '111', 1, 0, null);
+    aggregate('tvdb', '111', 1, 0, null, '{}');
 
     expect((await reconcileRatingAggregates(db)).corrected).toBe(1);
     expect(
       raw.prepare('SELECT emotion_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
     ).toEqual({ emotion_counts: '{"scared":1}' });
+  });
+
+  // ── score_counts · migrations/0004_score_distribution.sql ──────────────────
+  //
+  // THIS IS THE BACKFILL. 0004 could not reconstruct a distribution from a sum
+  // and a count, so it left the column NULL and left the rebuild here. If these
+  // two stop passing, every row that existed before that migration keeps a NULL
+  // forever and the star bars stay blank for the whole back catalogue.
+
+  it('rebuilds a NULL score_counts from ratings — the 0004 backfill path', async () => {
+    profile('p1', 'mahmood');
+    profile('p2', 'sara');
+    profile('p3', 'ali');
+
+    rating('r1', 'p1', '111', 10, null);
+    rating('r2', 'p2', '111', 10, 'touched');
+    rating('r3', 'p3', '111', 6, null);
+    // A pre-0004 row: the sum and the count are right, the distribution has
+    // never been written. {10,10,6} and {9,9,8} are the same sum over the same
+    // count, which is exactly why the migration refused to guess.
+    aggregate('tvdb', '111', 3, 26, '{"touched":1}');
+
+    expect((await reconcileRatingAggregates(db)).corrected).toBe(1);
+    expect(
+      raw.prepare('SELECT score_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
+    ).toEqual({ score_counts: '{"6":1,"10":2}' });
+  });
+
+  it('corrects a score_counts that is simply wrong, and skips NULL scores', async () => {
+    profile('p1', 'mahmood');
+    profile('p2', 'sara');
+
+    rating('r1', 'p1', '111', 8, null);
+    rating('r2', 'p2', '111', null, 'bored'); // a person, but not a score
+
+    aggregate('tvdb', '111', 2, 8, '{"bored":1}', '{"8":9,"2":4}'); // deliberately wrong
+
+    expect((await reconcileRatingAggregates(db)).corrected).toBe(1);
+    expect(
+      raw.prepare('SELECT score_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
+    ).toEqual({ score_counts: '{"8":1}' });
+  });
+
+  it('writes {} where nobody scored, so a clean row never looks drifted', async () => {
+    profile('p1', 'mahmood');
+    rating('r1', 'p1', '111', null, 'confused');
+    aggregate('tvdb', '111', 1, 0, '{"confused":1}');
+
+    expect((await reconcileRatingAggregates(db)).corrected).toBe(1); // the NULL
+    expect(
+      raw.prepare('SELECT score_counts FROM rating_aggregates WHERE target_key = ?').get('111'),
+    ).toEqual({ score_counts: '{}' });
+    expect((await reconcileRatingAggregates(db)).corrected).toBe(0); // and stays put
   });
 });
 
@@ -349,10 +408,10 @@ describe('migrateTitleThreads', () => {
     comment('c3', 'p1', 0, 'other|1999', 'title'); // untouched
 
     rating('r1', 'p1', 'amado|2011', 9, 'touched', 'title');
-    aggregate('title', 'amado|2011', 1, 9, '{"touched":1,"shocked":2}');
+    aggregate('title', 'amado|2011', 1, 9, '{"touched":1,"shocked":2}', '{"9":1}');
 
     rating('r2', 'p2', '428391', 8, 'touched');
-    aggregate('tvdb', '428391', 1, 8, '{"touched":1}');
+    aggregate('tvdb', '428391', 1, 8, '{"touched":1}', '{"8":1,"9":2}');
 
     const res = await migrateTitleThreads(db, [
       { old_key: 'amado|2011', new_source: 'tvdb', new_key: '428391' },
@@ -376,11 +435,18 @@ describe('migrateTitleThreads', () => {
 
     const merged = raw
       .prepare(
-        `SELECT vote_count, score_sum, emotion_counts FROM rating_aggregates
+        `SELECT vote_count, score_sum, emotion_counts, score_counts FROM rating_aggregates
           WHERE target_source = 'tvdb' AND target_key = '428391'`,
       )
       .get();
-    expect(merged).toEqual({ vote_count: 2, score_sum: 17, emotion_counts: '{"touched":2,"shocked":2}' });
+    expect(merged).toEqual({
+      vote_count: 2,
+      score_sum: 17,
+      emotion_counts: '{"touched":2,"shocked":2}',
+      // Both distributions merge; dropping the source's would throw away a
+      // spread nothing could rebuild until the next 04:00 run.
+      score_counts: '{"8":1,"9":3}',
+    });
 
     // The source row is gone, not left behind as a second half of the thread.
     expect(
