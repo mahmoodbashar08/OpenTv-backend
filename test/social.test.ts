@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   chunk,
   coveredByWatermark,
@@ -231,5 +231,111 @@ describe('POST /v1/me/friends/reconcile — past one statement\'s worth of ids',
     expect(res.status).toBe(200);
     const handles = res.json.matched.map((m: { handle: string }) => m.handle).sort();
     expect(handles).toEqual(['aya', 'basim']);
+  });
+});
+
+/**
+ * GET /v1/profiles/:handle/comments.
+ *
+ * A profile could report "2 comments" and had no endpoint that could show
+ * them: the thread read wants a target or a parent, so the screen rendered a
+ * count band over an empty page. These assertions are mostly about the
+ * endpoint NOT becoming a back door — everything the thread hides, a profile
+ * must hide too.
+ */
+describe('a profile’s own comments', () => {
+  let raw: import('better-sqlite3').Database;
+  let env: import('@/env').Env;
+
+  const say = (id: string, author: string, body: string, at: string, over: Record<string, unknown> = {}) =>
+    raw
+      .prepare(
+        `INSERT INTO comments (id, author_id, target_source, target_key, season, episode, body,
+                               is_spoiler, lang, parent_id, imported_at, created_at,
+                               deleted_at, hidden_at, like_count)
+         VALUES (?, ?, 'tvdb', '121361', 1, 3, ?, 0, NULL, ?, NULL, ?, ?, ?, 0)`,
+      )
+      .run(
+        id,
+        author,
+        body,
+        (over.parent_id as string) ?? null,
+        at,
+        (over.deleted_at as string) ?? null,
+        (over.hidden_at as string) ?? null,
+      );
+
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    insertProfile(raw, 'p2', 'sara');
+  });
+
+  it('returns them newest first', async () => {
+    say('c1', 'p1', 'older', '2019-01-01T00:00:00.000Z');
+    say('c2', 'p1', 'newer', '2022-01-01T00:00:00.000Z');
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
+    expect(res.status).toBe(200);
+    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['newer', 'older']);
+  });
+
+  it('returns only that person’s', async () => {
+    say('c1', 'p1', 'mine', '2022-01-01T00:00:00.000Z');
+    say('c2', 'p2', 'hers', '2022-01-02T00:00:00.000Z');
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
+    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['mine']);
+  });
+
+  it('includes replies — they are things this person wrote', async () => {
+    say('c1', 'p2', 'top', '2022-01-01T00:00:00.000Z');
+    say('c2', 'p1', 'my reply', '2022-01-02T00:00:00.000Z', { parent_id: 'c1' });
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
+    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['my reply']);
+  });
+
+  it('hides deleted and moderator-hidden rows, exactly as the thread does', async () => {
+    say('c1', 'p1', 'gone', '2022-01-01T00:00:00.000Z', { deleted_at: '2026-01-01T00:00:00.000Z' });
+    say('c2', 'p1', 'hidden', '2022-01-02T00:00:00.000Z', { hidden_at: '2026-01-01T00:00:00.000Z' });
+    say('c3', 'p1', 'visible', '2022-01-03T00:00:00.000Z');
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
+    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['visible']);
+  });
+
+  it('pages on (created_at, id), so a seeding batch in one second cannot repeat a row', async () => {
+    const same = '2022-01-01T00:00:00.000Z';
+    for (const id of ['c1', 'c2', 'c3']) say(id, 'p1', id, same);
+
+    const first = await call(env, 'GET', '/v1/profiles/mahmood/comments?limit=2');
+    expect(first.json.items).toHaveLength(2);
+    expect(first.json.next_cursor).toBeTruthy();
+
+    const second = await call(
+      env,
+      'GET',
+      `/v1/profiles/mahmood/comments?limit=2&cursor=${encodeURIComponent(first.json.next_cursor)}`,
+    );
+    const seen = [...first.json.items, ...second.json.items].map((i: { id: string }) => i.id);
+    expect(new Set(seen).size).toBe(3);
+  });
+
+  it('is 404 for a profile that does not exist', async () => {
+    expect((await call(env, 'GET', '/v1/profiles/nobody/comments')).status).toBe(404);
+  });
+
+  it('is 403 on a private profile a stranger has not earned', async () => {
+    raw.prepare("UPDATE profiles SET is_private = 1 WHERE id = 'p1'").run();
+    say('c1', 'p1', 'private thoughts', '2022-01-01T00:00:00.000Z');
+
+    expect((await call(env, 'GET', '/v1/profiles/mahmood/comments')).status).toBe(403);
+    // …and the owner still sees their own.
+    const mine = await call(env, 'GET', '/v1/profiles/mahmood/comments', { token: await tokenFor(env, 'p1') });
+    expect(mine.status).toBe(200);
+    expect(mine.json.items).toHaveLength(1);
   });
 });

@@ -4,11 +4,14 @@ import { fail } from '@/http';
 import {
   handlePrefixPattern,
   isPlus,
+  makeCursor,
   normaliseHandle,
+  pageSize,
+  parseCursor,
   USER_SEARCH_LIMIT,
   visibleProfileFields,
 } from '@/pure';
-import { optionalViewer } from '@/routes/comments';
+import { optionalViewer, shapeComment, type CommentRow } from '@/routes/comments';
 import { edgePage } from '@/routes/follows';
 
 /**
@@ -246,6 +249,75 @@ profiles.get('/profiles/:handle/lists', async (c) => {
     .all<ListRow>();
 
   return c.json({ items: (res.results ?? []).map(shapeList) });
+});
+
+// ── GET /v1/profiles/:handle/comments ───────────────────────────────────────
+
+/**
+ * Everything one person has said, newest first.
+ *
+ * WHY IT DID NOT EXIST AND HAD TO. `GET /v1/comments` can only fetch a THREAD —
+ * it wants a target, or a parent. So a profile could show "2 comments" as a
+ * number and had no way on earth to show the two comments; the screen rendered
+ * a count band over an empty page. For an app whose first act is importing
+ * seven years of someone's writing, "your words are here, you may not read
+ * them" is the wrong sentence to ship.
+ *
+ * THE SAME VISIBILITY RULES AS THE THREAD, to the letter: deleted, hidden, an
+ * author whose account is gone, and a block in either direction all remove a
+ * row here exactly as they do there. A profile must never become the back door
+ * to a comment the thread would not show.
+ *
+ * Replies are included. They are things this person wrote, and a profile that
+ * silently dropped them would under-report against its own count.
+ */
+profiles.get('/profiles/:handle/comments', async (c) => {
+  const viewer = await optionalViewer(c.env, c.req.header('Authorization'));
+  const row = await readProfile(c.env, c.req.param('handle'), viewer);
+  if (!row || row.blocked === 1) return fail(c, 404, 'not_found', 'No such profile.');
+  if (!maySeeDetail(row, viewer)) return fail(c, 403, 'forbidden', 'This profile is private.');
+
+  const url = new URL(c.req.url);
+  const limit = pageSize(url.searchParams.get('limit'));
+  const cursor = parseCursor(url.searchParams.get('cursor'));
+
+  const where = [
+    'c.author_id = ?',
+    'c.deleted_at IS NULL',
+    'c.hidden_at IS NULL',
+    'p.deleted_at IS NULL',
+  ];
+  const binds: (string | number)[] = [row.id];
+  if (cursor) {
+    // A row value, for the reason the thread read gives: an imported seeding
+    // batch writes hundreds of rows in the same second, so `created_at` alone
+    // would skip or repeat rows at every page boundary.
+    where.push('(c.created_at, c.id) < (?, ?)');
+    binds.push(cursor.createdAt, cursor.id);
+  }
+
+  const res = await c.env.DB.prepare(
+    `SELECT c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
+            c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
+            c.created_at, c.edited_at,
+            p.handle, p.display_name, p.avatar_key,
+            EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
+            0 AS reply_count
+     FROM comments c JOIN profiles p ON p.id = c.author_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY c.created_at DESC, c.id DESC
+     LIMIT ?`,
+  )
+    .bind(viewer, ...binds, limit + 1)
+    .all<CommentRow>();
+
+  const rows = res.results ?? [];
+  const page = rows.slice(0, limit);
+  const last = page[page.length - 1];
+  // limit + 1: the extra row is how `next_cursor` knows it is not the last page.
+  const nextCursor = rows.length > limit && last ? makeCursor(last.created_at, last.id) : null;
+
+  return c.json({ items: page.map(shapeComment), next_cursor: nextCursor });
 });
 
 // ── GET /v1/lists/:id ───────────────────────────────────────────────────────
