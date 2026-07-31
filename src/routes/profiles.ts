@@ -208,6 +208,44 @@ profiles.get('/profiles/:handle/followers', async (c) => {
   );
 });
 
+// ── GET /v1/profiles/:handle/following ──────────────────────────────────────
+
+/**
+ * Who this person follows — the mirror of the route above, and it did not
+ * exist.
+ *
+ * WHY IT HAD TO. A profile's count band says "12 following" and the number was
+ * unopenable on anybody but yourself: the only following list the server
+ * published was `/v1/me/following`. So somebody else's profile had a count you
+ * could read and not follow, while your own opened. Two profiles, two
+ * behaviours, one design — which is the thing the shared profile template
+ * exists to stop.
+ *
+ * IDENTICAL VISIBILITY to the followers list, deliberately: a 404 for a handle
+ * that is absent, deleted or blocked in either direction, and a 403 for a
+ * private profile you do not follow. Who somebody follows is exactly as
+ * revealing as who follows them, so it cannot be the softer of the two.
+ */
+profiles.get('/profiles/:handle/following', async (c) => {
+  const viewer = await optionalViewer(c.env, c.req.header('Authorization'));
+  const row = await readProfile(c.env, c.req.param('handle'), viewer);
+  if (!row || row.blocked === 1) return fail(c, 404, 'not_found', 'No such profile.');
+  if (!maySeeDetail(row, viewer)) return fail(c, 403, 'forbidden', 'This profile is private.');
+
+  // The columns swap round: a follower row matches on `followee_id` and yields
+  // the follower; a following row matches on `follower_id` and yields the
+  // followee. Same helper, same cursor, same page size.
+  return c.json(
+    await edgePage(
+      c.env.DB,
+      'follower_id',
+      'followee_id',
+      row.id,
+      new URL(c.req.url).searchParams.get('cursor'),
+    ),
+  );
+});
+
 // ── GET /v1/profiles/:handle/lists ──────────────────────────────────────────
 
 type ListRow = {

@@ -362,3 +362,96 @@ describe('a profile’s own comments', () => {
     expect(mine.json.items).toHaveLength(1);
   });
 });
+
+/**
+ * GET /v1/profiles/:handle/following.
+ *
+ * The mirror of the followers list, and the reason it exists: a profile's
+ * "following" count was unopenable on anybody but yourself, so the same number
+ * behaved differently on your profile and on somebody else's.
+ *
+ * The two directions must not be confused — that is the one thing a copied
+ * handler gets wrong — so every test here checks that A-follows-B produces B in
+ * A's following list and A in B's followers list, never the reverse.
+ */
+describe('GET /v1/profiles/:handle/following', () => {
+  let raw: import('better-sqlite3').Database;
+  let env: import('@/env').Env;
+
+  const followed = (a: string, b: string) =>
+    raw
+      .prepare('INSERT INTO follows (follower_id, followee_id, created_at) VALUES (?, ?, ?)')
+      .run(a, b, '2026-01-01T00:00:00.000Z');
+
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    insertProfile(raw, 'p2', 'sara');
+    insertProfile(raw, 'p3', 'amanda');
+  });
+
+  it('lists who they follow, not who follows them', async () => {
+    followed('p1', 'p2'); // mahmood follows sara
+    followed('p3', 'p1'); // amanda follows mahmood
+
+    const following = await call(env, 'GET', '/v1/profiles/mahmood/following');
+    expect(following.status).toBe(200);
+    expect(following.json.items.map((i: { handle: string }) => i.handle)).toEqual(['sara']);
+
+    // …and the followers route still answers the other question.
+    const followers = await call(env, 'GET', '/v1/profiles/mahmood/followers');
+    expect(followers.json.items.map((i: { handle: string }) => i.handle)).toEqual(['amanda']);
+  });
+
+  it('is empty for somebody who follows nobody', async () => {
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/following');
+    expect(res.status).toBe(200);
+    expect(res.json.items).toEqual([]);
+  });
+
+  it('is 404 for a profile that does not exist', async () => {
+    expect((await call(env, 'GET', '/v1/profiles/nobody/following')).status).toBe(404);
+  });
+
+  it('is 403 on a private profile a stranger has not earned, 200 for the owner', async () => {
+    followed('p1', 'p2');
+    raw.prepare("UPDATE profiles SET is_private = 1 WHERE id = 'p1'").run();
+
+    expect((await call(env, 'GET', '/v1/profiles/mahmood/following')).status).toBe(403);
+
+    const mine = await call(env, 'GET', '/v1/profiles/mahmood/following', {
+      token: await tokenFor(env, 'p1'),
+    });
+    expect(mine.status).toBe(200);
+    expect(mine.json.items).toHaveLength(1);
+  });
+
+  it('is 403 for a private profile until you follow it', async () => {
+    followed('p1', 'p2');
+    raw.prepare("UPDATE profiles SET is_private = 1 WHERE id = 'p1'").run();
+    followed('p3', 'p1'); // amanda now follows mahmood
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/following', {
+      token: await tokenFor(env, 'p3'),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('is 404 across a block, in either direction', async () => {
+    followed('p1', 'p2');
+    const p3 = await tokenFor(env, 'p3');
+
+    raw
+      .prepare("INSERT INTO blocks (blocker_id, blocked_id, created_at) VALUES ('p1','p3','2026-01-01T00:00:00Z')")
+      .run();
+    expect((await call(env, 'GET', '/v1/profiles/mahmood/following', { token: p3 })).status).toBe(404);
+
+    raw.prepare('DELETE FROM blocks').run();
+    raw
+      .prepare("INSERT INTO blocks (blocker_id, blocked_id, created_at) VALUES ('p3','p1','2026-01-01T00:00:00Z')")
+      .run();
+    expect((await call(env, 'GET', '/v1/profiles/mahmood/following', { token: p3 })).status).toBe(404);
+  });
+});
