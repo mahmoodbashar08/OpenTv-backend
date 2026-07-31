@@ -646,3 +646,124 @@ export function autoHides(existingReports: number): boolean {
 export function shouldNotify(actorId: string, recipientId: string): boolean {
   return actorId.length > 0 && recipientId.length > 0 && actorId !== recipientId;
 }
+
+/**
+ * The inbox is marked read by WATERMARK, not by a list of ids: the badge then
+ * clears in one request regardless of how many rows are behind it
+ * (docs/IMPLEMENTATION.md Step 4).
+ *
+ * This mirrors the `created_at <= ?` in that statement, boundary included — a
+ * notification stamped exactly at the watermark IS covered. Exclusive would
+ * leave the newest row unread every single time, because that is precisely the
+ * timestamp a client sends back.
+ */
+export function coveredByWatermark(createdAt: string, upTo: string): boolean {
+  return createdAt <= upTo;
+}
+
+// ── follow, profiles, reconnection (Step 4) ─────────────────────────────────
+
+/** Followers and following. Bigger than a thread page: a name list is cheap to render. */
+export const FOLLOW_PAGE = 50;
+
+/**
+ * `plus_until > now` — a BOOLEAN, never the date. The date is an entitlement
+ * detail and belongs to RevenueCat (docs/IMPLEMENTATION.md Step 4); handing it
+ * to every reader of a public profile publishes a stranger's billing cycle.
+ *
+ * Compared as ISO strings, which sort correctly as long as both are UTC — and
+ * every timestamp this server writes is `toISOString()`.
+ */
+export function isPlus(plusUntil: string | null | undefined, nowIso: string): boolean {
+  return typeof plusUntil === 'string' && plusUntil.length > 0 && plusUntil > nowIso;
+}
+
+export type ProfileCounts = {
+  followers: number;
+  following: number;
+  comments: number;
+  lists: number;
+};
+
+/** Everything a profile read gathers, before the privacy rule is applied. */
+export type FullProfileView = {
+  id: string;
+  handle: string;
+  display_name: string | null;
+  avatar_key: string | null;
+  bio: string | null;
+  is_private: boolean;
+  links: unknown;
+  is_plus: boolean;
+  counts: ProfileCounts;
+  followed_by_me: boolean;
+  created_at: string;
+};
+
+/** What a given viewer is allowed to see of it. `null` where a field is withheld. */
+export type VisibleProfile = Omit<FullProfileView, 'bio' | 'links' | 'counts'> & {
+  bio: string | null;
+  links: unknown;
+  counts: ProfileCounts | null;
+};
+
+/**
+ * The `is_private` matrix, in one place because it is the rule most easily got
+ * subtly wrong in three handlers.
+ *
+ * A private profile still returns its SHELL — handle, display name, avatar and
+ * `is_private: true`. It has to: you cannot ask to follow someone you cannot
+ * find. What it withholds is counts, bio and links, and it withholds them from
+ * everyone who is neither the owner nor an accepted follower.
+ *
+ * The withheld fields come back as explicit `null` rather than as missing keys,
+ * so the client renders one shape and the plan's `jq .counts` reads `null`.
+ */
+export function visibleProfileFields(
+  profile: FullProfileView,
+  viewerFollows: boolean,
+  isSelf: boolean,
+): VisibleProfile {
+  if (!profile.is_private || isSelf || viewerFollows) return { ...profile };
+  return {
+    ...profile,
+    bio: null,
+    links: null,
+    counts: null,
+  };
+}
+
+/** One reconcile call's worth of friend ids. The app loops; the server refuses more. */
+export const RECONCILE_MAX_IDS = 500;
+
+export type FriendIdsFailure = 'not_an_array' | 'too_many' | 'not_an_integer';
+
+/**
+ * TV Time ids are positive integers and nothing else. A float, a numeric
+ * string or a negative is a client bug, and answering it with a 400 is how the
+ * client's author finds out — silently coercing would send junk into an `IN`
+ * over a partial index and return nothing, forever, for no visible reason.
+ */
+export function validateFriendIds(
+  v: unknown,
+): { ok: true; ids: number[] } | { ok: false; reason: FriendIdsFailure } {
+  if (!Array.isArray(v)) return { ok: false, reason: 'not_an_array' };
+  if (v.length > RECONCILE_MAX_IDS) return { ok: false, reason: 'too_many' };
+  const ids: number[] = [];
+  for (const raw of v) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+      return { ok: false, reason: 'not_an_integer' };
+    }
+    ids.push(raw);
+  }
+  // Duplicates in an export are real; deduping here keeps the `IN` list honest.
+  return { ok: true, ids: [...new Set(ids)] };
+}
+
+/** Fixed-size slices. The app chunks `friend_ids` at 500; this is the same rule, server-side. */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  if (size <= 0) return [items.slice()];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}

@@ -3,8 +3,12 @@ import type { App } from '@/env';
 import { auth } from '@/routes/auth';
 import { blocks } from '@/routes/blocks';
 import { comments } from '@/routes/comments';
+import { follows } from '@/routes/follows';
 import { commentImport } from '@/routes/import';
+import { notifications } from '@/routes/notifications';
+import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
+import { reconcile } from '@/routes/reconcile';
 import { reports } from '@/routes/reports';
 
 export type { Env } from '@/env';
@@ -42,6 +46,10 @@ v1.route('/', commentImport);
 v1.route('/', comments);
 v1.route('/', reports);
 v1.route('/', blocks);
+v1.route('/', follows);
+v1.route('/', profiles);
+v1.route('/', notifications);
+v1.route('/', reconcile);
 
 app.route('/v1', v1);
 
