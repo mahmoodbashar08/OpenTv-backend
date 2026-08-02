@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { chunk, D1_MAX_BOUND_PARAMS, isTargetSource, numberOrNull } from '@/pure';
+import { chunk, D1_MAX_BOUND_PARAMS, isTargetSource, listId, numberOrNull } from '@/pure';
 import { optionalViewer } from '@/routes/comments';
 
 /**
@@ -254,4 +254,115 @@ published.get('/profiles/:handle/published', async (c) => {
     shows: all.filter((r) => r.kind === 'show').map(shape),
     movies: all.filter((r) => r.kind === 'movie').map(shape),
   });
+});
+
+// ── POST /v1/published/lists ────────────────────────────────────────────────
+
+/** A profile is a shelf, not an archive: enough to browse, not a full library. */
+export const PUBLISH_MAX_LISTS = 50;
+export const PUBLISH_MAX_LIST_ITEMS = 200;
+
+type ListInput = {
+  name?: unknown;
+  description?: unknown;
+  items?: unknown;
+};
+
+type ListItemInput = {
+  target_source?: unknown;
+  target_key?: unknown;
+  title?: unknown;
+  poster?: unknown;
+};
+
+/**
+ * Publish the owner's lists — the band a public profile has never been able to
+ * draw.
+ *
+ * THE TABLES HAVE ALWAYS BEEN HERE, and so has the reading: `/profiles/:handle/
+ * lists`, `/lists/:id`, the client functions and the screen. Nothing ever wrote
+ * them, so every profile showed no lists and the section simply did not appear.
+ *
+ * REPLACE, not merge — the same rule the title shelves follow. The phone sends
+ * the lists it wants public and this becomes the whole truth; a list deleted or
+ * hidden on the phone has to vanish here, and a merge could only ever grow.
+ *
+ * PRIVACY IS THE PHONE'S DECISION. Anything marked "Hide from profile" is never
+ * sent, so there is nothing here to leak. `is_public` is written 1 for what
+ * arrives, because arriving IS the act of publishing it.
+ */
+published.post('/published/lists', requireAuth, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.lists)) return fail(c, 400, 'invalid_body', 'lists must be an array.');
+  if (b.lists.length > PUBLISH_MAX_LISTS) {
+    return fail(c, 413, 'too_large', `At most ${PUBLISH_MAX_LISTS} lists per request.`);
+  }
+
+  const me = c.get('profileId');
+  const db = c.env.DB;
+  const nowIso = new Date().toISOString();
+
+  const lists: { id: string; name: string; description: string | null; items: {
+    source: string; key: string; title: string | null; poster: string | null;
+  }[] }[] = [];
+
+  for (const raw of b.lists as ListInput[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 120) : '';
+    if (name.length === 0) continue;
+
+    const items: { source: string; key: string; title: string | null; poster: string | null }[] = [];
+    if (Array.isArray(raw.items)) {
+      for (const it of (raw.items as ListItemInput[]).slice(0, PUBLISH_MAX_LIST_ITEMS)) {
+        if (!it || typeof it !== 'object') continue;
+        if (!isTargetSource(it.target_source)) continue;
+        if (typeof it.target_key !== 'string' || it.target_key.length === 0) continue;
+        items.push({
+          source: it.target_source,
+          key: it.target_key,
+          title: typeof it.title === 'string' && it.title.length > 0 ? it.title.slice(0, 200) : null,
+          poster: typeof it.poster === 'string' && it.poster.length > 0 ? it.poster.slice(0, 500) : null,
+        });
+      }
+    }
+
+    // DERIVED from the owner and the name, not random: re-publishing must land
+    // on the same id, or every sync would hand a reader a new URL for a list
+    // they already had open.
+    lists.push({ id: listId(me, name), name, description: null, items });
+  }
+
+  const statements = [
+    db.prepare('DELETE FROM list_items WHERE list_id IN (SELECT id FROM lists WHERE owner_id = ?)').bind(me),
+    db.prepare('DELETE FROM lists WHERE owner_id = ?').bind(me),
+  ];
+  for (const l of lists) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO lists (id, owner_id, name, description, is_public, created_at)
+           VALUES (?, ?, ?, ?, 1, ?)`,
+        )
+        .bind(l.id, me, l.name, l.description, nowIso),
+    );
+    l.items.forEach((it, i) => {
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO list_items (list_id, position, target_source, target_key, title, poster)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(l.id, i, it.source, it.key, it.title, it.poster),
+      );
+    });
+  }
+
+  await db.batch(statements);
+  return c.json({ lists: lists.length });
 });

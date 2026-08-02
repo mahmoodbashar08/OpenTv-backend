@@ -1175,3 +1175,31 @@ export function mergeEmotionCounts(a: string | null, b: string | null): string {
   }
   return JSON.stringify(out);
 }
+
+/**
+ * A published list's id: derived from its owner and its name, never random.
+ *
+ * Publishing REPLACES the owner's lists, so a random id would hand a reader a
+ * new URL every sync — a shared link, or a profile someone had open, would go
+ * to a list that no longer exists while the same list sat beside it under a new
+ * name. Derived means "the avengers list" is the same row forever.
+ *
+ * FNV-1a over `owner|lowercased name`: short, stable across platforms, and with
+ * no crypto to reach for inside a Worker on the write path.
+ */
+export function listId(ownerId: string, name: string): string {
+  const input = `${ownerId}|${name.trim().toLowerCase()}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  // A second pass over the reversed string: one 32-bit hash across a few
+  // thousand lists per owner is more collision than this deserves.
+  let g = 0x811c9dc5;
+  for (let i = input.length - 1; i >= 0; i--) {
+    g ^= input.charCodeAt(i);
+    g = Math.imul(g, 0x01000193) >>> 0;
+  }
+  return `l_${h.toString(36)}${g.toString(36)}`;
+}

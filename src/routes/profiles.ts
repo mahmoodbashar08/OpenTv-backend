@@ -399,12 +399,21 @@ profiles.get('/lists/:id', async (c) => {
   // Ordered by position, with the DENORMALISED title: rendering a list must
   // not require a metadata lookup, which is the entire reason `title` is
   // stored on the item.
+  // `poster` alongside the title, for the same reason: a collage that has to
+  // resolve artwork before it can draw is a collage of grey rectangles, and the
+  // server has no catalogue to resolve it FROM — the publishing phone does.
   const items = await c.env.DB.prepare(
-    `SELECT position, target_source, target_key, title
+    `SELECT position, target_source, target_key, title, poster
      FROM list_items WHERE list_id = ? ORDER BY position`,
   )
     .bind(row.id)
-    .all<{ position: number; target_source: string; target_key: string; title: string | null }>();
+    .all<{
+      position: number;
+      target_source: string;
+      target_key: string;
+      title: string | null;
+      poster: string | null;
+    }>();
 
   const results = items.results ?? [];
   return c.json({

@@ -1,0 +1,11 @@
+-- A published list needs artwork, or a profile draws a row of name cards.
+--
+-- `list_items` carried a title and an identity and nothing to look at, so the
+-- collage on somebody else's profile had nothing to render — the one thing that
+-- band exists to show. Denormalised onto the row rather than joined, because
+-- the poster belongs to the phone that published it: the server has no
+-- catalogue of its own and cannot resolve `tvdb:121361` to an image.
+--
+-- Nullable: an entry the publishing phone had no artwork for is still a real
+-- entry, and a name card for one item is better than dropping it.
+ALTER TABLE list_items ADD COLUMN poster TEXT;
