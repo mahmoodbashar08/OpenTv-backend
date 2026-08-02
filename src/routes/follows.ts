@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
+import { sendPush } from '@/push';
 import { requireAuth } from '@/middleware';
 import { FOLLOW_PAGE, makeCursor, parseCursor, shouldNotify } from '@/pure';
 import { newNotificationId } from '@/routes/comments';
@@ -68,6 +69,9 @@ follows.post('/follows/:profileId', requireAuth, async (c) => {
       )
       .bind(newNotificationId(), other, me, me, nowIso)
       .run();
+    // Not awaited: the row is written, and a follow that waits on Expo is a
+    // follow that feels slow. `waitUntil` keeps the Worker alive for it.
+    c.executionCtx.waitUntil(sendPush(c.env, other, me, 'follow', me));
   }
 
   return c.json({ following: true });

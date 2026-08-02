@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { sendPush } from '@/push';
 import {
   COMMENTS_PER_HOUR,
   firstAcceptLanguage,
@@ -260,6 +261,11 @@ comments.post('/comments', requireAuth, async (c) => {
 
   await db.batch(statements);
 
+  // AFTER the batch, so nothing is delivered for a row that failed to write.
+  if (parentId && parentAuthor && shouldNotify(me, parentAuthor)) {
+    c.executionCtx.waitUntil(sendPush(c.env, parentAuthor, me, 'reply', id));
+  }
+
   const row = await db
     .prepare(
       `SELECT ${COMMENT_COLUMNS} FROM comments c JOIN profiles p ON p.id = c.author_id WHERE c.id = ?`,
@@ -457,6 +463,10 @@ comments.post('/comments/:id/like', requireAuth, async (c) => {
       );
     }
     await db.batch(statements);
+    // After the batch — never deliver for a row that failed to write.
+    if (shouldNotify(me, target.author_id)) {
+      c.executionCtx.waitUntil(sendPush(c.env, target.author_id, me, 'like', id));
+    }
   }
 
   const row = await db

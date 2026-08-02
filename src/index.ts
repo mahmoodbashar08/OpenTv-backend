@@ -11,6 +11,7 @@ import { comments } from '@/routes/comments';
 import { follows } from '@/routes/follows';
 import { seeding } from '@/routes/import';
 import { notifications } from '@/routes/notifications';
+import { push } from '@/routes/push';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
 import { reconcile } from '@/routes/reconcile';
@@ -58,6 +59,7 @@ v1.route('/', blocks);
 v1.route('/', follows);
 v1.route('/', profiles);
 v1.route('/', notifications);
+v1.route('/', push);
 v1.route('/', reconcile);
 
 app.route('/v1', v1);
