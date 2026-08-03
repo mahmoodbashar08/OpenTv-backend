@@ -521,6 +521,56 @@ export const MAX_TARGETS = 100;
 export const MAX_COMMENT_IMAGE_BYTES = 8_000_000;
 
 /**
+ * The ceiling on a profile picture.
+ *
+ * Far below the comment-image limit and deliberately so: a comment photo is an
+ * irreplaceable rescued original, an avatar is a face rendered at 44 points. 2 MB
+ * is generous for the latter, and every byte of it is served on every screen
+ * that draws a person.
+ */
+export const MAX_AVATAR_BYTES = 2_000_000;
+
+/**
+ * The only hosts a profile cover may point at.
+ *
+ * THIS ALLOW-LIST IS THE ENTIRE MODERATION STORY FOR COVERS, and it is why they
+ * are a URL rather than an upload. The picker offers the backdrops of shows and
+ * films already in the user's library, straight from the two catalogues this app
+ * already reads — so a cover is a picture of Iron Man that a million other
+ * people can also see, not a photograph of anybody.
+ *
+ * Take the allow-list away and the column becomes an arbitrary-image field: one
+ * user could point another user's app at anything on the internet, and the app
+ * would render it full width behind their name. That is the same problem
+ * `comment_images` has, without any of the machinery built to contain it.
+ *
+ * Exact host match, https only. No suffix matching — `notthetvdb.com` ends with
+ * neither of these but `evil-artworks.thetvdb.com.attacker.net` would pass a
+ * naive `endsWith`.
+ */
+export const COVER_HOSTS: readonly string[] = ['artworks.thetvdb.com', 'image.tmdb.org'];
+
+/**
+ * A cover URL, or null if it may not be stored.
+ *
+ * Null is also the legitimate "remove my cover" value, so the caller
+ * distinguishes the two by whether the input was null to begin with.
+ */
+export function validCoverUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (s.length === 0 || s.length > 500) return null;
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:') return null;
+  return COVER_HOSTS.includes(u.hostname) ? s : null;
+}
+
+/**
  * The file extension for a content type, for the R2 object key.
  *
  * The extension is COSMETIC — R2 stores the real type in `httpMetadata` and
@@ -1018,6 +1068,7 @@ export type FullProfileView = {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  cover_url: string | null;
   bio: string | null;
   is_private: boolean;
   links: unknown;

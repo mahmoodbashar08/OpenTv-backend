@@ -1,5 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { slug, targetKey } from '@/pure';
+import { slug, targetKey, validCoverUrl } from '@/pure';
+
+/**
+ * The allow-list IS the moderation story for covers — it is the only thing
+ * standing between "a backdrop of a show you watch" and "any image on the
+ * internet, rendered full width behind somebody's name".
+ */
+describe('validCoverUrl', () => {
+  it('takes the two catalogue CDNs over https', () => {
+    expect(validCoverUrl('https://image.tmdb.org/t/p/w1280/a.jpg')).toBe('https://image.tmdb.org/t/p/w1280/a.jpg');
+    expect(validCoverUrl('https://artworks.thetvdb.com/banners/fanart/original/1-2.jpg')).not.toBeNull();
+  });
+
+  it('refuses anything else', () => {
+    expect(validCoverUrl('https://example.com/a.jpg')).toBeNull();
+    // http, not https
+    expect(validCoverUrl('http://image.tmdb.org/a.jpg')).toBeNull();
+    // The suffix trick an `endsWith` check would let through.
+    expect(validCoverUrl('https://image.tmdb.org.attacker.net/a.jpg')).toBeNull();
+    // Not a URL, and the empty/absent cases.
+    expect(validCoverUrl('javascript:alert(1)')).toBeNull();
+    expect(validCoverUrl('image.tmdb.org/a.jpg')).toBeNull();
+    expect(validCoverUrl('')).toBeNull();
+    expect(validCoverUrl(null)).toBeNull();
+    expect(validCoverUrl(`https://image.tmdb.org/${'x'.repeat(600)}.jpg`)).toBeNull();
+  });
+});
 
 /**
  * The vector table from docs/IMPLEMENTATION.md, "The shared identity rule".

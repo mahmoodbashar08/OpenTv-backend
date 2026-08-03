@@ -1,0 +1,15 @@
+-- The profile cover — the fanart band behind somebody's name.
+--
+-- A URL, NOT AN UPLOAD, and that is the whole point. The cover picker does not
+-- open the camera roll: it lists the shows and films already in the library and
+-- offers that title's own backdrops from TheTVDB or TMDB
+-- (mobile/src/app/cover-picker.tsx). What the phone chooses is already a public
+-- catalogue image on a public CDN, and it already keeps the original address in
+-- `coverUrl`.
+--
+-- So there is nothing to store, nothing to scan and nothing to serve. A column
+-- holding an https address to artworks.thetvdb.com or image.tmdb.org — checked
+-- against that allow-list on write — cannot become a route by which one user
+-- shows another user a photograph. Avatars are the opposite case and pay the
+-- full price; see `routes/avatars.ts`.
+ALTER TABLE profiles ADD COLUMN cover_url TEXT;

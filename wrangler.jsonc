@@ -46,7 +46,11 @@
   // copies are the ones OpenTV downloaded to users' phones at import time —
   // this is where they are preserved. Nothing is SERVED from here until
   // `comment_images.scan_status` says 'clean'; see migration 0001.
+  //
+  // Profile pictures are the one thing here that IS served back out — see the
+  // header of src/routes/avatars.ts, and the scanning caveat in it.
   "r2_buckets": [
-    { "binding": "COMMENT_IMAGES", "bucket_name": "opentv-comment-images" }
+    { "binding": "COMMENT_IMAGES", "bucket_name": "opentv-comment-images" },
+    { "binding": "AVATARS", "bucket_name": "opentv-avatars" }
   ]
 }

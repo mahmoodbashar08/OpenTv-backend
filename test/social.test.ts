@@ -26,6 +26,7 @@ const PROFILE: FullProfileView = {
   handle: 'sara',
   display_name: 'Sara',
   avatar_key: 'av/sara.jpg',
+  cover_url: 'https://image.tmdb.org/t/p/w1280/cover.jpg',
   bio: 'Watching everything twice.',
   is_private: true,
   links: ['https://example.com'],

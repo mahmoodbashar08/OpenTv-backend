@@ -3,6 +3,7 @@ import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { runMaintenance } from '@/jobs';
 import { auth } from '@/routes/auth';
+import { avatars } from '@/routes/avatars';
 import { blocks } from '@/routes/blocks';
 import { characterVotes } from '@/routes/characters';
 import { images } from '@/routes/images';
@@ -44,6 +45,10 @@ app.get('/health', async (c) => {
  */
 const v1 = new Hono<App>();
 
+// BEFORE `auth`, which owns `/me` and `/me/*` and hangs requireAuth off both.
+// A router that claims a prefix should not be the one deciding what a path it
+// has no handler for means.
+v1.route('/', avatars);
 v1.route('/', auth);
 v1.route('/', ratings);
 // Before `comments`, so POST /v1/comments/import is never read as a comment on

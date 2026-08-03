@@ -3,7 +3,15 @@ import { verifyIdToken } from '@/auth';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { isHandleValid, needsHandle, normaliseHandle, placeholderHandle, type Provider } from '@/pure';
+import {
+  COVER_HOSTS,
+  isHandleValid,
+  needsHandle,
+  normaliseHandle,
+  placeholderHandle,
+  validCoverUrl,
+  type Provider,
+} from '@/pure';
 import { sign } from '@/session';
 
 /**
@@ -21,6 +29,7 @@ type ProfileRow = {
   handle_lower: string;
   display_name: string | null;
   avatar_key: string | null;
+  cover_url: string | null;
   bio: string | null;
   is_private: number;
   tvtime_user_id: number | null;
@@ -47,6 +56,7 @@ function ownProfile(row: ProfileRow) {
     handle: row.handle,
     display_name: row.display_name,
     avatar_key: row.avatar_key,
+    cover_url: row.cover_url,
     bio: row.bio,
     is_private: row.is_private,
     tvtime_user_id: row.tvtime_user_id,
@@ -315,7 +325,7 @@ auth.get('/me', async (c) => {
 // ── PATCH /v1/me ─────────────────────────────────────────────────────────────
 
 /** Everything a user may change about themselves. Nothing else, ever. */
-const PATCHABLE = ['display_name', 'bio', 'is_private', 'links'] as const;
+const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url'] as const;
 
 const MAX_DISPLAY_NAME = 100;
 const MAX_BIO = 500;
@@ -373,6 +383,19 @@ auth.patch('/me', async (c) => {
     if (!ok) return fail(c, 400, 'invalid_body', 'links must be an array of strings or null.');
     sets.push('links = ?');
     binds.push(v === null || (v as string[]).length === 0 ? null : JSON.stringify(v));
+  }
+  if ('cover_url' in b) {
+    const v = b.cover_url;
+    if (v !== null && typeof v !== 'string') return fail(c, 400, 'invalid_body', 'cover_url must be a string or null.');
+    // A REFUSAL, NOT A SILENT NULL. Storing null for an address off the
+    // allow-list would look to the phone like "saved" and to everyone else like
+    // "no cover", and the user would keep re-picking a band that never appears.
+    const url = v === null ? null : validCoverUrl(v);
+    if (v !== null && url === null) {
+      return fail(c, 400, 'invalid_body', `cover_url must be an https URL on ${COVER_HOSTS.join(' or ')}.`);
+    }
+    sets.push('cover_url = ?');
+    binds.push(url);
   }
 
   const me = c.get('profileId');
