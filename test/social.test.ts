@@ -313,12 +313,19 @@ describe('a profile’s own comments', () => {
     expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['mine']);
   });
 
-  it('includes replies — they are things this person wrote', async () => {
+  // A reply is half of somebody else's conversation, and the owner's own
+  // Profile tab has never listed one. A visitor seeing four where the owner
+  // counts two is the same disagreement in a number.
+  it('omits replies, and does not count them', async () => {
     say('c1', 'p2', 'top', '2022-01-01T00:00:00.000Z');
     say('c2', 'p1', 'my reply', '2022-01-02T00:00:00.000Z', { parent_id: 'c1' });
+    say('c3', 'p1', 'my own', '2022-01-03T00:00:00.000Z');
 
     const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
-    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['my reply']);
+    expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['my own']);
+
+    const prof = await call(env, 'GET', '/v1/profiles/mahmood');
+    expect(prof.json.counts.comments).toBe(1);
   });
 
   it('hides deleted and moderator-hidden rows, exactly as the thread does', async () => {

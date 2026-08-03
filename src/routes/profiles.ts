@@ -73,7 +73,8 @@ async function readProfile(env: Env, handle: string, viewer: string): Promise<Pr
             (SELECT COUNT(*) FROM follows f WHERE f.followee_id = p.id) AS followers,
             (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id) AS following,
             (SELECT COUNT(*) FROM comments c
-              WHERE c.author_id = p.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL) AS comments,
+              WHERE c.author_id = p.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL
+                AND c.parent_id IS NULL) AS comments,
             (SELECT COUNT(*) FROM lists l WHERE l.owner_id = p.id AND l.is_public = 1) AS lists,
             EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.followee_id = p.id) AS followed_by_me,
             EXISTS(SELECT 1 FROM blocks b
@@ -316,8 +317,17 @@ profiles.get('/profiles/:handle/lists', async (c) => {
  * row here exactly as they do there. A profile must never become the back door
  * to a comment the thread would not show.
  *
- * Replies are included. They are things this person wrote, and a profile that
- * silently dropped them would under-report against its own count.
+ * REPLIES ARE NOT INCLUDED, and neither are they counted.
+ *
+ * They used to be, on the reasoning that they are things this person wrote. But
+ * a reply is half of somebody else's conversation: torn out of its thread it
+ * reads as a non-sequitur, and it drags a fragment of the parent's context onto
+ * a stranger's screen. The owner's own Profile tab has always shown top-level
+ * comments only, so a visitor also saw a number the owner could not reproduce —
+ * 4 against their 2.
+ *
+ * `parent_id IS NULL` is the same test `getVisibleOwnComments()` makes on the
+ * phone. One definition of "a comment on my profile", both ends.
  */
 profiles.get('/profiles/:handle/comments', async (c) => {
   const viewer = await optionalViewer(c.env, c.req.header('Authorization'));
@@ -333,6 +343,7 @@ profiles.get('/profiles/:handle/comments', async (c) => {
     'c.author_id = ?',
     'c.deleted_at IS NULL',
     'c.hidden_at IS NULL',
+    'c.parent_id IS NULL',
     'p.deleted_at IS NULL',
   ];
   const binds: (string | number)[] = [row.id];
