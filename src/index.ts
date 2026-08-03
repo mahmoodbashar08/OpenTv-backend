@@ -9,6 +9,7 @@ import { characterVotes } from '@/routes/characters';
 import { images } from '@/routes/images';
 import { published } from '@/routes/published';
 import { comments } from '@/routes/comments';
+import { emailAuth } from '@/routes/email-auth';
 import { follows } from '@/routes/follows';
 import { seeding } from '@/routes/import';
 import { notifications } from '@/routes/notifications';
@@ -49,6 +50,10 @@ const v1 = new Hono<App>();
 // A router that claims a prefix should not be the one deciding what a path it
 // has no handler for means.
 v1.route('/', avatars);
+// Before `auth` for the same reason avatars is: that router claims `/auth/*`
+// shapes and `/me/*`, and should not be the one deciding what a path it has no
+// handler for means.
+v1.route('/', emailAuth);
 v1.route('/', auth);
 v1.route('/', ratings);
 // Before `comments`, so POST /v1/comments/import is never read as a comment on

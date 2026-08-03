@@ -19,8 +19,22 @@ export type Env = {
    */
   GOOGLE_CLIENT_IDS: string;
 
-  /** Not bound yet — avatars ship later. Guarded everywhere it is touched. */
+  /** Profile pictures and covers. Guarded everywhere it is touched. */
   AVATARS?: R2Bucket;
+
+  /**
+   * Sending email — verification and password resets.
+   *
+   * ALL OPTIONAL, and email sign-in works without them: an account is created
+   * and a token issued whether or not a message can go out. Missing means "no
+   * mail configured yet", never a failed signup. See `mail.ts`.
+   */
+  RESEND_API_KEY?: string;
+  /** e.g. `OpenTV <hello@opentv.app>`. Must be a verified Resend domain. */
+  MAIL_FROM?: string;
+  /** Deep links the emails point at. Defaults are the app's own scheme. */
+  APP_LINK_BASE?: string;
+  APP_RESET_LINK_BASE?: string;
 
   /**
    * Where a rescued TV Time comment photo is kept.

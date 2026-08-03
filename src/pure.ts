@@ -533,6 +533,95 @@ export const MAX_AVATAR_BYTES = 2_000_000;
 /** A cover is a full-width backdrop rather than a 44-point circle, so it gets more room. */
 export const MAX_COVER_BYTES = 5_000_000;
 
+// ── email sign-in ───────────────────────────────────────────────────────────
+
+/**
+ * An address, normalised, or null if it is not one.
+ *
+ * DELIBERATELY NOT A FULL RFC 5322 PARSER. That grammar admits quoted strings,
+ * comments and nested pairs that no real signup form produces, and every
+ * attempt to match it with one expression has been a famous mistake. What
+ * matters here is: something before an @, something after it with a dot, no
+ * whitespace, and a sane length. The real verification is that we send mail to
+ * it and they click the link.
+ *
+ * LOWERCASED WHOLE. The local part is technically case-sensitive; treating it
+ * that way would let `Me@x.com` and `me@x.com` be two accounts, which no user
+ * has ever wanted and every provider that matters already refuses.
+ */
+export function normaliseEmail(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim().toLowerCase();
+  if (s.length < 6 || s.length > 254) return null;
+  if (/\s/.test(s)) return null;
+  const at = s.indexOf('@');
+  if (at < 1 || at !== s.lastIndexOf('@')) return null;
+  const domain = s.slice(at + 1);
+  if (domain.length < 3 || !domain.includes('.') || domain.startsWith('.') || domain.endsWith('.')) return null;
+  if (domain.includes('..')) return null;
+  return s;
+}
+
+export const PASSWORD_MIN = 8;
+export const PASSWORD_MAX = 200;
+
+export type PasswordFailure = 'too_short' | 'too_long' | 'too_common';
+
+/**
+ * LENGTH, AND A LIST OF THE OBVIOUS ONES. No character-class rules.
+ *
+ * Requiring a digit and a symbol produces `Password1!` and a sticky note; it
+ * measurably lowers real-world strength while making the form hostile. Current
+ * NIST guidance says the same: check length, screen against known-bad, and
+ * otherwise leave people alone. The upper bound exists only so a megabyte of
+ * text cannot be fed to PBKDF2 210,000 times.
+ */
+export function passwordError(password: unknown): PasswordFailure | null {
+  if (typeof password !== 'string') return 'too_short';
+  if (password.length < PASSWORD_MIN) return 'too_short';
+  if (password.length > PASSWORD_MAX) return 'too_long';
+  const flat = password.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (COMMON_PASSWORDS.has(flat)) return 'too_common';
+  return null;
+}
+
+/** Not a breach corpus — the handful that a screening list this size can pay for. */
+const COMMON_PASSWORDS = new Set([
+  'password',
+  'password1',
+  'password123',
+  '12345678',
+  '123456789',
+  '1234567890',
+  'qwerty',
+  'qwertyuiop',
+  'qwerty123',
+  'iloveyou',
+  'admin',
+  'welcome',
+  'welcome1',
+  'letmein',
+  'abc12345',
+  'monkey',
+  'dragon',
+  'sunshine',
+  'princess',
+  'football',
+  'baseball',
+  'opentv',
+  'opentv123',
+  'tvtime',
+  'tvtime123',
+]);
+
+/** How long a verification link or a reset code stays usable. */
+export const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+export const RESET_TTL_MS = 60 * 60 * 1000;
+
+/** Failed sign-ins before that ONE account is paused, and for how long. */
+export const LOGIN_FAIL_LIMIT = 8;
+export const LOGIN_LOCK_MS = 15 * 60 * 1000;
+
 /**
  * The only hosts a profile cover may point at.
  *
