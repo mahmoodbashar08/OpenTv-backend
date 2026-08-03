@@ -56,21 +56,46 @@ async function storeImage(c: Context<App>, kind: 'avatar' | 'cover'): Promise<Re
   const column = kind === 'avatar' ? 'avatar_key' : 'cover_url';
   const folder = kind === 'avatar' ? 'avatars' : 'covers';
 
-  let form: FormData;
-  try {
-    form = await c.req.formData();
-  } catch {
-    return fail(c, 400, 'invalid_body', 'Body must be multipart/form-data.');
+  /**
+   * TWO BODY SHAPES, because one of them cannot be trusted on a phone.
+   *
+   * Multipart is what a browser and `curl -F` send, and it stays supported. But
+   * React Native's `FormData` takes a `{ uri, name, type }` shim rather than a
+   * real File, and building that body is done by the platform, off the JS
+   * thread, with failures surfacing as an opaque "Network request failed" that
+   * never reaches the server — invisible in a Worker tail, because there is no
+   * request. That is exactly how a cover upload failed silently three launches
+   * running.
+   *
+   * So a raw body with an image Content-Type is also accepted. The phone reads
+   * its own bytes and posts them, which involves no multipart encoder at all.
+   */
+  const contentType = (c.req.header('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  let bytes: ArrayBuffer;
+  let type: string;
+
+  if (contentType === 'multipart/form-data') {
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      return fail(c, 400, 'invalid_body', 'Body must be multipart/form-data.');
+    }
+    const file = form.get('image');
+    if (!(file instanceof File)) return fail(c, 400, 'invalid_body', 'An image file is required.');
+    type = file.type;
+    bytes = await file.arrayBuffer();
+  } else {
+    type = contentType;
+    bytes = await c.req.arrayBuffer();
   }
 
-  const file = form.get('image');
-  if (!(file instanceof File)) return fail(c, 400, 'invalid_body', 'An image file is required.');
-  if (!ALLOWED.has(file.type)) {
-    return fail(c, 415, 'unsupported_type', `Type ${file.type || 'unknown'} is not an image.`);
+  if (!ALLOWED.has(type)) {
+    return fail(c, 415, 'unsupported_type', `Type ${type || 'unknown'} is not an image.`);
   }
-  if (file.size <= 0) return fail(c, 400, 'invalid_body', 'The image is empty.');
+  if (bytes.byteLength <= 0) return fail(c, 400, 'invalid_body', 'The image is empty.');
   const limit = kind === 'avatar' ? MAX_AVATAR_BYTES : MAX_COVER_BYTES;
-  if (file.size > limit) {
+  if (bytes.byteLength > limit) {
     return fail(c, 413, 'too_large', `That image is at most ${Math.floor(limit / 1_000_000)} MB.`);
   }
 
@@ -78,7 +103,7 @@ async function storeImage(c: Context<App>, kind: 'avatar' | 'cover'): Promise<Re
   // Timestamped so a replacement gets a NEW address: `expo-image` and every
   // HTTP cache in between key on the URL, and a stable one would leave the old
   // picture on other people's screens for as long as it stayed cached.
-  const key = `${folder}/${me}-${Date.now()}.${imageExtension(file.type)}`;
+  const key = `${folder}/${me}-${Date.now()}.${imageExtension(type)}`;
 
   const previous = await c.env.DB.prepare(
     `SELECT ${column} AS current FROM profiles WHERE id = ? AND deleted_at IS NULL`,
@@ -87,7 +112,7 @@ async function storeImage(c: Context<App>, kind: 'avatar' | 'cover'): Promise<Re
     .first<{ current: string | null }>();
   if (!previous) return fail(c, 401, 'unauthenticated', 'No such profile.');
 
-  await bucket.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+  await bucket.put(key, bytes, { httpMetadata: { contentType: type } });
 
   const publicUrl = `${new URL(c.req.url).origin}/v1/${key}`;
   await c.env.DB.prepare(`UPDATE profiles SET ${column} = ? WHERE id = ?`).bind(publicUrl, me).run();
