@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { runMaintenance } from '@/jobs';
+import { verifyScoped } from '@/session';
 import { auth } from '@/routes/auth';
 import { avatars } from '@/routes/avatars';
 import { blocks } from '@/routes/blocks';
@@ -45,6 +46,55 @@ app.get('/health', async (c) => {
  * and to phones that never update.
  */
 const v1 = new Hono<App>();
+
+/**
+ * AN UNCONFIRMED EMAIL ACCOUNT DOES NOTHING AND SEES NOBODY.
+ *
+ * Enforced here, once, in front of every route, rather than by adding a
+ * middleware to each router — a gate you have to remember to fit is a gate
+ * somebody eventually forgets, and the cost of forgetting is an unverified
+ * account with the run of the API.
+ *
+ * It acts only when a token is PRESENT and carries the `unverified` claim, so
+ * anonymous requests are unaffected and no unauthenticated route changes
+ * behaviour. (Public profile reads are open to anyone with or without a token,
+ * by design — this stops the APP from browsing people on an unconfirmed
+ * account, which is what a signed-in user can actually do.)
+ *
+ * The allow-list is the way out and the way back: read your own state, ask for
+ * another email, confirm, or delete the account. Nothing else.
+ */
+/**
+ * METHOD AND PATH, never path alone. Listing `/v1/me` on its own let
+ * `PATCH /v1/me` through — an unconfirmed account could still edit its display
+ * name, bio and links, which is most of what a spam account wants. A test
+ * caught it; the allow-list is now exact.
+ *
+ * `DELETE /v1/me` is here because nobody should be stuck in an account they
+ * regret, and that is worth more than anything this gate protects.
+ */
+const UNVERIFIED_ALLOWED = new Set([
+  'GET /v1/me',
+  'DELETE /v1/me',
+  'POST /v1/me/email/resend',
+  'POST /v1/auth/email/verify',
+]);
+
+v1.use('*', async (c, next) => {
+  const header = c.req.header('Authorization') ?? '';
+  const match = /^Bearer (.+)$/.exec(header.trim());
+  if (match) {
+    const session = await verifyScoped(c.env, match[1]!, Date.now());
+    if (session?.scope === 'unverified') {
+      const path = new URL(c.req.url).pathname;
+      if (!UNVERIFIED_ALLOWED.has(`${c.req.method} ${path}`)) {
+        return fail(c, 403, 'email_unverified', 'Confirm your email address first.');
+      }
+    }
+  }
+  await next();
+  return;
+});
 
 // BEFORE `auth`, which owns `/me` and `/me/*` and hangs requireAuth off both.
 // A router that claims a prefix should not be the one deciding what a path it

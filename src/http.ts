@@ -26,6 +26,11 @@ export type ErrorCode =
   | 'unavailable'
   // An upload that is not one of the image types the bucket accepts.
   | 'unsupported_type'
+  // Signed in, but the email address behind the account is still unconfirmed.
+  // Its own code rather than a plain `forbidden` because the app has to tell
+  // these apart: one is "you may not", the other is "finish this first", and
+  // only the second has a screen to send somebody to.
+  | 'email_unverified'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */

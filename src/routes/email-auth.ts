@@ -7,6 +7,7 @@ import { hashPassword, hashToken, needsRehash, newToken, sameToken, verifyPasswo
 import {
   LOGIN_FAIL_LIMIT,
   LOGIN_LOCK_MS,
+  RESEND_COOLDOWN_MS,
   normaliseEmail,
   passwordError,
   placeholderHandle,
@@ -48,11 +49,14 @@ type CredRow = {
 };
 
 /** The session a successful sign-in hands back — identical to every other provider's. */
-async function session(env: Env, profileId: string, nowMs: number) {
-  const { token, expiresAt } = await sign(env, profileId, nowMs);
+async function session(env: Env, profileId: string, nowMs: number, verified: boolean) {
+  // AN UNVERIFIED ACCOUNT GETS A RESTRICTED TOKEN, not a full one. It can read
+  // its own state, enter its code, ask for another, and delete itself; every
+  // other route in the API refuses it. See `requireVerified`.
+  const { token, expiresAt } = await sign(env, profileId, nowMs, verified ? 'full' : 'unverified');
   // `expires_at` in the envelope, matching every other sign-in response — the
   // app reads one shape whichever provider it used.
-  return { token, expires_at: expiresAt };
+  return { token, expires_at: expiresAt, email_verified: verified };
 }
 
 function newProfileId(): string {
@@ -133,11 +137,11 @@ emailAuth.post('/auth/email/register', async (c) => {
 
   c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token).then(() => undefined));
 
-  // SIGNED IN IMMEDIATELY, unverified. Locking somebody out of an account they
-  // just made because an email was slow is worse than what it prevents; posting
-  // is what verification gates, and that is checked where posting happens.
-  const s = await session(c.env, profileId, nowMs);
-  return c.json({ ...s, needs_handle: true, email_verified: false }, 201);
+  // SIGNED IN IMMEDIATELY, BUT ON A LEASH. The token carries `unverified`, so
+  // the app has a session to draw its own state with and to confirm from — and
+  // every other route in the API refuses it until the link is clicked.
+  const s = await session(c.env, profileId, nowMs, false);
+  return c.json({ ...s, needs_handle: true }, 201);
 });
 
 // ── POST /v1/auth/email/login ───────────────────────────────────────────────
@@ -203,8 +207,9 @@ emailAuth.post('/auth/email/login', async (c) => {
     .bind(rehash, new Date(nowMs).toISOString(), row.profile_id)
     .run();
 
-  const s = await session(c.env, row.profile_id, nowMs);
-  return c.json({ ...s, email_verified: row.verified_at != null });
+  // Signing in again does NOT lift the restriction — only confirming does.
+  const s = await session(c.env, row.profile_id, nowMs, row.verified_at != null);
+  return c.json(s);
 });
 
 /** A real hash of a value nobody knows, so the unknown-address path costs what
@@ -243,7 +248,16 @@ emailAuth.post('/auth/email/verify', async (c) => {
   )
     .bind(nowIso, nowIso, row.profile_id)
     .run();
-  return c.json({ ok: true, email_verified: true });
+
+  // A FULL TOKEN COMES BACK WITH IT. The restriction lives in the token, so
+  // confirming has to hand over a new one — otherwise the app would be verified
+  // in the database and still locked out until the old session expired.
+  //
+  // Returned even though this route is unauthenticated: whoever holds the link
+  // has proved they can read that inbox, which is a stronger claim than the
+  // session they may or may not still have on the device they are reading on.
+  const s = await session(c.env, row.profile_id, Date.parse(nowIso), true);
+  return c.json({ ok: true, ...s });
 });
 
 // ── POST /v1/me/email/resend ────────────────────────────────────────────────
@@ -252,12 +266,19 @@ emailAuth.post('/me/email/resend', requireAuth, async (c) => {
   const me = c.get('profileId');
   const nowMs = Date.now();
   const row = await c.env.DB.prepare(
-    'SELECT email, verified_at FROM email_credentials WHERE profile_id = ?',
+    'SELECT email, verified_at, updated_at FROM email_credentials WHERE profile_id = ?',
   )
     .bind(me)
-    .first<{ email: string; verified_at: string | null }>();
+    .first<{ email: string; verified_at: string | null; updated_at: string }>();
   if (!row) return fail(c, 404, 'not_found', 'This account does not sign in with an email address.');
   if (row.verified_at) return c.json({ ok: true, email_verified: true });
+
+  // A COOLDOWN, because "send it again" is a button people press. Without one
+  // it is a way to make this server post mail at an address repeatedly, and the
+  // address is not necessarily one the presser owns.
+  if (nowMs - Date.parse(row.updated_at) < RESEND_COOLDOWN_MS) {
+    return fail(c, 429, 'rate_limited', 'Wait a minute before asking for another email.');
+  }
 
   const token = newToken();
   await c.env.DB.prepare(

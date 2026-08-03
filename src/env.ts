@@ -60,6 +60,9 @@ export type Env = {
 /** What `requireAuth` puts on the context. */
 export type Vars = {
   profileId: string;
+  /** 'unverified' for an email account that has not entered its code yet. See
+   *  `requireVerified` — the claim rides in the token so auth stays zero-I/O. */
+  scope: 'full' | 'unverified';
 };
 
 export type App = { Bindings: Env; Variables: Vars };

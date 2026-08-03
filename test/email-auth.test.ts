@@ -277,6 +277,83 @@ describe('email sign-in over HTTP', () => {
     expect((await call(env, 'POST', '/v1/auth/email/reset', { body: { token, password: 'password' } })).status).toBe(400);
   });
 
+  /**
+   * The gate. An account whose address nobody has proved they can read is an
+   * anonymous account with a display name, and it must not be able to act OR
+   * to look — a throwaway address would otherwise be a free window onto every
+   * profile and everything they watch.
+   */
+  describe('until the email is confirmed', () => {
+    let token: string;
+
+    beforeEach(async () => {
+      const res = await register('new@example.com');
+      token = res.json.token;
+    });
+
+    it('refuses to write anything', async () => {
+      for (const [method, path, body] of [
+        ['POST', '/v1/comments', { target_source: 'tvdb', target_key: '1', body: 'hello there' }],
+        ['POST', '/v1/follows/p_someone', undefined],
+        ['PUT', '/v1/me/published', { kind: 'show', stats: {}, titles: [] }],
+        ['POST', '/v1/me/avatar', undefined],
+        ['PATCH', '/v1/me', { bio: 'hi' }],
+      ] as const) {
+        const res = await call(env, method, path, { token, body });
+        expect(res.status, `${method} ${path}`).toBe(403);
+        expect(res.json.error.code).toBe('email_unverified');
+      }
+    });
+
+    it('refuses to let it look at anybody', async () => {
+      const res = await call(env, 'GET', '/v1/profiles/someone', { token });
+      expect(res.status).toBe(403);
+      expect(res.json.error.code).toBe('email_unverified');
+    });
+
+    it('still allows the four things that are the way out', async () => {
+      expect((await call(env, 'GET', '/v1/me', { token })).status).toBe(200);
+      // A resend immediately after registering is inside the cooldown, which is
+      // a 429 rather than the 403 this test is about — either way, not blocked
+      // by the gate.
+      expect((await call(env, 'POST', '/v1/me/email/resend', { token })).status).not.toBe(403);
+      expect((await call(env, 'DELETE', '/v1/me', { token })).status).not.toBe(403);
+    });
+
+    it('does not touch anonymous callers', async () => {
+      // No token: the gate must be invisible. A public read stays public.
+      expect((await call(env, 'GET', '/v1/profiles/nobody')).status).toBe(404);
+    });
+
+    it('lifts the moment the link is used, and hands back a full token', async () => {
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      const link = newToken();
+      raw
+        .prepare('UPDATE email_credentials SET verify_hash = ?, verify_expires = ? WHERE profile_id = ?')
+        .run(await hashToken(link), new Date(Date.now() + 60_000).toISOString(), row.profile_id);
+
+      const verified = await call(env, 'POST', '/v1/auth/email/verify', { body: { token: link } });
+      expect(verified.status).toBe(200);
+      expect(verified.json.token).toBeTruthy();
+
+      // The OLD token is still restricted — the claim is in the token, so a
+      // client that ignores the new one stays gated. That is the correct
+      // failure: it cannot be wrong in the permissive direction.
+      expect((await call(env, 'GET', '/v1/profiles/someone', { token })).status).toBe(403);
+      // The NEW one is not.
+      const fresh = await call(env, 'GET', '/v1/profiles/someone', { token: verified.json.token });
+      expect(fresh.status).not.toBe(403);
+    });
+
+    it('is not lifted by signing in again', async () => {
+      const again = await call(env, 'POST', '/v1/auth/email/login', {
+        body: { email: 'new@example.com', password: 'correct horse battery' },
+      });
+      expect(again.json.email_verified).toBe(false);
+      expect((await call(env, 'GET', '/v1/profiles/someone', { token: again.json.token })).status).toBe(403);
+    });
+  });
+
   it('never stores the password or a plain token', async () => {
     await register('me@example.com', 'correct horse battery');
     const row = raw.prepare('SELECT * FROM email_credentials').get() as Record<string, unknown>;

@@ -618,6 +618,9 @@ const COMMON_PASSWORDS = new Set([
 export const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 export const RESET_TTL_MS = 60 * 60 * 1000;
 
+/** How often "send it again" may actually send. */
+export const RESEND_COOLDOWN_MS = 60 * 1000;
+
 /** Failed sign-ins before that ONE account is paused, and for how long. */
 export const LOGIN_FAIL_LIMIT = 8;
 export const LOGIN_LOCK_MS = 15 * 60 * 1000;

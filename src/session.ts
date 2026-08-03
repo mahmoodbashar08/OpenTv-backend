@@ -53,16 +53,52 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * `unverified` — an email account that has not entered its code yet.
+ *
+ * IT LIVES IN THE TOKEN, not in a database lookup, because `requireAuth` does
+ * zero I/O by design and adding a read there would put a D1 round trip in front
+ * of every authenticated request in the app. A claim costs nothing, and the
+ * only way to change it is to be issued a new token — which is exactly what
+ * verifying does.
+ */
+export type SessionScope = 'full' | 'unverified';
+
 export async function sign(
   env: Env,
   profileId: string,
   nowMs: number,
+  scope: SessionScope = 'full',
 ): Promise<{ token: string; expiresAt: string }> {
   const iat = Math.floor(nowMs / 1000);
   const exp = iat + SESSION_TTL_SECONDS;
-  const data = `${b64url(JSON.stringify(HEADER))}.${b64url(JSON.stringify({ sub: profileId, iat, exp }))}`;
+  // `scp` omitted entirely when full, so every existing token stays valid and
+  // every other provider's payload is byte-for-byte what it was.
+  const claims = scope === 'full' ? { sub: profileId, iat, exp } : { sub: profileId, iat, exp, scp: scope };
+  const data = `${b64url(JSON.stringify(HEADER))}.${b64url(JSON.stringify(claims))}`;
   const token = `${data}.${await signingInput(env, data)}`;
   return { token, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+/** The profile id AND what the token is allowed to do, or null if it is not a
+ *  live, intact token. */
+export async function verifyScoped(
+  env: Env,
+  token: string,
+  nowMs: number,
+): Promise<{ profileId: string; scope: SessionScope } | null> {
+  const sub = await verify(env, token, nowMs);
+  if (!sub) return null;
+  // Re-read the payload for the claim. The signature is already proven above,
+  // so this is a parse of trusted bytes rather than a second verification.
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')) as {
+      scp?: unknown;
+    };
+    return { profileId: sub, scope: payload.scp === 'unverified' ? 'unverified' : 'full' };
+  } catch {
+    return { profileId: sub, scope: 'full' };
+  }
 }
 
 /** The profile id, or null for anything that is not a live, intact token. */
