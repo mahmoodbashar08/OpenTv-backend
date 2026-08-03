@@ -1,0 +1,11 @@
+-- A list's place in its owner's order.
+--
+-- `/profiles/:handle/lists` sorted by `created_at DESC`, so a visitor saw the
+-- newest first no matter how the owner had arranged them — and the drag-to-
+-- reorder they had just used changed nothing anybody else could see. The order
+-- IS the list set, in the same way an item's position is the list.
+--
+-- Defaulted to 0 rather than NULL: rows written before this migration all tie,
+-- and the read falls back to `created_at` to break it, which is exactly what
+-- they had before.
+ALTER TABLE lists ADD COLUMN position INTEGER NOT NULL DEFAULT 0;

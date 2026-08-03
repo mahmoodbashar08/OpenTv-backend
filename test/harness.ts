@@ -25,6 +25,7 @@ const MIGRATION_FILES = [
   '../migrations/0008_profile_title_fav_rank.sql',
   '../migrations/0009_push_tokens.sql',
   '../migrations/0010_list_item_poster.sql',
+  '../migrations/0011_list_position.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

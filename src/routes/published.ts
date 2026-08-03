@@ -342,14 +342,16 @@ published.post('/published/lists', requireAuth, async (c) => {
     db.prepare('DELETE FROM list_items WHERE list_id IN (SELECT id FROM lists WHERE owner_id = ?)').bind(me),
     db.prepare('DELETE FROM lists WHERE owner_id = ?').bind(me),
   ];
-  for (const l of lists) {
+  lists.forEach((l, position) => {
+    // POSITION IS THE ARRAY ORDER the phone sent. The owner arranged them; this
+    // is the only place that arrangement can reach anybody else.
     statements.push(
       db
         .prepare(
-          `INSERT INTO lists (id, owner_id, name, description, is_public, created_at)
-           VALUES (?, ?, ?, ?, 1, ?)`,
+          `INSERT INTO lists (id, owner_id, name, description, is_public, created_at, position)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
         )
-        .bind(l.id, me, l.name, l.description, nowIso),
+        .bind(l.id, me, l.name, l.description, nowIso, position),
     );
     l.items.forEach((it, i) => {
       statements.push(
@@ -361,7 +363,7 @@ published.post('/published/lists', requireAuth, async (c) => {
           .bind(l.id, i, it.source, it.key, it.title, it.poster),
       );
     });
-  }
+  });
 
   await db.batch(statements);
   return c.json({ lists: lists.length });

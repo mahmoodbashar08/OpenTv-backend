@@ -281,12 +281,17 @@ profiles.get('/profiles/:handle/lists', async (c) => {
 
   // Public lists only, even for the owner: this is the shop window, and an
   // owner who wants their drafts has `GET /v1/lists/:id` for each.
+  //
+  // ORDERED BY THE OWNER'S OWN ARRANGEMENT. This sorted newest-first, so the
+  // drag-to-reorder on the Lists screen changed nothing anybody else could see.
+  // `created_at` still breaks ties, for rows published before `position`
+  // existed — they all default to 0.
   const res = await c.env.DB.prepare(
     `SELECT l.id, l.name, l.description, l.is_public, l.created_at,
             (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count
      FROM lists l
      WHERE l.owner_id = ? AND l.is_public = 1
-     ORDER BY l.created_at DESC, l.id DESC`,
+     ORDER BY l.position ASC, l.created_at DESC, l.id DESC`,
   )
     .bind(row.id)
     .all<ListRow>();
