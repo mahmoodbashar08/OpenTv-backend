@@ -363,13 +363,28 @@ profiles.get('/profiles/:handle/comments', async (c) => {
             c.created_at, c.edited_at,
             p.handle, p.display_name, p.avatar_key,
             EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
-            0 AS reply_count
+            -- COUNTED, not zero. It used to be hardcoded, on the reasoning
+            -- that a profile feed is a list of what somebody wrote rather than
+            -- a thread — but the card draws the number, so every comment on
+            -- every profile claimed nobody had answered it, and the one route
+            -- into a conversation looked like a dead end.
+            --
+            -- Same block filter as the thread's own count: "1 reply" leading to
+            -- a page that shows none is a bug report, and worse, it tells the
+            -- reader that somebody they blocked is still talking.
+            (SELECT COUNT(*) FROM comments r
+              WHERE r.parent_id = c.id AND r.deleted_at IS NULL AND r.hidden_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM blocks rb
+                                WHERE (rb.blocker_id = ? AND rb.blocked_id = r.author_id)
+                                   OR (rb.blocker_id = r.author_id AND rb.blocked_id = ?))) AS reply_count
      FROM comments c JOIN profiles p ON p.id = c.author_id
      WHERE ${where.join(' AND ')}
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT ?`,
   )
-    .bind(viewer, ...binds, limit + 1)
+    // `viewer` three times: once for `liked_by_me`, twice for the reply
+    // count's block test. The order matches the placeholders above.
+    .bind(viewer, viewer, viewer, ...binds, limit + 1)
     .all<CommentRow>();
 
   const rows = res.results ?? [];
