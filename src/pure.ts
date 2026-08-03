@@ -530,6 +530,9 @@ export const MAX_COMMENT_IMAGE_BYTES = 8_000_000;
  */
 export const MAX_AVATAR_BYTES = 2_000_000;
 
+/** A cover is a full-width backdrop rather than a 44-point circle, so it gets more room. */
+export const MAX_COVER_BYTES = 5_000_000;
+
 /**
  * The only hosts a profile cover may point at.
  *
