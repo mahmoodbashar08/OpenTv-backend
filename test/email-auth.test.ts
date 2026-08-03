@@ -354,6 +354,77 @@ describe('email sign-in over HTTP', () => {
     });
   });
 
+  /**
+   * "Somebody else is signed in as me."
+   *
+   * The password alone cannot help there — they are already holding a session,
+   * and a JWT is not checked against anything. Before the epoch, changing the
+   * password left them with the account for the rest of the token's seven days.
+   */
+  describe('revocation', () => {
+    it('a password reset ends every session that already existed', async () => {
+      await register('me@example.com');
+      const theirToken = (
+        await call(env, 'POST', '/v1/auth/email/login', {
+          body: { email: 'me@example.com', password: 'correct horse battery' },
+        })
+      ).json.token;
+
+      // They are in.
+      expect((await call(env, 'GET', '/v1/me', { token: theirToken })).status).toBe(200);
+
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      const link = newToken();
+      raw
+        .prepare('UPDATE email_credentials SET reset_hash = ?, reset_expires = ? WHERE profile_id = ?')
+        .run(await hashToken(link), new Date(Date.now() + 60_000).toISOString(), row.profile_id);
+      await call(env, 'POST', '/v1/auth/email/reset', { body: { token: link, password: 'a brand new secret' } });
+
+      // And now they are out.
+      expect((await call(env, 'GET', '/v1/me', { token: theirToken })).status).toBe(401);
+    });
+
+    it('and the owner can sign in again immediately afterwards', async () => {
+      // The trap: a token minted after a revocation must carry the NEW epoch,
+      // or it is older than the revocation and refused on its first use — the
+      // new password would appear not to work at all.
+      await register('me@example.com');
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      const link = newToken();
+      raw
+        .prepare('UPDATE email_credentials SET reset_hash = ?, reset_expires = ? WHERE profile_id = ?')
+        .run(await hashToken(link), new Date(Date.now() + 60_000).toISOString(), row.profile_id);
+      await call(env, 'POST', '/v1/auth/email/reset', { body: { token: link, password: 'a brand new secret' } });
+
+      const fresh = await call(env, 'POST', '/v1/auth/email/login', {
+        body: { email: 'me@example.com', password: 'a brand new secret' },
+      });
+      expect(fresh.status).toBe(200);
+      expect((await call(env, 'GET', '/v1/me', { token: fresh.json.token })).status).toBe(200);
+    });
+
+    it('"sign out my other devices" keeps the caller signed in on the new token', async () => {
+      const first = await register('me@example.com');
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw.prepare('UPDATE email_credentials SET verified_at = ? WHERE profile_id = ?').run(new Date().toISOString(), row.profile_id);
+      const mine = (
+        await call(env, 'POST', '/v1/auth/email/login', {
+          body: { email: 'me@example.com', password: 'correct horse battery' },
+        })
+      ).json.token;
+
+      const res = await call(env, 'POST', '/v1/me/sessions/revoke', { token: mine });
+      expect(res.status).toBe(200);
+      expect(res.json.token).toBeTruthy();
+
+      // The old ones — including the registration token — are dead.
+      expect((await call(env, 'GET', '/v1/me', { token: mine })).status).toBe(401);
+      expect((await call(env, 'GET', '/v1/me', { token: first.json.token })).status).toBe(401);
+      // The one just handed back is not.
+      expect((await call(env, 'GET', '/v1/me', { token: res.json.token })).status).toBe(200);
+    });
+  });
+
   it('never stores the password or a plain token', async () => {
     await register('me@example.com', 'correct horse battery');
     const row = raw.prepare('SELECT * FROM email_credentials').get() as Record<string, unknown>;

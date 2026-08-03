@@ -1,0 +1,18 @@
+-- Being able to throw a session out.
+--
+-- Sessions are JWTs with a seven-day life and no server-side record, which was
+-- right while the only way in was Apple or Google: there was no credential to
+-- leak, and revoking meant revoking at the provider. A password changes that.
+-- Somebody who knows the password is signed in on their own device, and until
+-- now the owner changing it did NOTHING to them — they kept the account for up
+-- to a week.
+--
+-- The epoch is the fix and it is one integer. It is stamped into every token
+-- issued, and raising it makes every token issued before that moment invalid at
+-- once. That is what "sign out my other devices" is, and what a password reset
+-- must do silently.
+--
+-- Defaulted to 0 so every token already in the wild stays valid: a migration
+-- that logged out the entire user base to add a feature nobody asked for would
+-- be a worse bug than the one it fixes.
+ALTER TABLE profiles ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0;

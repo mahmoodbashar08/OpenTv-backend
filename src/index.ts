@@ -78,6 +78,10 @@ const UNVERIFIED_ALLOWED = new Set([
   'DELETE /v1/me',
   'POST /v1/me/email/resend',
   'POST /v1/auth/email/verify',
+  // Throwing other sessions out is a SECURITY action, and gating one behind a
+  // step somebody has not finished is how "someone else is in my account"
+  // becomes "and I could not do anything about it".
+  'POST /v1/me/sessions/revoke',
 ]);
 
 v1.use('*', async (c, next) => {

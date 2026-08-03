@@ -28,6 +28,7 @@ const MIGRATION_FILES = [
   '../migrations/0011_list_position.sql',
   '../migrations/0012_profile_cover.sql',
   '../migrations/0013_email_credentials.sql',
+  '../migrations/0014_session_epoch.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
@@ -153,10 +154,30 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; t
   } as unknown as R2Bucket & { stored: Map<string, { size: number; type?: string }> };
 }
 
+/** The smallest KV that behaves: get/put/delete over a Map, per environment. */
+export function kv(): KVNamespace {
+  const store = new Map<string, string>();
+  return {
+    async get(key: string) {
+      return store.get(key) ?? null;
+    },
+    async put(key: string, value: string) {
+      store.set(key, value);
+    },
+    async delete(key: string) {
+      store.delete(key);
+    },
+  } as unknown as KVNamespace;
+}
+
 export function makeEnv(db: D1Database, bucket?: R2Bucket): Env {
   return {
     DB: db,
-    CACHE: {} as KVNamespace,
+    // A real little KV, because the auth path now reads it: the session epoch
+    // lives here, and `{}` meant every `get` threw and every revocation was
+    // silently a no-op — a test suite that could not fail on the one thing
+    // revocation exists to do.
+    CACHE: kv(),
     SESSION_SECRET: 'test-secret-not-a-real-one',
     APPLE_BUNDLE_ID: 'com.insightfy.opentv',
     GOOGLE_CLIENT_IDS: '',

@@ -14,7 +14,7 @@ import {
   RESET_TTL_MS,
   VERIFY_TTL_MS,
 } from '@/pure';
-import { sign } from '@/session';
+import { revokeSessions, sign } from '@/session';
 
 /**
  * Signing in with an email address, for people who will not use Apple or
@@ -46,14 +46,15 @@ type CredRow = {
   verified_at: string | null;
   failed_count: number;
   locked_until: string | null;
+  session_epoch: number;
 };
 
 /** The session a successful sign-in hands back — identical to every other provider's. */
-async function session(env: Env, profileId: string, nowMs: number, verified: boolean) {
+async function session(env: Env, profileId: string, nowMs: number, verified: boolean, epoch = 0) {
   // AN UNVERIFIED ACCOUNT GETS A RESTRICTED TOKEN, not a full one. It can read
   // its own state, enter its code, ask for another, and delete itself; every
   // other route in the API refuses it. See `requireVerified`.
-  const { token, expiresAt } = await sign(env, profileId, nowMs, verified ? 'full' : 'unverified');
+  const { token, expiresAt } = await sign(env, profileId, nowMs, verified ? 'full' : 'unverified', epoch);
   // `expires_at` in the envelope, matching every other sign-in response — the
   // app reads one shape whichever provider it used.
   return { token, expires_at: expiresAt, email_verified: verified };
@@ -162,7 +163,8 @@ emailAuth.post('/auth/email/login', async (c) => {
 
   const nowMs = Date.now();
   const row = await c.env.DB.prepare(
-    `SELECT c.profile_id, c.email, c.password_hash, c.verified_at, c.failed_count, c.locked_until
+    `SELECT c.profile_id, c.email, c.password_hash, c.verified_at, c.failed_count, c.locked_until,
+            p.session_epoch
        FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
       WHERE c.email_lower = ? AND p.deleted_at IS NULL`,
   )
@@ -208,7 +210,10 @@ emailAuth.post('/auth/email/login', async (c) => {
     .run();
 
   // Signing in again does NOT lift the restriction — only confirming does.
-  const s = await session(c.env, row.profile_id, nowMs, row.verified_at != null);
+  // The account's CURRENT epoch, not zero: a reset raises it, and a token
+  // issued without it would be older than the revocation and refused on its
+  // first use — the new password would appear not to work.
+  const s = await session(c.env, row.profile_id, nowMs, row.verified_at != null, row.session_epoch ?? 0);
   return c.json(s);
 });
 
@@ -256,7 +261,13 @@ emailAuth.post('/auth/email/verify', async (c) => {
   // Returned even though this route is unauthenticated: whoever holds the link
   // has proved they can read that inbox, which is a stronger claim than the
   // session they may or may not still have on the device they are reading on.
-  const s = await session(c.env, row.profile_id, Date.parse(nowIso), true);
+  const epoch =
+    (
+      await c.env.DB.prepare('SELECT session_epoch FROM profiles WHERE id = ?')
+        .bind(row.profile_id)
+        .first<{ session_epoch: number }>()
+    )?.session_epoch ?? 0;
+  const s = await session(c.env, row.profile_id, Date.parse(nowIso), true, epoch);
   return c.json({ ok: true, ...s });
 });
 
@@ -364,5 +375,44 @@ emailAuth.post('/auth/email/reset', async (c) => {
     .bind(await hashPassword(b.password as string), nowIso, nowIso, row.profile_id)
     .run();
 
+  // AND EVERY EXISTING SESSION DIES.
+  //
+  // Without this the reset changed a password and nothing else: whoever was
+  // already signed in — which, if the password leaked, is the person you are
+  // resetting because of — kept the account for the remaining life of their
+  // token, up to seven days. "I changed my password" has to mean "and they are
+  // out", or it means very little.
+  const epoch = Math.floor(Date.parse(nowIso) / 1000);
+  await c.env.DB.prepare('UPDATE profiles SET session_epoch = ? WHERE id = ?').bind(epoch, row.profile_id).run();
+  await revokeSessions(c.env, row.profile_id, epoch);
+
   return c.json({ ok: true });
+});
+
+// ── POST /v1/me/sessions/revoke ─────────────────────────────────────────────
+
+/**
+ * "Sign out my other devices."
+ *
+ * The honest answer to "somebody else is using my account": the password alone
+ * cannot help, because they are already holding a session. This ends every one
+ * of them — including this caller's — and the app signs in again with the new
+ * token returned here, so the person who asked is the only one left.
+ */
+emailAuth.post('/me/sessions/revoke', requireAuth, async (c) => {
+  const me = c.get('profileId');
+  const nowMs = Date.now();
+  const epoch = Math.floor(nowMs / 1000);
+
+  const res = await c.env.DB.prepare(
+    'UPDATE profiles SET session_epoch = ? WHERE id = ? AND deleted_at IS NULL',
+  )
+    .bind(epoch, me)
+    .run();
+  if (res.meta.changes === 0) return fail(c, 401, 'unauthenticated', 'No such profile.');
+  await revokeSessions(c.env, me, epoch);
+
+  // Issued AFTER the revocation, so it carries the new epoch and survives it.
+  const { token, expiresAt } = await sign(c.env, me, nowMs, 'full', epoch);
+  return c.json({ ok: true, token, expires_at: expiresAt });
 });

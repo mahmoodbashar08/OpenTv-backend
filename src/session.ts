@@ -69,12 +69,16 @@ export async function sign(
   profileId: string,
   nowMs: number,
   scope: SessionScope = 'full',
+  epoch = 0,
 ): Promise<{ token: string; expiresAt: string }> {
   const iat = Math.floor(nowMs / 1000);
   const exp = iat + SESSION_TTL_SECONDS;
   // `scp` omitted entirely when full, so every existing token stays valid and
   // every other provider's payload is byte-for-byte what it was.
-  const claims = scope === 'full' ? { sub: profileId, iat, exp } : { sub: profileId, iat, exp, scp: scope };
+  // `ep` omitted when 0 — which is every account that has never revoked —
+  // so the common token is byte-for-byte what it always was.
+  const base = scope === 'full' ? { sub: profileId, iat, exp } : { sub: profileId, iat, exp, scp: scope };
+  const claims = epoch > 0 ? { ...base, ep: epoch } : base;
   const data = `${b64url(JSON.stringify(HEADER))}.${b64url(JSON.stringify(claims))}`;
   const token = `${data}.${await signingInput(env, data)}`;
   return { token, expiresAt: new Date(exp * 1000).toISOString() };
@@ -82,6 +86,49 @@ export async function sign(
 
 /** The profile id AND what the token is allowed to do, or null if it is not a
  *  live, intact token. */
+/**
+ * REVOCATION, and the one piece of I/O in the auth path.
+ *
+ * The current epoch for a profile lives in KV and is written ONLY when
+ * something revokes — a password reset, or "sign out my other devices". For
+ * every account that has never done either there is no key, the read misses,
+ * and any token is accepted. That is the overwhelmingly common case.
+ *
+ * MEMOISED PER ISOLATE, because a KV read on every authenticated request would
+ * undo the reason `requireAuth` was written to do no I/O at all. Workers reuse
+ * an isolate across many requests, so a small map with a short life turns "one
+ * read per request" into "one read per minute per colo".
+ *
+ * THE STALENESS IS DELIBERATE AND BOUNDED. A revoked session can survive up to
+ * `EPOCH_CACHE_MS` plus KV's own propagation. Measured against what it replaces
+ * — a stolen session living for the full seven days — a minute is the right
+ * trade for keeping every request fast.
+ */
+const EPOCH_CACHE_MS = 60_000;
+const epochCache = new Map<string, { epoch: number; readAt: number }>();
+
+async function currentEpoch(env: Env, profileId: string, nowMs: number): Promise<number> {
+  const hit = epochCache.get(profileId);
+  if (hit && nowMs - hit.readAt < EPOCH_CACHE_MS) return hit.epoch;
+  let epoch = 0;
+  try {
+    const raw = await env.CACHE.get(`ep:${profileId}`);
+    epoch = raw ? Number(raw) || 0 : 0;
+  } catch {
+    // KV unavailable: fail OPEN. A revocation that lands a minute late is a
+    // smaller harm than every signed-in user being logged out by an outage.
+    epoch = hit?.epoch ?? 0;
+  }
+  epochCache.set(profileId, { epoch, readAt: nowMs });
+  return epoch;
+}
+
+/** Raise the epoch: every token issued before now stops working. */
+export async function revokeSessions(env: Env, profileId: string, epoch: number): Promise<void> {
+  await env.CACHE.put(`ep:${profileId}`, String(epoch));
+  epochCache.set(profileId, { epoch, readAt: Date.now() });
+}
+
 export async function verifyScoped(
   env: Env,
   token: string,
@@ -89,16 +136,23 @@ export async function verifyScoped(
 ): Promise<{ profileId: string; scope: SessionScope } | null> {
   const sub = await verify(env, token, nowMs);
   if (!sub) return null;
-  // Re-read the payload for the claim. The signature is already proven above,
+  // Re-read the payload for the claims. The signature is already proven above,
   // so this is a parse of trusted bytes rather than a second verification.
+  let scope: SessionScope = 'full';
+  let ep = 0;
   try {
     const payload = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')) as {
       scp?: unknown;
+      ep?: unknown;
     };
-    return { profileId: sub, scope: payload.scp === 'unverified' ? 'unverified' : 'full' };
+    if (payload.scp === 'unverified') scope = 'unverified';
+    ep = typeof payload.ep === 'number' ? payload.ep : 0;
   } catch {
-    return { profileId: sub, scope: 'full' };
+    /* claims unreadable: treat as a plain, un-revoked, full token */
   }
+
+  if ((await currentEpoch(env, sub, nowMs)) > ep) return null;
+  return { profileId: sub, scope };
 }
 
 /** The profile id, or null for anything that is not a live, intact token. */
