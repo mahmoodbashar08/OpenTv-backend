@@ -121,3 +121,58 @@ describe('DELETE /v1/push/tokens/:token', () => {
     expect(raw.prepare('SELECT COUNT(*) AS n FROM push_tokens').get()).toMatchObject({ n: 1 });
   });
 });
+
+/**
+ * WHAT GOES OUT, not just what comes in.
+ *
+ * The rest of this file covers registering a token. This covers the message
+ * built from it, because the field that matters on Android is invisible
+ * everywhere else: without `channelId` Android has no channel to display the
+ * notification in, so Expo drops it into a fallback bucket called
+ * "Miscellaneous" — alongside the local episode reminders, under a name nobody
+ * chose, with one switch for both. Nothing errors. It just quietly becomes
+ * impossible to silence episode reminders without silencing your replies too.
+ *
+ * The string is asserted literally on purpose: the app creates the channel
+ * (`registerForPush` in mobile/src/push.ts) and the server only names it, so
+ * the two live in different repositories and a rename on one side is invisible
+ * to the other. This is the half that can be pinned.
+ */
+describe('the message sent to Expo', () => {
+  let raw: Database.Database;
+  let env: Env;
+
+  beforeEach(async () => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p_a', 'amanda');
+    insertProfile(raw, 'p_b', 'tweeter');
+    const token = await tokenFor(env, 'p_a');
+    await call(env, 'POST', '/v1/push/tokens', {
+      token,
+      body: { token: TOKEN, platform: 'android' },
+    });
+  });
+
+  it('names the community channel, so Android has one to display in', async () => {
+    const sent: unknown[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+      sent.push(JSON.parse(init?.body ?? '[]'));
+      return new Response(JSON.stringify({ data: [{ status: 'ok' }] }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { sendPush } = await import('@/push');
+      await sendPush(env, 'p_a', 'p_b', 'reply', 'c_1');
+    } finally {
+      globalThis.fetch = real;
+    }
+
+    const messages = sent.flat() as { channelId?: string; to?: string }[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.to).toBe(TOKEN);
+    expect(messages[0]?.channelId).toBe('community');
+  });
+});
