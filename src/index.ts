@@ -19,7 +19,6 @@ import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
 import { reconcile } from '@/routes/reconcile';
 import { reports } from '@/routes/reports';
-import { support } from '@/routes/support';
 
 export type { Env } from '@/env';
 
@@ -105,12 +104,6 @@ v1.use('*', async (c, next) => {
 // A router that claims a prefix should not be the one deciding what a path it
 // has no handler for means.
 v1.route('/', avatars);
-// Before `auth` for the same reason avatars is: it owns `/me/support/*` and
-// `/admin/support/*`, and `auth` should not decide what a `/me/*` path it has
-// no handler for means. The `/me/support/*` routes carry their own
-// requireAuth, so the unverified gate still applies — an unconfirmed account
-// cannot send a bundle, which is correct: it has nothing worth reproducing.
-v1.route('/', support);
 // Before `auth` for the same reason avatars is: that router claims `/auth/*`
 // shapes and `/me/*`, and should not be the one deciding what a path it has no
 // handler for means.
