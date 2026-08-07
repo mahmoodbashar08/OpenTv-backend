@@ -31,6 +31,23 @@ type Message = {
   title: string;
   body: string;
   sound: 'default';
+  /**
+   * ANDROID ONLY, AND IGNORED EVERYWHERE ELSE.
+   *
+   * Android 8 and later will not display a notification that does not belong to
+   * a channel, so Expo drops anything unnamed into a fallback one called
+   * "Miscellaneous". That works, and it is why this was not obviously broken —
+   * but it puts "someone replied to you" in the same bucket as an episode
+   * reminder, under a name nobody chose, which is what the user actually sees
+   * when they go to silence one and not the other.
+   *
+   * The channel is CREATED BY THE APP (`registerForPush` in mobile/src/push.ts)
+   * and only NAMED here. A channelId the phone has never created falls back to
+   * Miscellaneous again, so the two must stay in step: this string and that one.
+   *
+   * iOS has no such concept and ignores the field.
+   */
+  channelId: 'community';
   /** What the app opens. Mirrors the in-app row's destination. */
   data: { kind: PushKind; subjectId: string | null; handle: string | null };
 };
@@ -113,6 +130,7 @@ export async function sendPush(
       title,
       body,
       sound: 'default',
+      channelId: 'community',
       data: { kind, subjectId, handle },
     }));
 
