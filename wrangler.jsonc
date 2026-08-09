@@ -18,6 +18,10 @@
   // `wrangler secret put` and never live here. Locally they come from .dev.vars.
   "vars": {
     "APPLE_BUNDLE_ID": "com.insightfy.opentv",
+    // The verified Resend domain. Not a secret — it is the address every
+    // recipient reads. The key that lets us send as it IS a secret:
+    //   wrangler secret put RESEND_API_KEY
+    "MAIL_FROM": "OpenTV <noreply@theopentv.com>",
     // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
