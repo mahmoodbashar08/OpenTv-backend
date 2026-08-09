@@ -22,6 +22,18 @@
     // recipient reads. The key that lets us send as it IS a secret:
     //   wrangler secret put RESEND_API_KEY
     "MAIL_FROM": "OpenTV <noreply@theopentv.com>",
+    // TEMPORARY, AND DELETE THESE WITH THE NEXT iOS BUILD.
+    //
+    // `mail.ts` defaults to `opentv://`, which is right for the release. But a
+    // URL scheme is registered in Info.plist, which is native — no simulator or
+    // TestFlight build made before that edit claims `opentv://`, so a link
+    // using it opens nothing at all, and a confirmation email that does nothing
+    // when tapped is indistinguishable from a broken account.
+    //
+    // The old scheme stays registered alongside the new one, so these keep
+    // working after the rebuild too — they are just no longer needed.
+    "APP_LINK_BASE": "ourtvtime://verify-email",
+    "APP_RESET_LINK_BASE": "ourtvtime://reset-password",
     // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
