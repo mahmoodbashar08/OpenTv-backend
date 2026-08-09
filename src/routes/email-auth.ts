@@ -3,10 +3,11 @@ import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
-import { hashPassword, hashToken, needsRehash, newToken, sameToken, verifyPassword } from '@/passwords';
+import { hashPassword, hashToken, needsRehash, newCode, newToken, sameToken, verifyPassword } from '@/passwords';
 import {
   LOGIN_FAIL_LIMIT,
   LOGIN_LOCK_MS,
+  MAX_CODE_TRIES,
   RESEND_COOLDOWN_MS,
   normaliseEmail,
   passwordError,
@@ -115,6 +116,9 @@ emailAuth.post('/auth/email/register', async (c) => {
   const hash = await hashPassword(password);
   const token = newToken();
   const tokenHash = await hashToken(token);
+  // The same expiry covers both: they are two ways to answer one question.
+  const code = newCode();
+  const codeHash = await hashToken(code);
   const expires = new Date(nowMs + VERIFY_TTL_MS).toISOString();
 
   await db.batch([
@@ -130,13 +134,14 @@ emailAuth.post('/auth/email/register', async (c) => {
     db
       .prepare(
         `INSERT INTO email_credentials
-           (profile_id, email, email_lower, password_hash, verify_hash, verify_expires, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (profile_id, email, email_lower, password_hash, verify_hash, verify_code_hash,
+            verify_code_tries, verify_expires, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       )
-      .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, expires, nowIso, nowIso),
+      .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, codeHash, expires, nowIso, nowIso),
   ]);
 
-  c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token).then(() => undefined));
+  c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token, code).then(() => undefined));
 
   // SIGNED IN IMMEDIATELY, BUT ON A LEASH. The token carries `unverified`, so
   // the app has a session to draw its own state with and to confirm from — and
@@ -224,6 +229,20 @@ const DUMMY_HASH =
 
 // ── POST /v1/auth/email/verify ──────────────────────────────────────────────
 
+/**
+ * Confirm an address, by LINK or by CODE.
+ *
+ * WHY TWO. The link is a deep link into the app, so it only works on the device
+ * that opened the email. Read the message on a phone while signing in on a
+ * tablet, a simulator, or a second handset and there is nothing to tap — no app
+ * on that machine claims the scheme. The code crosses the room.
+ *
+ * THE CODE IS NOT A SHORT TOKEN. A token is looked up BY its hash, so a
+ * six-digit value used the same way would be a search across every account at
+ * once. The code is accepted only together with the address it was sent to, and
+ * only `MAX_CODE_TRIES` times, after which it is dead until another is asked
+ * for — one row, a handful of guesses, rather than a million against the table.
+ */
 emailAuth.post('/auth/email/verify', async (c) => {
   let body: unknown;
   try {
@@ -231,25 +250,63 @@ emailAuth.post('/auth/email/verify', async (c) => {
   } catch {
     return fail(c, 400, 'invalid_body', 'Body must be JSON.');
   }
-  const token = (body as Record<string, unknown>)?.token;
-  if (typeof token !== 'string' || token.length === 0) return fail(c, 400, 'invalid_body', 'A token is required.');
+  const b = (body ?? {}) as Record<string, unknown>;
+  const token = typeof b.token === 'string' ? b.token : '';
+  const email = normaliseEmail(b.email);
+  // Spaces and dashes because people paste what they see, and a code shown as
+  // `042 317` is the same code.
+  const code = typeof b.code === 'string' ? b.code.replace(/[\s-]/g, '') : '';
 
-  const hash = await hashToken(token);
   const nowIso = new Date().toISOString();
-  const row = await c.env.DB.prepare(
-    'SELECT profile_id, verify_hash, verify_expires FROM email_credentials WHERE verify_hash = ?',
-  )
-    .bind(hash)
-    .first<{ profile_id: string; verify_hash: string; verify_expires: string | null }>();
+  type Row = {
+    profile_id: string;
+    verify_hash: string | null;
+    verify_code_hash: string | null;
+    verify_code_tries: number;
+    verify_expires: string | null;
+  };
+  const COLS = 'profile_id, verify_hash, verify_code_hash, verify_code_tries, verify_expires';
+  // Deliberately one message for every failure below. "No such code", "wrong
+  // code", "expired" and "out of guesses" are four facts a guesser would like.
+  const dead = () => fail(c, 400, 'invalid_body', 'That link or code is not valid any more. Ask for a new one.');
 
-  // Same answer for "no such token" and "expired": neither tells the holder of
-  // a guessed token anything they can act on.
-  if (!row || !sameToken(row.verify_hash, hash) || !row.verify_expires || row.verify_expires < nowIso) {
-    return fail(c, 400, 'invalid_body', 'That link has expired. Ask for a new one.');
+  let row: Row | null = null;
+
+  if (token) {
+    const hash = await hashToken(token);
+    row = await c.env.DB.prepare(`SELECT ${COLS} FROM email_credentials WHERE verify_hash = ?`)
+      .bind(hash)
+      .first<Row>();
+    if (!row || !row.verify_hash || !sameToken(row.verify_hash, hash)) return dead();
+  } else if (email && /^[0-9]{6}$/.test(code)) {
+    row = await c.env.DB.prepare(`SELECT ${COLS} FROM email_credentials WHERE email_lower = ?`)
+      .bind(email)
+      .first<Row>();
+    if (!row || !row.verify_code_hash) return dead();
+    if (row.verify_code_tries >= MAX_CODE_TRIES) return dead();
+
+    const hash = await hashToken(code);
+    if (!sameToken(row.verify_code_hash, hash)) {
+      // SPENT WHETHER OR NOT IT WAS CLOSE. Counting only correct-shaped guesses
+      // would be a counter that never moves.
+      await c.env.DB.prepare(
+        'UPDATE email_credentials SET verify_code_tries = verify_code_tries + 1, updated_at = ? WHERE profile_id = ?',
+      )
+        .bind(nowIso, row.profile_id)
+        .run();
+      return dead();
+    }
+  } else {
+    return fail(c, 400, 'invalid_body', 'A token, or an email address and a six-digit code, is required.');
   }
 
+  if (!row.verify_expires || row.verify_expires < nowIso) return dead();
+
   await c.env.DB.prepare(
-    'UPDATE email_credentials SET verified_at = ?, verify_hash = NULL, verify_expires = NULL, updated_at = ? WHERE profile_id = ?',
+    `UPDATE email_credentials
+        SET verified_at = ?, verify_hash = NULL, verify_code_hash = NULL,
+            verify_code_tries = 0, verify_expires = NULL, updated_at = ?
+      WHERE profile_id = ?`,
   )
     .bind(nowIso, nowIso, row.profile_id)
     .run();
@@ -292,12 +349,22 @@ emailAuth.post('/me/email/resend', requireAuth, async (c) => {
   }
 
   const token = newToken();
+  const code = newCode();
   await c.env.DB.prepare(
-    'UPDATE email_credentials SET verify_hash = ?, verify_expires = ?, updated_at = ? WHERE profile_id = ?',
+    `UPDATE email_credentials
+        SET verify_hash = ?, verify_code_hash = ?, verify_code_tries = 0,
+            verify_expires = ?, updated_at = ?
+      WHERE profile_id = ?`,
   )
-    .bind(await hashToken(token), new Date(nowMs + VERIFY_TTL_MS).toISOString(), new Date(nowMs).toISOString(), me)
+    .bind(
+      await hashToken(token),
+      await hashToken(code),
+      new Date(nowMs + VERIFY_TTL_MS).toISOString(),
+      new Date(nowMs).toISOString(),
+      me,
+    )
     .run();
-  c.executionCtx.waitUntil(sendVerificationEmail(c.env, row.email, token).then(() => undefined));
+  c.executionCtx.waitUntil(sendVerificationEmail(c.env, row.email, token, code).then(() => undefined));
   return c.json({ ok: true, email_verified: false });
 });
 

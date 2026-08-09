@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type Database from 'better-sqlite3';
 import { hashPassword, verifyPassword, needsRehash, newToken, hashToken, MAX_ITERATIONS } from '@/passwords';
-import { normaliseEmail, passwordError, LOGIN_FAIL_LIMIT } from '@/pure';
+import { normaliseEmail, passwordError, LOGIN_FAIL_LIMIT, MAX_CODE_TRIES } from '@/pure';
 import type { Env } from '@/env';
 import { call, freshDatabase, makeEnv } from './harness';
 
@@ -204,6 +204,102 @@ describe('email sign-in over HTTP', () => {
     // Replay does nothing: the token was consumed.
     const again = await call(env, 'POST', '/v1/auth/email/verify', { body: { token } });
     expect(again.status).toBe(400);
+  });
+
+  /**
+   * The code path. It exists because a deep link only works on the device that
+   * received the email — read it on a phone, sign in on a simulator, and there
+   * is nothing to tap. Its security rests on two things this pins: the code is
+   * useless without the address, and it runs out of guesses.
+   */
+  describe('the six-digit code', () => {
+    const setCode = async (code: string, expiresInMs = 60_000) => {
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw
+        .prepare(
+          'UPDATE email_credentials SET verify_code_hash = ?, verify_code_tries = 0, verify_expires = ? WHERE profile_id = ?',
+        )
+        .run(await hashToken(code), new Date(Date.now() + expiresInMs).toISOString(), row.profile_id);
+      return row.profile_id;
+    };
+
+    it('confirms with the address and the code, and cannot be replayed', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+
+      const ok = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.json.email_verified).toBe(true);
+
+      const again = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(again.status).toBe(400);
+    });
+
+    it('keeps a leading zero — 042317 is not 42317', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const short = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '42317' },
+      });
+      expect(short.status).toBe(400);
+    });
+
+    it('accepts a code pasted with spaces, because that is what people paste', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const spaced = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042 317' },
+      });
+      expect(spaced.status).toBe(200);
+    });
+
+    it('is worthless without the address it was sent to', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const noEmail = await call(env, 'POST', '/v1/auth/email/verify', { body: { code: '042317' } });
+      expect(noEmail.status).toBe(400);
+      const wrongEmail = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'someone@else.com', code: '042317' },
+      });
+      expect(wrongEmail.status).toBe(400);
+      // and the real one still works, so nothing above consumed it
+      const ok = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(ok.status).toBe(200);
+    });
+
+    it('runs out of guesses, and stays dead even when the right code arrives', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      for (let i = 0; i < MAX_CODE_TRIES; i += 1) {
+        const wrong = await call(env, 'POST', '/v1/auth/email/verify', {
+          body: { email: 'me@example.com', code: '000000' },
+        });
+        expect(wrong.status).toBe(400);
+      }
+      const correct = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(correct.status).toBe(400);
+    });
+
+    it('expires with the link, and answers identically to a wrong code', async () => {
+      await register('me@example.com');
+      await setCode('042317', -1000);
+      const expired = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      const wrong = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '999999' },
+      });
+      expect(expired.status).toBe(400);
+      expect(expired.json).toEqual(wrong.json);
+    });
   });
 
   it('refuses an expired token, and says the same thing as for an unknown one', async () => {

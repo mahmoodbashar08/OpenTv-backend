@@ -621,6 +621,15 @@ export const RESET_TTL_MS = 60 * 60 * 1000;
 /** How often "send it again" may actually send. */
 export const RESEND_COOLDOWN_MS = 60 * 1000;
 
+/**
+ * Guesses allowed against one confirmation code before it is dead.
+ *
+ * Five is generous for somebody copying six digits off another screen, and
+ * nowhere near enough to search a million of them. The code is scoped to one
+ * address, so this is the whole search space an attacker gets.
+ */
+export const MAX_CODE_TRIES = 5;
+
 /** Failed sign-ins before that ONE account is paused, and for how long. */
 export const LOGIN_FAIL_LIMIT = 8;
 export const LOGIN_LOCK_MS = 15 * 60 * 1000;

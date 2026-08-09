@@ -71,7 +71,14 @@ function resetLink(env: Env, token: string): string {
  * shape a corporate scanner rewrites or a client refuses to make clickable, and
  * a button nobody can press is a dead end with no way round it.
  */
-function layout(heading: string, body: string, cta: string, link: string, footnote: string): string {
+function layout(
+  heading: string,
+  body: string,
+  cta: string,
+  link: string,
+  footnote: string,
+  code?: string,
+): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8" /><meta name="color-scheme" content="dark light" /></head>
 <body style="margin:0;padding:0;background:#0d0d0f;">
@@ -82,6 +89,14 @@ function layout(heading: string, body: string, cta: string, link: string, footno
       <tr><td bgcolor="#16161a" style="background:#16161a;border-radius:14px;padding:32px 28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
         <p style="margin:0 0 12px;font-size:20px;font-weight:700;color:#e9e9ee;line-height:1.3;">${heading}</p>
         <p style="margin:0 0 26px;font-size:15px;color:#a7a7ae;line-height:1.6;">${body}</p>
+        ${code
+          ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 26px;">
+               <tr><td bgcolor="#0d0d0f" align="center" style="background:#0d0d0f;border-radius:12px;padding:18px 12px;">
+                 <div style="font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a92;letter-spacing:.08em;text-transform:uppercase;">Or enter this code</div>
+                 <div style="font:700 34px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#ffd400;letter-spacing:.22em;padding-top:8px;">${code}</div>
+               </td></tr>
+             </table>`
+          : ''}
         <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
           <td bgcolor="#ffd400" style="background:#ffd400;border-radius:10px;">
             <a href="${link}" style="display:inline-block;padding:13px 26px;font-size:15px;font-weight:700;color:#000000;text-decoration:none;">${cta}</a>
@@ -102,19 +117,34 @@ function layout(heading: string, body: string, cta: string, link: string, footno
 
 /** Plain text alongside HTML on purpose: some clients show one, some the other,
  *  and a mail with only HTML is more likely to be scored as spam. */
-export async function sendVerificationEmail(env: Env, to: string, token: string): Promise<MailResult> {
+/**
+ * A LINK AND A CODE, because the link only works on the device holding the
+ * email. Reading it on a phone while signing in on a tablet or a simulator
+ * leaves nothing to tap; the code can be carried across the room. The plain
+ * text carries both for the same reason.
+ */
+export async function sendVerificationEmail(
+  env: Env,
+  to: string,
+  token: string,
+  code?: string,
+): Promise<MailResult> {
   const link = verifyLink(env, token);
+  const spoken = code ? `\n\nOr enter this code in the app: ${code}` : '';
   return send(
     env,
     to,
     'Confirm your OpenTV email',
-    `Confirm your email address to finish setting up OpenTV.\n\n${link}\n\nThis link expires in 24 hours. If you did not create an OpenTV account, ignore this message — nothing will happen.`,
+    `Confirm your email address to finish setting up OpenTV.\n\n${link}${spoken}\n\nThis expires in 24 hours. If you did not create an OpenTV account, ignore this message — nothing will happen.`,
     layout(
       'Confirm your email',
-      'One tap and your OpenTV account is ready. Open this on the phone you installed OpenTV on — the link opens the app.',
+      code
+        ? 'Tap the button on the phone OpenTV is installed on, or type the code below into the app on any device.'
+        : 'One tap and your OpenTV account is ready. Open this on the phone you installed OpenTV on — the link opens the app.',
       'Confirm my email',
       link,
-      'This link expires in 24 hours. If you did not create an OpenTV account, ignore this message — nothing will happen.',
+      'This expires in 24 hours. If you did not create an OpenTV account, ignore this message — nothing will happen.',
+      code,
     ),
   );
 }

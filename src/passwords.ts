@@ -127,6 +127,27 @@ export async function hashToken(token: string): Promise<string> {
   return b64(new Uint8Array(digest));
 }
 
+/**
+ * A six-digit confirmation code, to be read off one screen and typed on
+ * another. Stored as a digest like the token, and never logged.
+ *
+ * UNBIASED, not `% 1000000`. Rejection sampling costs a loop that almost never
+ * runs twice and avoids the classic modulo skew, which for a value people will
+ * point at as proof of randomness is worth the four lines.
+ *
+ * Leading zeros are kept — `042317` is a valid code, and a version that
+ * silently dropped them would fail for one account in ten with no pattern
+ * anybody could describe.
+ */
+export function newCode(): string {
+  const limit = 4_294_000_000; // largest multiple of 1e6 under 2^32
+  let n = 0;
+  do {
+    n = crypto.getRandomValues(new Uint32Array(1))[0]!;
+  } while (n >= limit);
+  return String(n % 1_000_000).padStart(6, '0');
+}
+
 /** Constant time, for the same reason `verifyPassword` is. */
 export function sameToken(a: string, b: string): boolean {
   return sameBytes(new TextEncoder().encode(a), new TextEncoder().encode(b));
