@@ -67,6 +67,24 @@ function newProfileId(): string {
 
 // ── POST /v1/auth/email/register ────────────────────────────────────────────
 
+/**
+ * Has this row had an email sent about it within the last minute?
+ *
+ * `updated_at` is stamped by every path that posts a message, so one clock
+ * covers all of them: registering against a taken address, asking for another
+ * confirmation, and requesting a reset cannot be combined to send three times
+ * as much mail as any of them alone.
+ *
+ * CALLERS MUST NOT CHANGE THEIR ANSWER because of this. Two of the three are
+ * written to look identical whether or not the address exists, and a 429 that
+ * only appears for real accounts would undo that in a single request.
+ */
+function withinCooldown(updatedAt: string | null | undefined, nowMs: number): boolean {
+  if (!updatedAt) return false;
+  const t = Date.parse(updatedAt);
+  return Number.isFinite(t) && nowMs - t < RESEND_COOLDOWN_MS;
+}
+
 emailAuth.post('/auth/email/register', async (c) => {
   let body: unknown;
   try {
@@ -95,9 +113,9 @@ emailAuth.post('/auth/email/register', async (c) => {
   const nowIso = new Date(nowMs).toISOString();
 
   const existing = await db
-    .prepare('SELECT profile_id, email FROM email_credentials WHERE email_lower = ?')
+    .prepare('SELECT profile_id, email, updated_at FROM email_credentials WHERE email_lower = ?')
     .bind(email)
-    .first<{ profile_id: string; email: string }>();
+    .first<{ profile_id: string; email: string; updated_at: string }>();
 
   if (existing) {
     // THE ADDRESS IS TAKEN, AND THE ANSWER LOOKS IDENTICAL TO SUCCESS.
@@ -105,9 +123,24 @@ emailAuth.post('/auth/email/register', async (c) => {
     // The person who owns it gets told, by email, that someone tried — which is
     // useful to them and useless to whoever is probing. No session is issued:
     // an attacker gets a 202 and nothing else.
-    c.executionCtx.waitUntil(
-      sendResetEmail(c.env, existing.email, 'account-exists').then(() => undefined),
-    );
+    //
+    // ONE MESSAGE A MINUTE, and the 202 is returned either way. This endpoint
+    // is unauthenticated and takes any address, so without a limit it is a
+    // machine for posting mail at an inbox nobody involved owns. The rate
+    // limit must not change the answer, or it becomes the membership oracle
+    // the rest of this branch exists to avoid: a 429 here would mean "this
+    // address is registered AND somebody asked recently".
+    if (!withinCooldown(existing.updated_at, nowMs)) {
+      c.executionCtx.waitUntil(
+        (async () => {
+          await sendResetEmail(c.env, existing.email, 'account-exists');
+          await db
+            .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
+            .bind(nowIso, existing.profile_id)
+            .run();
+        })(),
+      );
+    }
     return c.json({ ok: true, pending_verification: true }, 202);
   }
 
@@ -344,7 +377,9 @@ emailAuth.post('/me/email/resend', requireAuth, async (c) => {
   // A COOLDOWN, because "send it again" is a button people press. Without one
   // it is a way to make this server post mail at an address repeatedly, and the
   // address is not necessarily one the presser owns.
-  if (nowMs - Date.parse(row.updated_at) < RESEND_COOLDOWN_MS) {
+  // AUTHENTICATED, so a 429 here reveals nothing — the caller already holds a
+  // session for this account. It is the one place the honest answer is safe.
+  if (withinCooldown(row.updated_at, nowMs)) {
     return fail(c, 429, 'rate_limited', 'Wait a minute before asking for another email.');
   }
 
@@ -385,12 +420,15 @@ emailAuth.post('/auth/email/forgot', async (c) => {
   if (email) {
     const nowMs = Date.now();
     const row = await c.env.DB.prepare(
-      `SELECT c.profile_id, c.email FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
+      `SELECT c.profile_id, c.email, c.updated_at FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
         WHERE c.email_lower = ? AND p.deleted_at IS NULL`,
     )
       .bind(email)
-      .first<{ profile_id: string; email: string }>();
-    if (row) {
+      .first<{ profile_id: string; email: string; updated_at: string }>();
+    // The cooldown is silent here for the same reason the 202 is: a 429 that
+    // only real addresses could produce would answer the question this whole
+    // endpoint refuses to answer.
+    if (row && !withinCooldown(row.updated_at, nowMs)) {
       const token = newToken();
       await c.env.DB.prepare(
         'UPDATE email_credentials SET reset_hash = ?, reset_expires = ?, updated_at = ? WHERE profile_id = ?',

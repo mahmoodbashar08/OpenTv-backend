@@ -207,6 +207,81 @@ describe('email sign-in over HTTP', () => {
   });
 
   /**
+   * ONE EMAIL A MINUTE, from every door.
+   *
+   * Two of the three senders are unauthenticated and take any address, so
+   * without a shared limit they are a machine for posting mail at an inbox
+   * nobody involved owns. The limit is shared — `updated_at` — so they cannot
+   * be alternated to send three times as much.
+   *
+   * And it must stay INVISIBLE on the unauthenticated ones: a 429 that only a
+   * registered address could produce is the membership oracle those endpoints
+   * are written to avoid.
+   */
+  describe('the one-a-minute email limit', () => {
+    // No mail provider is configured in tests, so "did it send?" is observed
+    // through the side effect that always accompanies a send: a fresh token,
+    // and a stamped `updated_at`.
+    const cred = () =>
+      raw.prepare('SELECT reset_hash, updated_at FROM email_credentials').get() as {
+        reset_hash: string | null;
+        updated_at: string;
+      };
+
+    it('does not act twice when a taken address is registered again, and answers identically', async () => {
+      await register('me@example.com');
+      const before = cred().updated_at;
+
+      const a = await call(env, 'POST', '/v1/auth/email/register', {
+        body: { email: 'me@example.com', password: 'a-good-long-password' },
+      });
+      const b = await call(env, 'POST', '/v1/auth/email/register', {
+        body: { email: 'me@example.com', password: 'a-good-long-password' },
+      });
+
+      expect(a.status).toBe(202);
+      expect(b.status).toBe(202);
+      expect(a.json).toEqual(b.json);
+      // Registration stamps `updated_at`, so the cooldown is already running
+      // and neither attempt should have restarted it.
+      expect(cred().updated_at).toBe(before);
+    });
+
+    it('issues one reset token for repeated requests, and still answers 202 to both', async () => {
+      await register('me@example.com');
+      // Registration just stamped the row, so the first forgot is throttled too
+      // — which is the point: the clock is shared across every sender.
+      const a = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      const b = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+
+      expect(a.status).toBe(202);
+      expect(b.status).toBe(202);
+      expect(a.json).toEqual(b.json);
+      expect(cred().reset_hash).toBeNull();
+    });
+
+    it('lets a reset through once the minute has passed', async () => {
+      await register('me@example.com');
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw
+        .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
+        .run(new Date(Date.now() - 61_000).toISOString(), row.profile_id);
+
+      const ok = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      expect(ok.status).toBe(202);
+      expect(cred().reset_hash).not.toBeNull();
+    });
+
+    it('answers an unknown address exactly as a throttled known one', async () => {
+      await register('me@example.com');
+      const throttled = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      const unknown = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'nobody@example.com' } });
+      expect(throttled.status).toBe(unknown.status);
+      expect(throttled.json).toEqual(unknown.json);
+    });
+  });
+
+  /**
    * The code path. It exists because a deep link only works on the device that
    * received the email — read it on a phone, sign in on a simulator, and there
    * is nothing to tap. Its security rests on two things this pins: the code is
