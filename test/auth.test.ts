@@ -42,7 +42,7 @@ function payload(over: Partial<IdTokenPayload> = {}): IdTokenPayload {
 describe('verifyClaims', () => {
   it('accepts a well-formed Apple token', () => {
     const r = verifyClaims(payload(), APPLE, NOW);
-    expect(r).toEqual({ ok: true, sub: '001234.abcdef', email: null });
+    expect(r).toEqual({ ok: true, sub: '001234.abcdef', email: null, emailVerified: false });
   });
 
   it('rejects the wrong issuer', () => {
@@ -68,7 +68,7 @@ describe('verifyClaims', () => {
       GOOGLE,
       NOW,
     );
-    expect(r).toEqual({ ok: true, sub: 'g1', email: null });
+    expect(r).toEqual({ ok: true, sub: 'g1', email: null, emailVerified: false });
   });
 
   it('rejects an expired token', () => {
@@ -97,7 +97,29 @@ describe('verifyClaims', () => {
 
   it('carries the email through when present', () => {
     const r = verifyClaims(payload({ email: 'a@b.c' }), APPLE, NOW);
-    expect(r).toEqual({ ok: true, sub: '001234.abcdef', email: 'a@b.c' });
+    expect(r).toEqual({ ok: true, sub: '001234.abcdef', email: 'a@b.c', emailVerified: false });
+  });
+
+  /**
+   * `email_verified` decides whether a token may reach an account that already
+   * exists — see `resolveProfile`. An unverified address is still a valid
+   * sign-in for its OWN identity, so these must not become rejections.
+   */
+  it('reads a boolean email_verified, as Google sends it', () => {
+    const r = verifyClaims(payload({ email: 'a@b.c', email_verified: true }), APPLE, NOW);
+    expect(r).toMatchObject({ ok: true, emailVerified: true });
+  });
+
+  it('reads the STRING "true", as Apple sends it', () => {
+    const r = verifyClaims(payload({ email: 'a@b.c', email_verified: 'true' }), APPLE, NOW);
+    expect(r).toMatchObject({ ok: true, emailVerified: true });
+  });
+
+  it('treats anything else as unverified rather than rejecting the token', () => {
+    for (const v of [false, 'false', 'yes', 1, null, undefined, {}]) {
+      const r = verifyClaims(payload({ email: 'a@b.c', email_verified: v }), APPLE, NOW);
+      expect(r).toMatchObject({ ok: true, emailVerified: false });
+    }
   });
 });
 

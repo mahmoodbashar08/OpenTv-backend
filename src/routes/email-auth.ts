@@ -403,6 +403,88 @@ emailAuth.post('/me/email/resend', requireAuth, async (c) => {
   return c.json({ ok: true, email_verified: false });
 });
 
+// ── POST /v1/me/password ────────────────────────────────────────────────────
+
+/**
+ * Add a password to an account that signs in with Apple or Google.
+ *
+ * THE POINT: two doors into one account. Somebody who joined with Google can
+ * set a password and afterwards use either — and, more importantly, is not
+ * locked out on a device where the provider sign-in fails, or if they ever
+ * stop using that Google account.
+ *
+ * NO CONFIRMATION EMAIL, and that is not an oversight. The address comes from
+ * the identity the provider issued, not from anything typed here, and the
+ * provider has already verified it — which is exactly the standard the LINKING
+ * rule holds out for. Sending a "confirm your address" mail for an address
+ * Google just vouched for would be theatre. So the row is written already
+ * confirmed, and that is also what makes the reverse direction work: sign in
+ * with Google, set a password, and a later email sign-in finds a confirmed
+ * account rather than a second one.
+ *
+ * NOT A PASSWORD CHANGE. If this account already has one, changing it is the
+ * reset flow, which proves possession of the inbox first. This route only ever
+ * fills an empty slot.
+ */
+emailAuth.post('/me/password', requireAuth, async (c) => {
+  const me = c.get('profileId');
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const bad = passwordError((body as Record<string, unknown>)?.password);
+  if (bad) {
+    return fail(
+      c,
+      400,
+      'invalid_body',
+      bad === 'too_short' ? 'Use at least 8 characters.' : bad === 'too_long' ? 'That password is too long.' : 'That password is too easy to guess.',
+    );
+  }
+  // `passwordError` already proved it is a usable string; this satisfies the
+  // compiler without a cast that would outlive the check.
+  const raw = (body as Record<string, unknown>).password;
+  const password = typeof raw === 'string' ? raw : '';
+
+  const existing = await c.env.DB.prepare('SELECT profile_id FROM email_credentials WHERE profile_id = ?')
+    .bind(me)
+    .first<{ profile_id: string }>();
+  if (existing) return fail(c, 403, 'forbidden', 'This account already has a password.');
+
+  // The address the PROVIDER gave us, never one supplied in the request — that
+  // would let anybody claim any address by typing it.
+  const identity = await c.env.DB.prepare(
+    "SELECT email FROM identities WHERE profile_id = ? AND provider IN ('apple','google') AND email IS NOT NULL LIMIT 1",
+  )
+    .bind(me)
+    .first<{ email: string }>();
+  if (!identity?.email) {
+    return fail(c, 400, 'invalid_body', 'This account has no email address to attach a password to.');
+  }
+
+  const nowIso = new Date().toISOString();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO email_credentials
+         (profile_id, email, email_lower, password_hash, verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(me, identity.email, normaliseEmail(identity.email) ?? identity.email.trim().toLowerCase(), await hashPassword(password), nowIso, nowIso, nowIso)
+      .run();
+  } catch {
+    // `email_lower` is UNIQUE: somebody else already registered this address
+    // with a password. Refusing is right — the two accounts are not provably
+    // the same person, and merging them here would be a takeover in the other
+    // direction.
+    return fail(c, 409, 'handle_taken', 'That address already has a password on another account.');
+  }
+
+  return c.json({ ok: true, email: identity.email });
+});
+
 // ── POST /v1/auth/email/forgot ──────────────────────────────────────────────
 
 emailAuth.post('/auth/email/forgot', async (c) => {

@@ -3,7 +3,8 @@ import type Database from 'better-sqlite3';
 import { hashPassword, verifyPassword, needsRehash, newToken, hashToken, MAX_ITERATIONS } from '@/passwords';
 import { normaliseEmail, passwordError, LOGIN_FAIL_LIMIT, MAX_CODE_TRIES } from '@/pure';
 import type { Env } from '@/env';
-import { call, freshDatabase, makeEnv } from './harness';
+import { call, freshDatabase, makeEnv, tokenFor } from './harness';
+import { linkTarget } from '@/routes/auth';
 
 /**
  * Email sign-in.
@@ -218,6 +219,120 @@ describe('email sign-in over HTTP', () => {
    * registered address could produce is the membership oracle those endpoints
    * are written to avoid.
    */
+  /**
+   * WHICH ACCOUNT A GOOGLE SIGN-IN LANDS IN.
+   *
+   * Registering by email and later signing in with Google is one person using
+   * two doors, and handing them a second empty profile is the wrong answer. But
+   * the rule that joins them is also the one that could put somebody inside
+   * somebody else's account, so both sides must have proved the address: the
+   * provider says it verified it, and the local account confirmed it.
+   */
+  /**
+   * The other direction: a Google account gaining a password, so the same
+   * person can use either door. Written already CONFIRMED, because the address
+   * came from the provider rather than from anything typed here — which is
+   * also what lets a later email sign-in link back instead of duplicating.
+   */
+  describe('POST /v1/me/password', () => {
+    /** A profile that signed in with Google, as `resolveProfile` would leave it. */
+    const googleAccount = async (email: string | null, id = 'p_google1') => {
+      raw
+        .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, 'gjoe', 'gjoe', '2026-01-01T00:00:00.000Z');
+      raw
+        .prepare(
+          'INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run('google', `sub-${id}`, id, email, '2026-01-01T00:00:00.000Z');
+      return id;
+    };
+
+    it('adds a password, already confirmed, using the address the provider gave', async () => {
+      const id = await googleAccount('joe@example.com');
+      const r = await call(env, 'POST', '/v1/me/password', {
+        token: await tokenFor(env, id),
+        body: { password: 'a-good-long-password' },
+      });
+      expect(r.status).toBe(200);
+      const row = raw.prepare('SELECT email, verified_at FROM email_credentials WHERE profile_id = ?').get(id) as {
+        email: string;
+        verified_at: string | null;
+      };
+      expect(row.email).toBe('joe@example.com');
+      expect(row.verified_at).not.toBeNull();
+    });
+
+    it('makes the account reachable by linkTarget afterwards', async () => {
+      const id = await googleAccount('joe@example.com');
+      await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      await expect(linkTarget(env.DB, 'joe@example.com')).resolves.toBe(id);
+    });
+
+    it('will not overwrite a password that already exists — that is the reset flow', async () => {
+      const id = await googleAccount('joe@example.com');
+      await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      const again = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'another-long-one' } });
+      expect(again.status).toBe(403);
+    });
+
+    it('refuses when the address is already a password account elsewhere', async () => {
+      await register('taken@example.com');
+      const id = await googleAccount('taken@example.com', 'p_google2');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      expect(r.status).toBe(409);
+    });
+
+    it('refuses an account with no address at all', async () => {
+      const id = await googleAccount(null, 'p_google3');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      expect(r.status).toBe(400);
+    });
+
+    it('applies the same password rules as registration', async () => {
+      const id = await googleAccount('joe@example.com');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'short' } });
+      expect(r.status).toBe(400);
+    });
+  });
+
+  describe('linkTarget — joining a provider sign-in to an existing account', () => {
+    const confirm = () =>
+      raw.prepare("UPDATE email_credentials SET verified_at = '2026-01-01T00:00:00.000Z'").run();
+
+    it('finds a confirmed account for the same address', async () => {
+      await register('me@example.com');
+      confirm();
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      await expect(linkTarget(env.DB, 'me@example.com')).resolves.toBe(row.profile_id);
+    });
+
+    it('matches regardless of case or surrounding space, as sign-in does', async () => {
+      await register('me@example.com');
+      confirm();
+      await expect(linkTarget(env.DB, '  ME@Example.COM ')).resolves.not.toBeNull();
+    });
+
+    it('REFUSES an unconfirmed account — this is the takeover', async () => {
+      // Register victim@ with a password the attacker knows and never confirm
+      // it. The victim then signs in with Google. If this linked, the attacker
+      // would hold a working password for the victim's account.
+      await register('victim@example.com');
+      await expect(linkTarget(env.DB, 'victim@example.com')).resolves.toBeNull();
+    });
+
+    it('refuses an address nobody has registered', async () => {
+      await expect(linkTarget(env.DB, 'nobody@example.com')).resolves.toBeNull();
+    });
+
+    it('refuses a deleted profile', async () => {
+      await register('me@example.com');
+      confirm();
+      raw.prepare("UPDATE profiles SET deleted_at = '2026-01-02T00:00:00.000Z'").run();
+      await expect(linkTarget(env.DB, 'me@example.com')).resolves.toBeNull();
+    });
+  });
+
   describe('the one-a-minute email limit', () => {
     // No mail provider is configured in tests, so "did it send?" is observed
     // through the side effect that always accompanies a send: a fresh token,
