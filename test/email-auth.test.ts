@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type Database from 'better-sqlite3';
 import { hashPassword, verifyPassword, needsRehash, newToken, hashToken, MAX_ITERATIONS } from '@/passwords';
-import { normaliseEmail, passwordError, LOGIN_FAIL_LIMIT } from '@/pure';
+import { normaliseEmail, passwordError, LOGIN_FAIL_LIMIT, MAX_CODE_TRIES } from '@/pure';
 import type { Env } from '@/env';
-import { call, freshDatabase, makeEnv } from './harness';
+import { call, freshDatabase, makeEnv, tokenFor } from './harness';
+import { linkTarget } from '@/routes/auth';
 
 /**
  * Email sign-in.
@@ -204,6 +205,291 @@ describe('email sign-in over HTTP', () => {
     // Replay does nothing: the token was consumed.
     const again = await call(env, 'POST', '/v1/auth/email/verify', { body: { token } });
     expect(again.status).toBe(400);
+  });
+
+  /**
+   * ONE EMAIL A MINUTE, from every door.
+   *
+   * Two of the three senders are unauthenticated and take any address, so
+   * without a shared limit they are a machine for posting mail at an inbox
+   * nobody involved owns. The limit is shared — `updated_at` — so they cannot
+   * be alternated to send three times as much.
+   *
+   * And it must stay INVISIBLE on the unauthenticated ones: a 429 that only a
+   * registered address could produce is the membership oracle those endpoints
+   * are written to avoid.
+   */
+  /**
+   * WHICH ACCOUNT A GOOGLE SIGN-IN LANDS IN.
+   *
+   * Registering by email and later signing in with Google is one person using
+   * two doors, and handing them a second empty profile is the wrong answer. But
+   * the rule that joins them is also the one that could put somebody inside
+   * somebody else's account, so both sides must have proved the address: the
+   * provider says it verified it, and the local account confirmed it.
+   */
+  /**
+   * The other direction: a Google account gaining a password, so the same
+   * person can use either door. Written already CONFIRMED, because the address
+   * came from the provider rather than from anything typed here — which is
+   * also what lets a later email sign-in link back instead of duplicating.
+   */
+  describe('POST /v1/me/password', () => {
+    /** A profile that signed in with Google, as `resolveProfile` would leave it. */
+    const googleAccount = async (email: string | null, id = 'p_google1') => {
+      raw
+        .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, 'gjoe', 'gjoe', '2026-01-01T00:00:00.000Z');
+      raw
+        .prepare(
+          'INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run('google', `sub-${id}`, id, email, '2026-01-01T00:00:00.000Z');
+      return id;
+    };
+
+    it('adds a password, already confirmed, using the address the provider gave', async () => {
+      const id = await googleAccount('joe@example.com');
+      const r = await call(env, 'POST', '/v1/me/password', {
+        token: await tokenFor(env, id),
+        body: { password: 'a-good-long-password' },
+      });
+      expect(r.status).toBe(200);
+      const row = raw.prepare('SELECT email, verified_at FROM email_credentials WHERE profile_id = ?').get(id) as {
+        email: string;
+        verified_at: string | null;
+      };
+      expect(row.email).toBe('joe@example.com');
+      expect(row.verified_at).not.toBeNull();
+    });
+
+    it('makes the account reachable by linkTarget afterwards', async () => {
+      const id = await googleAccount('joe@example.com');
+      await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      await expect(linkTarget(env.DB, 'joe@example.com')).resolves.toBe(id);
+    });
+
+    it('will not overwrite a password that already exists — that is the reset flow', async () => {
+      const id = await googleAccount('joe@example.com');
+      await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      const again = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'another-long-one' } });
+      expect(again.status).toBe(403);
+    });
+
+    it('refuses when the address is already a password account elsewhere', async () => {
+      await register('taken@example.com');
+      const id = await googleAccount('taken@example.com', 'p_google2');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      expect(r.status).toBe(409);
+    });
+
+    it('refuses an account with no address at all', async () => {
+      const id = await googleAccount(null, 'p_google3');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'a-good-long-password' } });
+      expect(r.status).toBe(400);
+    });
+
+    it('applies the same password rules as registration', async () => {
+      const id = await googleAccount('joe@example.com');
+      const r = await call(env, 'POST', '/v1/me/password', { token: await tokenFor(env, id), body: { password: 'short' } });
+      expect(r.status).toBe(400);
+    });
+  });
+
+  describe('linkTarget — joining a provider sign-in to an existing account', () => {
+    const confirm = () =>
+      raw.prepare("UPDATE email_credentials SET verified_at = '2026-01-01T00:00:00.000Z'").run();
+
+    it('finds a confirmed account for the same address', async () => {
+      await register('me@example.com');
+      confirm();
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      await expect(linkTarget(env.DB, 'me@example.com')).resolves.toBe(row.profile_id);
+    });
+
+    it('matches regardless of case or surrounding space, as sign-in does', async () => {
+      await register('me@example.com');
+      confirm();
+      await expect(linkTarget(env.DB, '  ME@Example.COM ')).resolves.not.toBeNull();
+    });
+
+    it('REFUSES an unconfirmed account — this is the takeover', async () => {
+      // Register victim@ with a password the attacker knows and never confirm
+      // it. The victim then signs in with Google. If this linked, the attacker
+      // would hold a working password for the victim's account.
+      await register('victim@example.com');
+      await expect(linkTarget(env.DB, 'victim@example.com')).resolves.toBeNull();
+    });
+
+    it('refuses an address nobody has registered', async () => {
+      await expect(linkTarget(env.DB, 'nobody@example.com')).resolves.toBeNull();
+    });
+
+    it('refuses a deleted profile', async () => {
+      await register('me@example.com');
+      confirm();
+      raw.prepare("UPDATE profiles SET deleted_at = '2026-01-02T00:00:00.000Z'").run();
+      await expect(linkTarget(env.DB, 'me@example.com')).resolves.toBeNull();
+    });
+  });
+
+  describe('the one-a-minute email limit', () => {
+    // No mail provider is configured in tests, so "did it send?" is observed
+    // through the side effect that always accompanies a send: a fresh token,
+    // and a stamped `updated_at`.
+    const cred = () =>
+      raw.prepare('SELECT reset_hash, updated_at FROM email_credentials').get() as {
+        reset_hash: string | null;
+        updated_at: string;
+      };
+
+    it('does not act twice when a taken address is registered again, and answers identically', async () => {
+      await register('me@example.com');
+      const before = cred().updated_at;
+
+      const a = await call(env, 'POST', '/v1/auth/email/register', {
+        body: { email: 'me@example.com', password: 'a-good-long-password' },
+      });
+      const b = await call(env, 'POST', '/v1/auth/email/register', {
+        body: { email: 'me@example.com', password: 'a-good-long-password' },
+      });
+
+      expect(a.status).toBe(202);
+      expect(b.status).toBe(202);
+      expect(a.json).toEqual(b.json);
+      // Registration stamps `updated_at`, so the cooldown is already running
+      // and neither attempt should have restarted it.
+      expect(cred().updated_at).toBe(before);
+    });
+
+    it('issues one reset token for repeated requests, and still answers 202 to both', async () => {
+      await register('me@example.com');
+      // Registration just stamped the row, so the first forgot is throttled too
+      // — which is the point: the clock is shared across every sender.
+      const a = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      const b = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+
+      expect(a.status).toBe(202);
+      expect(b.status).toBe(202);
+      expect(a.json).toEqual(b.json);
+      expect(cred().reset_hash).toBeNull();
+    });
+
+    it('lets a reset through once the minute has passed', async () => {
+      await register('me@example.com');
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw
+        .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
+        .run(new Date(Date.now() - 61_000).toISOString(), row.profile_id);
+
+      const ok = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      expect(ok.status).toBe(202);
+      expect(cred().reset_hash).not.toBeNull();
+    });
+
+    it('answers an unknown address exactly as a throttled known one', async () => {
+      await register('me@example.com');
+      const throttled = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'me@example.com' } });
+      const unknown = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'nobody@example.com' } });
+      expect(throttled.status).toBe(unknown.status);
+      expect(throttled.json).toEqual(unknown.json);
+    });
+  });
+
+  /**
+   * The code path. It exists because a deep link only works on the device that
+   * received the email — read it on a phone, sign in on a simulator, and there
+   * is nothing to tap. Its security rests on two things this pins: the code is
+   * useless without the address, and it runs out of guesses.
+   */
+  describe('the six-digit code', () => {
+    const setCode = async (code: string, expiresInMs = 60_000) => {
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw
+        .prepare(
+          'UPDATE email_credentials SET verify_code_hash = ?, verify_code_tries = 0, verify_expires = ? WHERE profile_id = ?',
+        )
+        .run(await hashToken(code), new Date(Date.now() + expiresInMs).toISOString(), row.profile_id);
+      return row.profile_id;
+    };
+
+    it('confirms with the address and the code, and cannot be replayed', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+
+      const ok = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.json.email_verified).toBe(true);
+
+      const again = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(again.status).toBe(400);
+    });
+
+    it('keeps a leading zero — 042317 is not 42317', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const short = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '42317' },
+      });
+      expect(short.status).toBe(400);
+    });
+
+    it('accepts a code pasted with spaces, because that is what people paste', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const spaced = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042 317' },
+      });
+      expect(spaced.status).toBe(200);
+    });
+
+    it('is worthless without the address it was sent to', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      const noEmail = await call(env, 'POST', '/v1/auth/email/verify', { body: { code: '042317' } });
+      expect(noEmail.status).toBe(400);
+      const wrongEmail = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'someone@else.com', code: '042317' },
+      });
+      expect(wrongEmail.status).toBe(400);
+      // and the real one still works, so nothing above consumed it
+      const ok = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(ok.status).toBe(200);
+    });
+
+    it('runs out of guesses, and stays dead even when the right code arrives', async () => {
+      await register('me@example.com');
+      await setCode('042317');
+      for (let i = 0; i < MAX_CODE_TRIES; i += 1) {
+        const wrong = await call(env, 'POST', '/v1/auth/email/verify', {
+          body: { email: 'me@example.com', code: '000000' },
+        });
+        expect(wrong.status).toBe(400);
+      }
+      const correct = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      expect(correct.status).toBe(400);
+    });
+
+    it('expires with the link, and answers identically to a wrong code', async () => {
+      await register('me@example.com');
+      await setCode('042317', -1000);
+      const expired = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '042317' },
+      });
+      const wrong = await call(env, 'POST', '/v1/auth/email/verify', {
+        body: { email: 'me@example.com', code: '999999' },
+      });
+      expect(expired.status).toBe(400);
+      expect(expired.json).toEqual(wrong.json);
+    });
   });
 
   it('refuses an expired token, and says the same thing as for an unknown one', async () => {

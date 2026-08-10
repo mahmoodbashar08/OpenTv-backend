@@ -10,7 +10,13 @@ import { verifyClaims, type IdTokenPayload, type Provider } from '@/pure';
  * claim rules are `verifyClaims` in `pure.ts` where they are unit-tested.
  */
 
-export type VerifiedToken = { sub: string; email: string | null };
+export type VerifiedToken = {
+  sub: string;
+  email: string | null;
+  /** The provider's own claim that it has verified this address. Carried
+   *  through because account LINKING turns on it — see `resolveProfile`. */
+  emailVerified: boolean;
+};
 export type VerifyResult = { ok: true; token: VerifiedToken } | { ok: false; reason: string };
 
 /** base64url → bytes. `nodejs_compat` is on; this is what it is on for. */
@@ -72,5 +78,5 @@ export async function verifyIdToken(
   const claims = verifyClaims(payload as IdTokenPayload, { provider, audiences: audiencesFor(env, provider) }, nowMs);
   if (!claims.ok) return { ok: false, reason: claims.reason };
 
-  return { ok: true, token: { sub: claims.sub, email: claims.email } };
+  return { ok: true, token: { sub: claims.sub, email: claims.email, emailVerified: claims.emailVerified } };
 }

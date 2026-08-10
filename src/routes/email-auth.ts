@@ -3,10 +3,11 @@ import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
-import { hashPassword, hashToken, needsRehash, newToken, sameToken, verifyPassword } from '@/passwords';
+import { hashPassword, hashToken, needsRehash, newCode, newToken, sameToken, verifyPassword } from '@/passwords';
 import {
   LOGIN_FAIL_LIMIT,
   LOGIN_LOCK_MS,
+  MAX_CODE_TRIES,
   RESEND_COOLDOWN_MS,
   normaliseEmail,
   passwordError,
@@ -66,6 +67,24 @@ function newProfileId(): string {
 
 // ── POST /v1/auth/email/register ────────────────────────────────────────────
 
+/**
+ * Has this row had an email sent about it within the last minute?
+ *
+ * `updated_at` is stamped by every path that posts a message, so one clock
+ * covers all of them: registering against a taken address, asking for another
+ * confirmation, and requesting a reset cannot be combined to send three times
+ * as much mail as any of them alone.
+ *
+ * CALLERS MUST NOT CHANGE THEIR ANSWER because of this. Two of the three are
+ * written to look identical whether or not the address exists, and a 429 that
+ * only appears for real accounts would undo that in a single request.
+ */
+function withinCooldown(updatedAt: string | null | undefined, nowMs: number): boolean {
+  if (!updatedAt) return false;
+  const t = Date.parse(updatedAt);
+  return Number.isFinite(t) && nowMs - t < RESEND_COOLDOWN_MS;
+}
+
 emailAuth.post('/auth/email/register', async (c) => {
   let body: unknown;
   try {
@@ -94,9 +113,9 @@ emailAuth.post('/auth/email/register', async (c) => {
   const nowIso = new Date(nowMs).toISOString();
 
   const existing = await db
-    .prepare('SELECT profile_id, email FROM email_credentials WHERE email_lower = ?')
+    .prepare('SELECT profile_id, email, updated_at FROM email_credentials WHERE email_lower = ?')
     .bind(email)
-    .first<{ profile_id: string; email: string }>();
+    .first<{ profile_id: string; email: string; updated_at: string }>();
 
   if (existing) {
     // THE ADDRESS IS TAKEN, AND THE ANSWER LOOKS IDENTICAL TO SUCCESS.
@@ -104,9 +123,24 @@ emailAuth.post('/auth/email/register', async (c) => {
     // The person who owns it gets told, by email, that someone tried — which is
     // useful to them and useless to whoever is probing. No session is issued:
     // an attacker gets a 202 and nothing else.
-    c.executionCtx.waitUntil(
-      sendResetEmail(c.env, existing.email, 'account-exists').then(() => undefined),
-    );
+    //
+    // ONE MESSAGE A MINUTE, and the 202 is returned either way. This endpoint
+    // is unauthenticated and takes any address, so without a limit it is a
+    // machine for posting mail at an inbox nobody involved owns. The rate
+    // limit must not change the answer, or it becomes the membership oracle
+    // the rest of this branch exists to avoid: a 429 here would mean "this
+    // address is registered AND somebody asked recently".
+    if (!withinCooldown(existing.updated_at, nowMs)) {
+      c.executionCtx.waitUntil(
+        (async () => {
+          await sendResetEmail(c.env, existing.email, 'account-exists');
+          await db
+            .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
+            .bind(nowIso, existing.profile_id)
+            .run();
+        })(),
+      );
+    }
     return c.json({ ok: true, pending_verification: true }, 202);
   }
 
@@ -115,6 +149,9 @@ emailAuth.post('/auth/email/register', async (c) => {
   const hash = await hashPassword(password);
   const token = newToken();
   const tokenHash = await hashToken(token);
+  // The same expiry covers both: they are two ways to answer one question.
+  const code = newCode();
+  const codeHash = await hashToken(code);
   const expires = new Date(nowMs + VERIFY_TTL_MS).toISOString();
 
   await db.batch([
@@ -130,13 +167,14 @@ emailAuth.post('/auth/email/register', async (c) => {
     db
       .prepare(
         `INSERT INTO email_credentials
-           (profile_id, email, email_lower, password_hash, verify_hash, verify_expires, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (profile_id, email, email_lower, password_hash, verify_hash, verify_code_hash,
+            verify_code_tries, verify_expires, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       )
-      .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, expires, nowIso, nowIso),
+      .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, codeHash, expires, nowIso, nowIso),
   ]);
 
-  c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token).then(() => undefined));
+  c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token, code).then(() => undefined));
 
   // SIGNED IN IMMEDIATELY, BUT ON A LEASH. The token carries `unverified`, so
   // the app has a session to draw its own state with and to confirm from — and
@@ -224,6 +262,20 @@ const DUMMY_HASH =
 
 // ── POST /v1/auth/email/verify ──────────────────────────────────────────────
 
+/**
+ * Confirm an address, by LINK or by CODE.
+ *
+ * WHY TWO. The link is a deep link into the app, so it only works on the device
+ * that opened the email. Read the message on a phone while signing in on a
+ * tablet, a simulator, or a second handset and there is nothing to tap — no app
+ * on that machine claims the scheme. The code crosses the room.
+ *
+ * THE CODE IS NOT A SHORT TOKEN. A token is looked up BY its hash, so a
+ * six-digit value used the same way would be a search across every account at
+ * once. The code is accepted only together with the address it was sent to, and
+ * only `MAX_CODE_TRIES` times, after which it is dead until another is asked
+ * for — one row, a handful of guesses, rather than a million against the table.
+ */
 emailAuth.post('/auth/email/verify', async (c) => {
   let body: unknown;
   try {
@@ -231,25 +283,63 @@ emailAuth.post('/auth/email/verify', async (c) => {
   } catch {
     return fail(c, 400, 'invalid_body', 'Body must be JSON.');
   }
-  const token = (body as Record<string, unknown>)?.token;
-  if (typeof token !== 'string' || token.length === 0) return fail(c, 400, 'invalid_body', 'A token is required.');
+  const b = (body ?? {}) as Record<string, unknown>;
+  const token = typeof b.token === 'string' ? b.token : '';
+  const email = normaliseEmail(b.email);
+  // Spaces and dashes because people paste what they see, and a code shown as
+  // `042 317` is the same code.
+  const code = typeof b.code === 'string' ? b.code.replace(/[\s-]/g, '') : '';
 
-  const hash = await hashToken(token);
   const nowIso = new Date().toISOString();
-  const row = await c.env.DB.prepare(
-    'SELECT profile_id, verify_hash, verify_expires FROM email_credentials WHERE verify_hash = ?',
-  )
-    .bind(hash)
-    .first<{ profile_id: string; verify_hash: string; verify_expires: string | null }>();
+  type Row = {
+    profile_id: string;
+    verify_hash: string | null;
+    verify_code_hash: string | null;
+    verify_code_tries: number;
+    verify_expires: string | null;
+  };
+  const COLS = 'profile_id, verify_hash, verify_code_hash, verify_code_tries, verify_expires';
+  // Deliberately one message for every failure below. "No such code", "wrong
+  // code", "expired" and "out of guesses" are four facts a guesser would like.
+  const dead = () => fail(c, 400, 'invalid_body', 'That link or code is not valid any more. Ask for a new one.');
 
-  // Same answer for "no such token" and "expired": neither tells the holder of
-  // a guessed token anything they can act on.
-  if (!row || !sameToken(row.verify_hash, hash) || !row.verify_expires || row.verify_expires < nowIso) {
-    return fail(c, 400, 'invalid_body', 'That link has expired. Ask for a new one.');
+  let row: Row | null = null;
+
+  if (token) {
+    const hash = await hashToken(token);
+    row = await c.env.DB.prepare(`SELECT ${COLS} FROM email_credentials WHERE verify_hash = ?`)
+      .bind(hash)
+      .first<Row>();
+    if (!row || !row.verify_hash || !sameToken(row.verify_hash, hash)) return dead();
+  } else if (email && /^[0-9]{6}$/.test(code)) {
+    row = await c.env.DB.prepare(`SELECT ${COLS} FROM email_credentials WHERE email_lower = ?`)
+      .bind(email)
+      .first<Row>();
+    if (!row || !row.verify_code_hash) return dead();
+    if (row.verify_code_tries >= MAX_CODE_TRIES) return dead();
+
+    const hash = await hashToken(code);
+    if (!sameToken(row.verify_code_hash, hash)) {
+      // SPENT WHETHER OR NOT IT WAS CLOSE. Counting only correct-shaped guesses
+      // would be a counter that never moves.
+      await c.env.DB.prepare(
+        'UPDATE email_credentials SET verify_code_tries = verify_code_tries + 1, updated_at = ? WHERE profile_id = ?',
+      )
+        .bind(nowIso, row.profile_id)
+        .run();
+      return dead();
+    }
+  } else {
+    return fail(c, 400, 'invalid_body', 'A token, or an email address and a six-digit code, is required.');
   }
 
+  if (!row.verify_expires || row.verify_expires < nowIso) return dead();
+
   await c.env.DB.prepare(
-    'UPDATE email_credentials SET verified_at = ?, verify_hash = NULL, verify_expires = NULL, updated_at = ? WHERE profile_id = ?',
+    `UPDATE email_credentials
+        SET verified_at = ?, verify_hash = NULL, verify_code_hash = NULL,
+            verify_code_tries = 0, verify_expires = NULL, updated_at = ?
+      WHERE profile_id = ?`,
   )
     .bind(nowIso, nowIso, row.profile_id)
     .run();
@@ -287,18 +377,112 @@ emailAuth.post('/me/email/resend', requireAuth, async (c) => {
   // A COOLDOWN, because "send it again" is a button people press. Without one
   // it is a way to make this server post mail at an address repeatedly, and the
   // address is not necessarily one the presser owns.
-  if (nowMs - Date.parse(row.updated_at) < RESEND_COOLDOWN_MS) {
+  // AUTHENTICATED, so a 429 here reveals nothing — the caller already holds a
+  // session for this account. It is the one place the honest answer is safe.
+  if (withinCooldown(row.updated_at, nowMs)) {
     return fail(c, 429, 'rate_limited', 'Wait a minute before asking for another email.');
   }
 
   const token = newToken();
+  const code = newCode();
   await c.env.DB.prepare(
-    'UPDATE email_credentials SET verify_hash = ?, verify_expires = ?, updated_at = ? WHERE profile_id = ?',
+    `UPDATE email_credentials
+        SET verify_hash = ?, verify_code_hash = ?, verify_code_tries = 0,
+            verify_expires = ?, updated_at = ?
+      WHERE profile_id = ?`,
   )
-    .bind(await hashToken(token), new Date(nowMs + VERIFY_TTL_MS).toISOString(), new Date(nowMs).toISOString(), me)
+    .bind(
+      await hashToken(token),
+      await hashToken(code),
+      new Date(nowMs + VERIFY_TTL_MS).toISOString(),
+      new Date(nowMs).toISOString(),
+      me,
+    )
     .run();
-  c.executionCtx.waitUntil(sendVerificationEmail(c.env, row.email, token).then(() => undefined));
+  c.executionCtx.waitUntil(sendVerificationEmail(c.env, row.email, token, code).then(() => undefined));
   return c.json({ ok: true, email_verified: false });
+});
+
+// ── POST /v1/me/password ────────────────────────────────────────────────────
+
+/**
+ * Add a password to an account that signs in with Apple or Google.
+ *
+ * THE POINT: two doors into one account. Somebody who joined with Google can
+ * set a password and afterwards use either — and, more importantly, is not
+ * locked out on a device where the provider sign-in fails, or if they ever
+ * stop using that Google account.
+ *
+ * NO CONFIRMATION EMAIL, and that is not an oversight. The address comes from
+ * the identity the provider issued, not from anything typed here, and the
+ * provider has already verified it — which is exactly the standard the LINKING
+ * rule holds out for. Sending a "confirm your address" mail for an address
+ * Google just vouched for would be theatre. So the row is written already
+ * confirmed, and that is also what makes the reverse direction work: sign in
+ * with Google, set a password, and a later email sign-in finds a confirmed
+ * account rather than a second one.
+ *
+ * NOT A PASSWORD CHANGE. If this account already has one, changing it is the
+ * reset flow, which proves possession of the inbox first. This route only ever
+ * fills an empty slot.
+ */
+emailAuth.post('/me/password', requireAuth, async (c) => {
+  const me = c.get('profileId');
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const bad = passwordError((body as Record<string, unknown>)?.password);
+  if (bad) {
+    return fail(
+      c,
+      400,
+      'invalid_body',
+      bad === 'too_short' ? 'Use at least 8 characters.' : bad === 'too_long' ? 'That password is too long.' : 'That password is too easy to guess.',
+    );
+  }
+  // `passwordError` already proved it is a usable string; this satisfies the
+  // compiler without a cast that would outlive the check.
+  const raw = (body as Record<string, unknown>).password;
+  const password = typeof raw === 'string' ? raw : '';
+
+  const existing = await c.env.DB.prepare('SELECT profile_id FROM email_credentials WHERE profile_id = ?')
+    .bind(me)
+    .first<{ profile_id: string }>();
+  if (existing) return fail(c, 403, 'forbidden', 'This account already has a password.');
+
+  // The address the PROVIDER gave us, never one supplied in the request — that
+  // would let anybody claim any address by typing it.
+  const identity = await c.env.DB.prepare(
+    "SELECT email FROM identities WHERE profile_id = ? AND provider IN ('apple','google') AND email IS NOT NULL LIMIT 1",
+  )
+    .bind(me)
+    .first<{ email: string }>();
+  if (!identity?.email) {
+    return fail(c, 400, 'invalid_body', 'This account has no email address to attach a password to.');
+  }
+
+  const nowIso = new Date().toISOString();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO email_credentials
+         (profile_id, email, email_lower, password_hash, verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(me, identity.email, normaliseEmail(identity.email) ?? identity.email.trim().toLowerCase(), await hashPassword(password), nowIso, nowIso, nowIso)
+      .run();
+  } catch {
+    // `email_lower` is UNIQUE: somebody else already registered this address
+    // with a password. Refusing is right — the two accounts are not provably
+    // the same person, and merging them here would be a takeover in the other
+    // direction.
+    return fail(c, 409, 'handle_taken', 'That address already has a password on another account.');
+  }
+
+  return c.json({ ok: true, email: identity.email });
 });
 
 // ── POST /v1/auth/email/forgot ──────────────────────────────────────────────
@@ -318,12 +502,15 @@ emailAuth.post('/auth/email/forgot', async (c) => {
   if (email) {
     const nowMs = Date.now();
     const row = await c.env.DB.prepare(
-      `SELECT c.profile_id, c.email FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
+      `SELECT c.profile_id, c.email, c.updated_at FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
         WHERE c.email_lower = ? AND p.deleted_at IS NULL`,
     )
       .bind(email)
-      .first<{ profile_id: string; email: string }>();
-    if (row) {
+      .first<{ profile_id: string; email: string; updated_at: string }>();
+    // The cooldown is silent here for the same reason the 202 is: a 429 that
+    // only real addresses could produce would answer the question this whole
+    // endpoint refuses to answer.
+    if (row && !withinCooldown(row.updated_at, nowMs)) {
       const token = newToken();
       await c.env.DB.prepare(
         'UPDATE email_credentials SET reset_hash = ?, reset_expires = ?, updated_at = ? WHERE profile_id = ?',

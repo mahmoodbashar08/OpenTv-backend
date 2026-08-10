@@ -114,6 +114,29 @@ async function overAuthLimit(env: Env, ip: string, nowMs: number): Promise<boole
 }
 
 /**
+ * The profile a provider sign-in should JOIN rather than duplicate, or null.
+ *
+ * Only a CONFIRMED email account on a live profile qualifies. Everything else
+ * — no such address, an unconfirmed registration, a deleted profile — answers
+ * null, and the caller makes a fresh account instead.
+ *
+ * Exported for its tests. This is the whole of the rule that decides whether
+ * one person's sign-in can land in another person's account, so it is pinned
+ * directly rather than through a route that needs a signed provider token.
+ */
+export async function linkTarget(db: D1Database, email: string): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT c.profile_id FROM email_credentials c
+         JOIN profiles p ON p.id = c.profile_id
+        WHERE c.email_lower = ? AND c.verified_at IS NOT NULL AND p.deleted_at IS NULL`,
+    )
+    .bind(email.trim().toLowerCase())
+    .first<{ profile_id: string }>();
+  return row?.profile_id ?? null;
+}
+
+/**
  * The profile behind an identity — found, or created together with it.
  *
  * Shared by the real sign-in and the development one below, so the two cannot
@@ -126,6 +149,13 @@ async function resolveProfile(
   subject: string,
   email: string | null,
   nowIso: string,
+  /**
+   * Whether the PROVIDER says it has verified this address. Only then may it
+   * be used to find an existing account — see `linkTarget`. Defaults false so
+   * every caller that does not pass it (the tests, and any future one) links
+   * nothing.
+   */
+  emailVerified = false,
 ): Promise<ProfileRow | null> {
   const lookup = db
     .prepare(
@@ -156,6 +186,28 @@ async function resolveProfile(
   }
 
   if (!row) {
+    // 1b. NO IDENTITY YET — but perhaps an account already, made with this
+    // address and a password. Signing in with Google after registering by
+    // email is the same person doing the same thing through a different door,
+    // and giving them a second empty profile is the wrong answer.
+    //
+    // BOTH SIDES MUST HAVE PROVED THE ADDRESS. The provider vouches for it
+    // (`emailVerified`), and the local account confirmed it (`verified_at`).
+    // Linking to an UNCONFIRMED local account would be the classic takeover:
+    // register victim@example.com with a password you know, wait for them to
+    // sign in with Google, and you are inside their account. An unconfirmed
+    // registration reserves nothing.
+    const linked = emailVerified && email ? await linkTarget(db, email) : null;
+    if (linked) {
+      await db
+        .prepare(
+          'INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .bind(provider, subject, linked, email, nowIso)
+        .run();
+      return db.prepare('SELECT * FROM profiles WHERE id = ?').bind(linked).first<ProfileRow>();
+    }
+
     // 2. Not found → one batch, so a crash cannot orphan an identity.
     const id = newProfileId();
     const handle = placeholderHandle(id);
@@ -213,78 +265,13 @@ auth.post('/auth/session', async (c) => {
   const verified = await verifyIdToken(c.env, provider as Provider, b.id_token, now);
   if (!verified.ok) return fail(c, 401, 'unauthenticated', 'ID token rejected.');
 
-  const row = await resolveProfile(c.env.DB, provider, verified.token.sub, verified.token.email ?? null, nowIso);
-  if (!row) return fail(c, 500, 'internal', 'Could not establish a profile.');
-
-  const { token, expiresAt } = await sign(c.env, row.id, now);
-  return c.json({
-    token,
-    expires_at: expiresAt,
-    profile: ownProfile(row),
-    needs_handle: needsHandle(row.handle),
-  });
-});
-
-// ── POST /v1/auth/dev — exists only where DEV_AUTH_SECRET is set ────────────
-
-/**
- * A sign-in with no Apple or Google account behind it, for testing.
- *
- * WHY. The community cannot be exercised by one person: a percentage needs two
- * opinions, a thread needs two voices, a follow needs somebody to follow.
- * Provider accounts are the honest way to get them and they are slow — a
- * two-factor prompt on a simulator with no phone, an Apple ID per tester — so
- * the multi-account paths kept going untested. This makes a second and third
- * account instant.
- *
- * THIS IS AN AUTHENTICATION BYPASS, and it is written to be impossible to leave
- * on by accident:
- *
- *  - NO SECRET, NO ROUTE. Without a `DEV_AUTH_SECRET` binding it answers 404 —
- *    not 403, which would confirm to a stranger that the endpoint exists and is
- *    merely locked. Production never sets it. `auth.test.ts` asserts the 404.
- *  - ITS OWN NAMESPACE. Every account lands under provider `dev` with a `dev_`
- *    subject, which no Apple or Google identity can collide with, so
- *    `DELETE FROM identities WHERE provider = 'dev'` removes every account it
- *    has ever created and touches nothing real.
- *  - IT GRANTS NOTHING EXTRA. The session it signs is an ordinary one for an
- *    ordinary profile. It cannot reach an existing account: the subject is
- *    derived from the name given, inside a namespace real providers never use.
- *
- * DELETE THE SECRET WHEN THE TEST IS OVER (`wrangler secret delete
- * DEV_AUTH_SECRET`). While it is set, anyone holding it can mint a session for
- * a test account on this server.
- */
-auth.post('/auth/dev', async (c) => {
-  const secret = c.env.DEV_AUTH_SECRET;
-  if (!secret) return c.notFound();
-
-  const offered = c.req.header('X-Dev-Secret') ?? '';
-  if (offered.length !== secret.length || offered !== secret) {
-    return fail(c, 401, 'unauthenticated', 'Bad dev secret.');
-  }
-
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  const who = typeof b.name === 'string' ? b.name.trim().toLowerCase() : '';
-  // Constrained so the subject cannot be steered anywhere interesting: the
-  // whole identity is `dev_` plus these characters.
-  if (!/^[a-z0-9_-]{2,24}$/.test(who)) {
-    return fail(c, 400, 'invalid_body', 'name must be 2-24 characters of a-z, 0-9, _ or -.');
-  }
-
-  const now = Date.now();
   const row = await resolveProfile(
     c.env.DB,
-    'dev',
-    `dev_${who}`,
-    `${who}@dev.invalid`,
-    new Date(now).toISOString(),
+    provider,
+    verified.token.sub,
+    verified.token.email ?? null,
+    nowIso,
+    verified.token.emailVerified,
   );
   if (!row) return fail(c, 500, 'internal', 'Could not establish a profile.');
 
@@ -306,11 +293,16 @@ auth.use('/me/*', requireAuth);
 
 auth.get('/me', async (c) => {
   const row = await c.env.DB.prepare(
-    `SELECT p.*, (SELECT COUNT(*) FROM notifications WHERE recipient_id = p.id AND read_at IS NULL) AS unread
-     FROM profiles p WHERE p.id = ? AND p.deleted_at IS NULL`,
+    `SELECT p.*,
+            (SELECT COUNT(*) FROM notifications WHERE recipient_id = p.id AND read_at IS NULL) AS unread,
+            c.email        AS cred_email,
+            c.verified_at  AS cred_verified_at
+       FROM profiles p
+       LEFT JOIN email_credentials c ON c.profile_id = p.id
+      WHERE p.id = ? AND p.deleted_at IS NULL`,
   )
     .bind(c.get('profileId'))
-    .first<ProfileRow & { unread: number }>();
+    .first<ProfileRow & { unread: number; cred_email: string | null; cred_verified_at: string | null }>();
 
   // A token for a vanished profile is not a valid session.
   if (!row) return fail(c, 401, 'unauthenticated', 'No such profile.');
@@ -319,6 +311,17 @@ auth.get('/me', async (c) => {
     ...ownProfile(row),
     unread_notifications: row.unread,
     needs_handle: needsHandle(row.handle),
+    // THE DATABASE'S ANSWER, not the token's. `requireVerified` reads the scope
+    // baked into the session, which cannot change after it is issued — so an
+    // account confirmed (or un-confirmed) since sign-in would otherwise never
+    // reach the device. This is the route the app asks on every launch, and
+    // these two fields are what let it put the confirm screen back.
+    //
+    // ABSENT ENTIRELY for Apple and Google accounts, which have no address of
+    // ours to confirm. Undefined must not read as "unverified".
+    ...(row.cred_email
+      ? { email: row.cred_email, email_verified: row.cred_verified_at != null }
+      : {}),
   });
 });
 

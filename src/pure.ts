@@ -89,6 +89,8 @@ export type IdTokenPayload = {
   iat?: unknown;
   sub?: unknown;
   email?: unknown;
+  /** Google sends a boolean. Apple has historically sent the STRING "true". */
+  email_verified?: unknown;
 };
 
 export type ExpectedClaims = {
@@ -98,7 +100,7 @@ export type ExpectedClaims = {
 };
 
 export type ClaimsResult =
-  | { ok: true; sub: string; email: string | null }
+  | { ok: true; sub: string; email: string | null; emailVerified: boolean }
   | { ok: false; reason: ClaimFailure };
 
 export type ClaimFailure =
@@ -121,9 +123,20 @@ export const IAT_SKEW_SECONDS = 300;
  * Validate every claim, no exceptions. `nowMs` is a parameter so this stays
  * testable and this file stays clock-free.
  *
- * Not checked, deliberately: `nonce` (the app is not a browser, there is no
- * redirect to replay) and `email_verified` (email is stored for support only
- * and is never trusted for identity).
+ * Not checked, deliberately: `nonce` — the app is not a browser, there is no
+ * redirect to replay.
+ *
+ * `email_verified` IS NOW READ, and that is a reversal worth naming. The
+ * address used to be stored for support and trusted for nothing, so the claim
+ * did not matter. Linking a provider sign-in to an existing email account
+ * makes the address decide WHICH ACCOUNT somebody lands in, and at that point
+ * an unverified address is an account takeover: anyone able to put a string in
+ * an `email` claim could name yours.
+ *
+ * It is not grounds for rejection. A token with an unverified address is still
+ * a valid sign-in for its own identity; it simply cannot be used to reach an
+ * account that already exists. Apple sends the string "true" rather than a
+ * boolean, and has for years, so both are accepted.
  */
 export function verifyClaims(
   payload: IdTokenPayload,
@@ -159,10 +172,12 @@ export function verifyClaims(
     return { ok: false, reason: 'missing_sub' };
   }
 
+  const ev = payload.email_verified;
   return {
     ok: true,
     sub: payload.sub,
     email: typeof payload.email === 'string' && payload.email.length > 0 ? payload.email : null,
+    emailVerified: ev === true || ev === 'true',
   };
 }
 
@@ -620,6 +635,15 @@ export const RESET_TTL_MS = 60 * 60 * 1000;
 
 /** How often "send it again" may actually send. */
 export const RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * Guesses allowed against one confirmation code before it is dead.
+ *
+ * Five is generous for somebody copying six digits off another screen, and
+ * nowhere near enough to search a million of them. The code is scoped to one
+ * address, so this is the whole search space an attacker gets.
+ */
+export const MAX_CODE_TRIES = 5;
 
 /** Failed sign-ins before that ONE account is paused, and for how long. */
 export const LOGIN_FAIL_LIMIT = 8;

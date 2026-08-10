@@ -29,6 +29,7 @@ const MIGRATION_FILES = [
   '../migrations/0012_profile_cover.sql',
   '../migrations/0013_email_credentials.sql',
   '../migrations/0014_session_epoch.sql',
+  '../migrations/0015_verify_code.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
