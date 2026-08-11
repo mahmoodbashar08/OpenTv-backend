@@ -3,7 +3,17 @@ import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
-import { hashPassword, hashToken, needsRehash, newCode, newToken, sameToken, verifyPassword } from '@/passwords';
+import {
+  hashPassword,
+  hashToken,
+  needsRehash,
+  newCode,
+  newToken,
+  sameToken,
+  UNUSABLE_HASH,
+  usablePassword,
+  verifyPassword,
+} from '@/passwords';
 import {
   LOGIN_FAIL_LIMIT,
   LOGIN_LOCK_MS,
@@ -123,10 +133,15 @@ emailAuth.post('/auth/email/register', async (c) => {
    * whichever they landed in was missing the other's comments and follows.
    * `identities` is the table that knows about all three providers, so the
    * check belongs there.
+   *
+   * `has_password` tests the SHAPE of the hash, not the presence of the row: a
+   * provider account that has asked for its first password owns a row carrying
+   * UNUSABLE_HASH, and answering `true` for it would send the app to offer
+   * "Sign in instead" about a password nobody has ever set.
    */
   const claims = await db
     .prepare(
-      `SELECT DISTINCT i.provider, (c.profile_id IS NOT NULL) AS has_password
+      `SELECT DISTINCT i.provider, (c.password_hash LIKE 'pbkdf2$%') AS has_password
          FROM identities i
          JOIN profiles p ON p.id = i.profile_id
          LEFT JOIN email_credentials c ON c.profile_id = i.profile_id
@@ -264,7 +279,11 @@ emailAuth.post('/auth/email/login', async (c) => {
     .bind(email)
     .first<CredRow>();
 
-  if (!row) {
+  // `usablePassword` as well as `row`: a provider account that asked for its
+  // first password has a credential row carrying UNUSABLE_HASH, and telling
+  // that person their password is wrong — about a password that does not exist
+  // yet — is the sentence this branch was written to stop saying.
+  if (!row || !usablePassword(row.password_hash)) {
     // NO EARLY RETURN WITHOUT WORK. Answering an unknown address instantly
     // while a known one takes 210,000 PBKDF2 rounds is a timing oracle that
     // enumerates users. Burn a comparable amount against a throwaway hash.
@@ -590,12 +609,60 @@ emailAuth.post('/auth/email/forgot', async (c) => {
   // answer carries no information.
   if (email) {
     const nowMs = Date.now();
-    const row = await c.env.DB.prepare(
+    const nowStamp = new Date(nowMs).toISOString();
+    let row = await c.env.DB.prepare(
       `SELECT c.profile_id, c.email, c.updated_at FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
         WHERE c.email_lower = ? AND p.deleted_at IS NULL`,
     )
       .bind(email)
       .first<{ profile_id: string; email: string; updated_at: string }>();
+
+    /**
+     * A GOOGLE OR APPLE ACCOUNT HAS NO CREDENTIAL ROW TO UPDATE.
+     *
+     * This is how somebody with a provider account gets their FIRST password —
+     * the app offers "Set a password" precisely because that account has none,
+     * and without this the button was a dead end: no row, no token, no email,
+     * silence for ever. `POST /v1/me/password` is the only other way and it
+     * needs a session, which is exactly what the person cannot get.
+     *
+     * The row is created with an UNUSABLE password hash. It cannot be signed in
+     * with — `verifyPassword` fails closed on a hash it cannot parse — so this
+     * opens no door by itself; the reset that follows is what sets a real one.
+     *
+     * `verified_at` is stamped because the address is already proven twice
+     * over: the provider vouched for it, and the reset link about to be sent
+     * can only be used by whoever reads that inbox.
+     */
+    if (!row) {
+      const identity = await c.env.DB.prepare(
+        `SELECT i.profile_id, i.email FROM identities i JOIN profiles p ON p.id = i.profile_id
+          WHERE LOWER(i.email) = ? AND p.deleted_at IS NULL
+          LIMIT 1`,
+      )
+        .bind(email)
+        .first<{ profile_id: string; email: string }>();
+      if (identity) {
+        // Debris first. A credential row left by an account deleted before the
+        // fix still holds `email_lower`, which is UNIQUE — the insert below
+        // would fail on it and this branch would go silent again.
+        await c.env.DB.prepare(
+          `DELETE FROM email_credentials WHERE email_lower = ? AND profile_id NOT IN
+             (SELECT id FROM profiles WHERE deleted_at IS NULL)`,
+        )
+          .bind(email)
+          .run();
+        await c.env.DB.prepare(
+          `INSERT INTO email_credentials
+             (profile_id, email, email_lower, password_hash, verified_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(profile_id) DO NOTHING`,
+        )
+          .bind(identity.profile_id, identity.email, email, UNUSABLE_HASH, nowStamp, nowStamp, nowStamp)
+          .run();
+        row = { profile_id: identity.profile_id, email: identity.email, updated_at: '' };
+      }
+    }
     // The cooldown is silent here for the same reason the 202 is: a 429 that
     // only real addresses could produce would answer the question this whole
     // endpoint refuses to answer.

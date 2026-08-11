@@ -152,3 +152,19 @@ export function newCode(): string {
 export function sameToken(a: string, b: string): boolean {
   return sameBytes(new TextEncoder().encode(a), new TextEncoder().encode(b));
 }
+
+/**
+ * A stored hash that nothing can match.
+ *
+ * Written when a provider account asks for its FIRST password: the reset flow
+ * needs a row to hang the token on, but until the reset completes there must be
+ * no password that works. `verifyPassword` fails closed on anything that is not
+ * `pbkdf2$…`, so this is inert rather than weak — and `usablePassword` lets the
+ * sign-in route tell "no password set" apart from "wrong password", which are
+ * two different sentences to the person typing.
+ */
+export const UNUSABLE_HASH = 'unusable';
+
+export function usablePassword(stored: string | null | undefined): boolean {
+  return !!stored && stored.startsWith('pbkdf2$');
+}

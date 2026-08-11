@@ -206,6 +206,43 @@ describe('email sign-in over HTTP', () => {
     expect(cred.profile_id).not.toBe(row.profile_id);
   });
 
+  /**
+   * THE DEAD "SET A PASSWORD" BUTTON. A Google account has no credential row,
+   * so /forgot found nothing, minted nothing and sent nothing — and the one
+   * action the app offers those users did nothing at all, for ever. The row is
+   * created here with an unusable hash so the reset has something to hang on.
+   */
+  it('mints a first-password reset for an account that only has Google', async () => {
+    raw.prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+      .run('p_google', 'googler', 'googler', new Date().toISOString());
+    raw.prepare('INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('google', 'sub-123', 'p_google', 'Both@Example.com', new Date().toISOString());
+
+    const res = await call(env, 'POST', '/v1/auth/email/forgot', { body: { email: 'both@example.com' } });
+    expect(res.status).toBe(202);
+
+    const cred = raw
+      .prepare('SELECT password_hash, reset_hash, verified_at FROM email_credentials WHERE profile_id = ?')
+      .get('p_google') as { password_hash: string; reset_hash: string | null; verified_at: string | null };
+    expect(cred.reset_hash).not.toBeNull();
+    expect(cred.verified_at).not.toBeNull();
+    // Inert until the reset completes — nothing can sign in with it.
+    expect(cred.password_hash.startsWith('pbkdf2$')).toBe(false);
+
+    // And the account still reports itself as password-less, so the app keeps
+    // offering "Set a password" rather than "Sign in instead".
+    const reg = await register('both@example.com');
+    expect(reg.json.has_password).toBe(false);
+
+    // Sign-in still names the provider instead of blaming a password that has
+    // never existed.
+    const login = await call(env, 'POST', '/v1/auth/email/login', {
+      body: { email: 'both@example.com', password: 'anything at all' },
+    });
+    expect(login.status).toBe(409);
+    expect(login.json.error.code).toBe('use_provider');
+  });
+
   it('treats the address case-insensitively', async () => {
     await register('Me@Example.com');
     const login = await call(env, 'POST', '/v1/auth/email/login', {
