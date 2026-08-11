@@ -297,6 +297,21 @@ describe('a profile’s own comments', () => {
     insertProfile(raw, 'p2', 'sara');
   });
 
+  // A handle is a slug — "Mahmood Bashar" becomes @mahmood_bashar — so somebody
+  // typing the name they actually know found nobody at all.
+  it('finds people by display name, not only by handle', async () => {
+    raw.prepare('UPDATE profiles SET display_name = ? WHERE id = ?').run('Mahmood Bashar', 'p1');
+
+    const byHandle = await call(env, 'GET', '/v1/users?q=mahm');
+    const byName = await call(env, 'GET', '/v1/users?q=Mahmood%20Bash');
+    const neither = await call(env, 'GET', '/v1/users?q=zzzz');
+
+    expect(byHandle.json.items).toHaveLength(1);
+    expect(byName.json.items).toHaveLength(1);
+    expect(byName.json.items[0].handle).toBe('mahmood');
+    expect(neither.json.items).toHaveLength(0);
+  });
+
   it('returns them newest first', async () => {
     say('c1', 'p1', 'older', '2019-01-01T00:00:00.000Z');
     say('c2', 'p1', 'newer', '2022-01-01T00:00:00.000Z');

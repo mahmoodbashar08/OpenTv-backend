@@ -152,7 +152,12 @@ profiles.get('/users', async (c) => {
   const res = await c.env.DB.prepare(
     `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_private
        FROM profiles p
-      WHERE p.handle_lower LIKE ? ESCAPE '\\'
+      -- NAME AS WELL AS HANDLE. A handle is a slug — "Mahmood Bashar" becomes
+      -- @mahmood_bashar — so somebody typing the name they actually know finds
+      -- nobody. The display name is the string people recognise each other by,
+      -- and searching only the slug made the community feel emptier than it is.
+      WHERE (p.handle_lower LIKE ? ESCAPE '\\'
+             OR LOWER(COALESCE(p.display_name, '')) LIKE ? ESCAPE '\\')
         AND p.deleted_at IS NULL
         -- YOURSELF IS NOT SOMEBODY TO FOLLOW. IS NOT rather than != on
         -- purpose: the viewer is NULL for an anonymous search, and p.id != NULL
@@ -165,7 +170,7 @@ profiles.get('/users', async (c) => {
       ORDER BY p.handle_lower
       LIMIT ?`,
   )
-    .bind(pattern, viewer, viewer, viewer, USER_SEARCH_LIMIT)
+    .bind(pattern, pattern, viewer, viewer, viewer, USER_SEARCH_LIMIT)
     .all<UserSearchRow>();
 
   // The shell only. A search result is a row in a list, not a profile — counts,
