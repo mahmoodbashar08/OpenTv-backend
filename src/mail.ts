@@ -149,37 +149,6 @@ export async function sendVerificationEmail(
   );
 }
 
-/**
- * SOMEBODY TRIED TO CREATE AN ACCOUNT ON AN ADDRESS THAT ALREADY HAS ONE.
- *
- * Its own message rather than the reset one, because the reset copy answers a
- * question nobody asked: pressing "Create account" and being told your password
- * needs resetting explains nothing about what actually happened. This says what
- * happened, and then offers the reset — which is the useful thing when the
- * reason you were creating a new account is that you could not get into the old
- * one.
- *
- * WHY IT GOES BY EMAIL AT ALL. The HTTP answer cannot say "that address is
- * taken" without becoming a machine for discovering who has an account. The
- * inbox owner is the one person entitled to know, so they are the only one told.
- */
-export async function sendAccountExistsEmail(env: Env, to: string, token: string): Promise<MailResult> {
-  const link = resetLink(env, token);
-  return send(
-    env,
-    to,
-    'You already have an OpenTV account',
-    `Someone — probably you — tried to create an OpenTV account with this address, but it already has one.\n\nSign in with your existing password. If you have forgotten it, set a new one here:\n\n${link}\n\nThis link expires in one hour. If it was not you, ignore this message — nothing has changed, and no new account was created.`,
-    layout(
-      'You already have an account',
-      'Someone tried to create an OpenTV account with this address, but it already has one. Sign in with your existing password — or, if you have forgotten it, set a new one.',
-      'Set a new password',
-      link,
-      'This link expires in one hour. If it was not you, ignore this message — nothing has changed, and no new account was created.',
-    ),
-  );
-}
-
 export async function sendResetEmail(env: Env, to: string, token: string): Promise<MailResult> {
   const link = resetLink(env, token);
   return send(

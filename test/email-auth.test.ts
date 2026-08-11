@@ -139,10 +139,13 @@ describe('email sign-in over HTTP', () => {
 
   // THE ONE THAT MATTERS MOST. A different status, body or shape here turns
   // the endpoint into "does this person use OpenTV?".
-  it('answers a taken address exactly as it answers a free one, and mints nothing', async () => {
+  it('names what the address already signs in with, and mints nothing', async () => {
     await register('taken@example.com');
     const again = await register('taken@example.com', 'a totally different one');
-    expect(again.status).toBe(202);
+    expect(again.status).toBe(200);
+    expect(again.json.account_exists).toBe(true);
+    expect(again.json.providers).toEqual(['email']);
+    expect(again.json.has_password).toBe(true);
     expect(again.json.token).toBeUndefined();
 
     const profiles = raw.prepare('SELECT COUNT(*) AS n FROM profiles').get() as { n: number };
@@ -153,6 +156,31 @@ describe('email sign-in over HTTP', () => {
       body: { email: 'taken@example.com', password: 'correct horse battery' },
     });
     expect(login.status).toBe(200);
+  });
+
+  /**
+   * THE DUPLICATE-ACCOUNT BUG. The check used to read `email_credentials`, which
+   * a Google or Apple account has no row in — so the address looked free and
+   * registering it built a second profile for the same person, splitting their
+   * comments and follows across two accounts with one inbox between them.
+   */
+  it('finds an address that only ever signed in with Google, and says which', async () => {
+    raw.prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+      .run('p_google', 'googler', 'googler', new Date().toISOString());
+    raw.prepare('INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('google', 'sub-123', 'p_google', 'Both@Example.com', new Date().toISOString());
+
+    const res = await register('both@example.com');
+
+    expect(res.status).toBe(200);
+    expect(res.json.account_exists).toBe(true);
+    expect(res.json.providers).toEqual(['google']);
+    // No password on that account, so the app offers to set one rather than
+    // telling somebody to remember a password that has never existed.
+    expect(res.json.has_password).toBe(false);
+
+    const profiles = raw.prepare('SELECT COUNT(*) AS n FROM profiles').get() as { n: number };
+    expect(profiles.n).toBe(1);
   });
 
   it('treats the address case-insensitively', async () => {
@@ -343,7 +371,10 @@ describe('email sign-in over HTTP', () => {
         updated_at: string;
       };
 
-    it('does not act twice when a taken address is registered again, and answers identically', async () => {
+    // Registering a taken address sends no mail at all now — it answers with
+    // the providers instead — so it must not touch the clock the other two
+    // senders share, or a reset could be starved by somebody else's typing.
+    it('sends nothing and touches nothing when a taken address is registered again', async () => {
       await register('me@example.com');
       const before = cred().updated_at;
 
@@ -354,11 +385,9 @@ describe('email sign-in over HTTP', () => {
         body: { email: 'me@example.com', password: 'a-good-long-password' },
       });
 
-      expect(a.status).toBe(202);
-      expect(b.status).toBe(202);
+      expect(a.status).toBe(200);
       expect(a.json).toEqual(b.json);
-      // Registration stamps `updated_at`, so the cooldown is already running
-      // and neither attempt should have restarted it.
+      expect(cred().reset_hash).toBeNull();
       expect(cred().updated_at).toBe(before);
     });
 
@@ -373,25 +402,6 @@ describe('email sign-in over HTTP', () => {
       expect(b.status).toBe(202);
       expect(a.json).toEqual(b.json);
       expect(cred().reset_hash).toBeNull();
-    });
-
-    // REGRESSION. The taken-address branch used to pass the literal string
-    // 'account-exists' where `sendResetEmail` expects a token, so the mail it
-    // sent carried a link no row could match. A stored `reset_hash` is the
-    // only observable proof that a usable one was issued instead.
-    it('gives a re-registered address a reset token that actually exists', async () => {
-      await register('me@example.com');
-      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
-      raw
-        .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
-        .run(new Date(Date.now() - 61_000).toISOString(), row.profile_id);
-
-      const again = await call(env, 'POST', '/v1/auth/email/register', {
-        body: { email: 'me@example.com', password: 'a-good-long-password' },
-      });
-
-      expect(again.status).toBe(202);
-      expect(cred().reset_hash).not.toBeNull();
     });
 
     it('lets a reset through once the minute has passed', async () => {

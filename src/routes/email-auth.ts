@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { sendAccountExistsEmail, sendResetEmail, sendVerificationEmail } from '@/mail';
+import { sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
 import { hashPassword, hashToken, needsRehash, newCode, newToken, sameToken, verifyPassword } from '@/passwords';
 import {
@@ -21,19 +21,21 @@ import { revokeSessions, sign } from '@/session';
  * Signing in with an email address, for people who will not use Apple or
  * Google.
  *
- * THE ONE RULE THIS FILE IS BUILT AROUND: a stranger must not learn whether an
- * address has an account here. That single requirement shapes nearly every
- * response below — registration with a taken address answers exactly as one
- * with a free address does, "forgot password" always answers 202, and a wrong
- * password and an unknown address give the same 401 after the same work. An
- * endpoint that says "no such user" is a membership oracle: point it at a
- * mailing list and it tells you which of those people use this app, which for a
- * TV tracker is a list of what they watch.
+ * A STRANGER MUST NOT LEARN WHETHER AN ADDRESS HAS AN ACCOUNT — everywhere it
+ * costs nothing. "Forgot password" always answers 202; a wrong password and an
+ * unknown address give the same 401 after the same work. An endpoint that says
+ * "no such user" is a membership oracle: point it at a mailing list and it
+ * tells you which of those people use this app, which for a TV tracker is a
+ * list of what they watch.
  *
- * WHAT IT COSTS: someone who registers with an address that is already taken is
- * told to check their inbox and finds a "you already have an account" email
- * instead of a link. That is the correct trade and it is what every careful
- * implementation does.
+ * REGISTRATION IS THE ONE EXCEPTION, and it is deliberate. It used to answer a
+ * taken address exactly as a free one — "check your inbox" — and the cost fell
+ * entirely on the honest majority: somebody whose address signs in with Google
+ * pressed "Create account" and was sent to wait for a message that could not
+ * help them. Now it names the providers already on the address, so the app can
+ * say "use Google" and finish the job in one tap. What it concedes is that an
+ * address has an account here — which the sign-in form would confirm to the
+ * same person two taps later anyway.
  *
  * PASSWORDS NEVER APPEAR IN A URL, a log, or a response. See `passwords.ts`.
  */
@@ -112,42 +114,55 @@ emailAuth.post('/auth/email/register', async (c) => {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
-  const existing = await db
-    .prepare('SELECT profile_id, email, updated_at FROM email_credentials WHERE email_lower = ?')
+  /**
+   * EVERY WAY THIS ADDRESS MAY ALREADY BE IN USE, not just the email one.
+   *
+   * The old lookup read `email_credentials` alone, so an address that had only
+   * ever signed in through Google or Apple looked free — and registering it
+   * built a SECOND profile for the same person. Two accounts, one inbox, and
+   * whichever they landed in was missing the other's comments and follows.
+   * `identities` is the table that knows about all three providers, so the
+   * check belongs there.
+   */
+  const claims = await db
+    .prepare(
+      `SELECT DISTINCT i.provider, (c.profile_id IS NOT NULL) AS has_password
+         FROM identities i
+         JOIN profiles p ON p.id = i.profile_id
+         LEFT JOIN email_credentials c ON c.profile_id = i.profile_id
+        WHERE LOWER(i.email) = ? AND p.deleted_at IS NULL`,
+    )
     .bind(email)
-    .first<{ profile_id: string; email: string; updated_at: string }>();
+    .all<{ provider: string; has_password: number }>();
 
-  if (existing) {
-    // THE ADDRESS IS TAKEN, AND THE ANSWER LOOKS IDENTICAL TO SUCCESS.
-    //
-    // The person who owns it gets told, by email, that someone tried — which is
-    // useful to them and useless to whoever is probing. No session is issued:
-    // an attacker gets a 202 and nothing else.
-    //
-    // ONE MESSAGE A MINUTE, and the 202 is returned either way. This endpoint
-    // is unauthenticated and takes any address, so without a limit it is a
-    // machine for posting mail at an inbox nobody involved owns. The rate
-    // limit must not change the answer, or it becomes the membership oracle
-    // the rest of this branch exists to avoid: a 429 here would mean "this
-    // address is registered AND somebody asked recently".
-    if (!withinCooldown(existing.updated_at, nowMs)) {
-      // A REAL RESET TOKEN, not the word "account-exists".
-      //
-      // `sendResetEmail`'s third argument IS the token, so passing a label put
-      // a link in the message that no row could ever match: everybody who
-      // re-registered their own address got mail whose only button was dead.
-      // The useful thing to send somebody who already has an account is the way
-      // back into it, so this issues the same token `/auth/email/forgot` does.
-      // Stored before the send, never inside the `waitUntil`: the mail is only
-      // useful once the row can answer for the token in it.
-      const reset = newToken();
-      await db
-        .prepare('UPDATE email_credentials SET reset_hash = ?, reset_expires = ?, updated_at = ? WHERE profile_id = ?')
-        .bind(await hashToken(reset), new Date(nowMs + RESET_TTL_MS).toISOString(), nowIso, existing.profile_id)
-        .run();
-      c.executionCtx.waitUntil(sendAccountExistsEmail(c.env, existing.email, reset).then(() => undefined));
-    }
-    return c.json({ ok: true, pending_verification: true }, 202);
+  const rows = claims.results ?? [];
+  if (rows.length > 0) {
+    /**
+     * IT SAYS SO, PLAINLY.
+     *
+     * This used to answer 202 "check your inbox" whether or not the address was
+     * taken, so that nobody could use registration to discover who has an
+     * account. The cost landed entirely on the honest majority: somebody whose
+     * address signs in with Google pressed "Create account", was told to check
+     * an inbox, and found either nothing they could act on or — worse — a
+     * password reset for an account they did not know they had. A dead end
+     * dressed as progress.
+     *
+     * So the trade is taken the other way, deliberately. The reply names the
+     * providers already on the address, the app says "you signed in with
+     * Google, use that", and one tap finishes what they came to do. What it
+     * gives away is that an address has an OpenTV account — which the sign-in
+     * form would confirm to the same person in two more taps anyway.
+     */
+    return c.json(
+      {
+        ok: false,
+        account_exists: true,
+        providers: [...new Set(rows.map((r) => r.provider))],
+        has_password: rows.some((r) => r.has_password === 1),
+      },
+      200,
+    );
   }
 
   const profileId = newProfileId();
