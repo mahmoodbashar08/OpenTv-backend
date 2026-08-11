@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { sendResetEmail, sendVerificationEmail } from '@/mail';
+import { sendAccountExistsEmail, sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
 import { hashPassword, hashToken, needsRehash, newCode, newToken, sameToken, verifyPassword } from '@/passwords';
 import {
@@ -145,7 +145,7 @@ emailAuth.post('/auth/email/register', async (c) => {
         .prepare('UPDATE email_credentials SET reset_hash = ?, reset_expires = ?, updated_at = ? WHERE profile_id = ?')
         .bind(await hashToken(reset), new Date(nowMs + RESET_TTL_MS).toISOString(), nowIso, existing.profile_id)
         .run();
-      c.executionCtx.waitUntil(sendResetEmail(c.env, existing.email, reset).then(() => undefined));
+      c.executionCtx.waitUntil(sendAccountExistsEmail(c.env, existing.email, reset).then(() => undefined));
     }
     return c.json({ ok: true, pending_verification: true }, 202);
   }
