@@ -243,6 +243,25 @@ describe('email sign-in over HTTP', () => {
     expect(login.json.error.code).toBe('use_provider');
   });
 
+  /**
+   * A HUNDRED ACCOUNTS IS A LOOP, NOT A PERSON. Sign-in has had an IP budget
+   * since the beginning; registration — the endpoint that actually CREATES
+   * things, and then earns the right to upload a library — had none.
+   */
+  it('stops one address making account after account', async () => {
+    const attempts = [];
+    for (let i = 0; i < 7; i++) {
+      attempts.push(await register(`spam${i}@example.com`));
+    }
+    expect(attempts.slice(0, 5).map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    expect(attempts[5]!.status).toBe(429);
+    expect(attempts[6]!.status).toBe(429);
+    expect(attempts[5]!.json.error.code).toBe('rate_limited');
+
+    const n = raw.prepare('SELECT COUNT(*) AS n FROM profiles').get() as { n: number };
+    expect(n.n).toBe(5);
+  });
+
   it('treats the address case-insensitively', async () => {
     await register('Me@Example.com');
     const login = await call(env, 'POST', '/v1/auth/email/login', {

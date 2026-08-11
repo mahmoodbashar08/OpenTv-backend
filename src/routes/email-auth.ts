@@ -25,6 +25,7 @@ import {
   RESET_TTL_MS,
   VERIFY_TTL_MS,
 } from '@/pure';
+import { overBudget, REGISTER_BUDGET } from '@/rate-limit';
 import { revokeSessions, sign } from '@/session';
 
 /**
@@ -105,6 +106,22 @@ emailAuth.post('/auth/email/register', async (c) => {
     return fail(c, 400, 'invalid_body', 'Body must be JSON.');
   }
   const b = (body ?? {}) as Record<string, unknown>;
+
+  /**
+   * A HUNDRED ACCOUNTS IS A LOOP, NOT A PERSON.
+   *
+   * Nothing here needs a session, and each success writes a profile, an
+   * identity and a credential row — then earns the right to upload a library's
+   * worth of comments and ratings. Sign-in has had an IP budget since the
+   * beginning; this endpoint, which is the one that creates things, had none.
+   *
+   * Counted BEFORE the address is even parsed, so a malformed body costs a slot
+   * too — otherwise the cheapest way to probe is to send rubbish.
+   */
+  const ip = c.req.header('CF-Connecting-IP') ?? '0.0.0.0';
+  if (await overBudget(c.env, 'register', ip, REGISTER_BUDGET, Date.now())) {
+    return fail(c, 429, 'rate_limited', 'Too many accounts from here. Try again later.');
+  }
 
   const email = normaliseEmail(b.email);
   if (!email) return fail(c, 400, 'invalid_body', 'That does not look like an email address.');

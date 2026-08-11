@@ -159,8 +159,18 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; t
 export function kv(): KVNamespace {
   const store = new Map<string, string>();
   return {
-    async get(key: string) {
-      return store.get(key) ?? null;
+    // The TYPE ARGUMENT MATTERS. Real KV parses when asked for 'json' and
+    // returns a string otherwise; a stub that always returns the string makes
+    // every `get(key, 'json')` read as a miss — which silently disabled the
+    // rate limiters under test while they worked perfectly in production.
+    async get(key: string, type?: string) {
+      const raw = store.get(key) ?? null;
+      if (raw === null || type !== 'json') return raw;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
     },
     async put(key: string, value: string) {
       store.set(key, value);

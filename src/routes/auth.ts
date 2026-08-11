@@ -12,6 +12,7 @@ import {
   validCoverUrl,
   type Provider,
 } from '@/pure';
+import { overBudget, SESSION_BUDGET } from '@/rate-limit';
 import { sign } from '@/session';
 
 /**
@@ -70,47 +71,6 @@ function ownProfile(row: ProfileRow) {
 /** `p_` + a UUID with the hyphens stripped. Never the provider `sub` — that is the whole reason `identities` is a separate table. */
 function newProfileId(): string {
   return `p_${crypto.randomUUID().replace(/-/g, '')}`;
-}
-
-// ── rate limiting ────────────────────────────────────────────────────────────
-//
-// KV-backed, and ONLY here (docs/IMPLEMENTATION.md, "Rate limiting"): this is
-// the one endpoint that does expensive work (JWKS fetch + RSA verify) for an
-// unauthenticated caller, and it is low volume by nature — once per install
-// per week. Everything else is covered by the WAF rule and by per-user limits
-// in D1. KV's free tier is 1,000 writes/day; a counter on every route would
-// exhaust it before breakfast.
-
-const AUTH_LIMIT = 20;
-const AUTH_WINDOW_SECONDS = 3600;
-
-async function ipHash(ip: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 16);
-}
-
-type Window = { n: number; reset: number };
-
-/** True when the caller is over the limit. Fixed window, so the TTL cannot be reset by hammering. */
-async function overAuthLimit(env: Env, ip: string, nowMs: number): Promise<boolean> {
-  const key = `rl:auth:${await ipHash(ip)}`;
-  const raw = await env.CACHE.get(key, 'json');
-  const w =
-    raw && typeof raw === 'object' && typeof (raw as Window).n === 'number' && (raw as Window).reset > nowMs
-      ? (raw as Window)
-      : { n: 0, reset: nowMs + AUTH_WINDOW_SECONDS * 1000 };
-
-  if (w.n >= AUTH_LIMIT) return true;
-
-  w.n += 1;
-  // KV's floor for expirationTtl is 60s; a window with less than that left is
-  // about to lapse anyway.
-  const ttl = Math.max(60, Math.ceil((w.reset - nowMs) / 1000));
-  await env.CACHE.put(key, JSON.stringify(w), { expirationTtl: ttl });
-  return false;
 }
 
 /**
@@ -240,7 +200,7 @@ auth.post('/auth/session', async (c) => {
   const nowIso = new Date(now).toISOString();
 
   const ip = c.req.header('CF-Connecting-IP') ?? '0.0.0.0';
-  if (await overAuthLimit(c.env, ip, now)) {
+  if (await overBudget(c.env, 'session', ip, SESSION_BUDGET, now)) {
     return fail(c, 429, 'rate_limited', 'Too many sign-in attempts. Try again later.');
   }
 
