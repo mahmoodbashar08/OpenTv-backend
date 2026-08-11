@@ -183,6 +183,29 @@ describe('email sign-in over HTTP', () => {
     expect(profiles.n).toBe(1);
   });
 
+  /**
+   * DELETING AN ACCOUNT USED TO BURN ITS ADDRESS FOR EVER. Deletion removes the
+   * identity and marks the profile deleted, but left `email_credentials` — and
+   * `email_lower` is UNIQUE, so registering again either answered "check your
+   * inbox" about an account that no longer existed, or hit the constraint and
+   * answered 500. Found in production: one real address was unusable for two
+   * days because of it.
+   */
+  it('lets a deleted account\'s address be used again', async () => {
+    await register('gone@example.com');
+    const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+    raw.prepare('UPDATE profiles SET deleted_at = ? WHERE id = ?').run(new Date().toISOString(), row.profile_id);
+    raw.prepare('DELETE FROM identities WHERE profile_id = ?').run(row.profile_id);
+
+    const again = await register('gone@example.com', 'a totally different one');
+
+    expect(again.status).toBe(201);
+    expect(again.json.token).toBeTruthy();
+    // The new account is its own, not a resurrection of the deleted one.
+    const cred = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+    expect(cred.profile_id).not.toBe(row.profile_id);
+  });
+
   it('treats the address case-insensitively', async () => {
     await register('Me@Example.com');
     const login = await call(env, 'POST', '/v1/auth/email/login', {

@@ -135,7 +135,25 @@ emailAuth.post('/auth/email/register', async (c) => {
     .bind(email)
     .all<{ provider: string; has_password: number }>();
 
+  /**
+   * AND THE CREDENTIAL ROW ITSELF, because an identity is not the only claim.
+   *
+   * They can come apart: an account created by email has both, but only the
+   * identity is removed when a profile is deleted. Reading `identities` alone
+   * would then miss a live account whose identity row was lost, and walk into
+   * the UNIQUE constraint on `email_lower` — a 500 where a sentence belongs.
+   */
+  const credential = await db
+    .prepare(
+      `SELECT c.profile_id FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
+        WHERE c.email_lower = ? AND p.deleted_at IS NULL`,
+    )
+    .bind(email)
+    .first<{ profile_id: string }>();
+
   const rows = claims.results ?? [];
+  if (rows.length === 0 && credential) rows.push({ provider: 'email', has_password: 1 });
+
   if (rows.length > 0) {
     /**
      * IT SAYS SO, PLAINLY.
@@ -164,6 +182,22 @@ emailAuth.post('/auth/email/register', async (c) => {
       200,
     );
   }
+
+  /**
+   * DELETING AN ACCOUNT NEVER FREED ITS ADDRESS.
+   *
+   * `DELETE /v1/me` removes the identity and marks the profile deleted, but the
+   * `email_credentials` row outlives both — and `email_lower` is UNIQUE. So the
+   * address belonged for ever to an account that no longer exists: registration
+   * either answered "check your inbox" about nothing, or hit the constraint and
+   * answered 500. Neither said the only true thing, which is that the account
+   * is gone.
+   *
+   * Nothing above claims the address at this point, so any row still holding it
+   * belongs to a dead profile and is debris. It goes now, and the registration
+   * below proceeds — the address is genuinely free.
+   */
+  await db.prepare('DELETE FROM email_credentials WHERE email_lower = ?').bind(email).run();
 
   const profileId = newProfileId();
   const handle = placeholderHandle(profileId);
