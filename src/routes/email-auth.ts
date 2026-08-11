@@ -131,15 +131,21 @@ emailAuth.post('/auth/email/register', async (c) => {
     // the rest of this branch exists to avoid: a 429 here would mean "this
     // address is registered AND somebody asked recently".
     if (!withinCooldown(existing.updated_at, nowMs)) {
-      c.executionCtx.waitUntil(
-        (async () => {
-          await sendResetEmail(c.env, existing.email, 'account-exists');
-          await db
-            .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
-            .bind(nowIso, existing.profile_id)
-            .run();
-        })(),
-      );
+      // A REAL RESET TOKEN, not the word "account-exists".
+      //
+      // `sendResetEmail`'s third argument IS the token, so passing a label put
+      // a link in the message that no row could ever match: everybody who
+      // re-registered their own address got mail whose only button was dead.
+      // The useful thing to send somebody who already has an account is the way
+      // back into it, so this issues the same token `/auth/email/forgot` does.
+      // Stored before the send, never inside the `waitUntil`: the mail is only
+      // useful once the row can answer for the token in it.
+      const reset = newToken();
+      await db
+        .prepare('UPDATE email_credentials SET reset_hash = ?, reset_expires = ?, updated_at = ? WHERE profile_id = ?')
+        .bind(await hashToken(reset), new Date(nowMs + RESET_TTL_MS).toISOString(), nowIso, existing.profile_id)
+        .run();
+      c.executionCtx.waitUntil(sendResetEmail(c.env, existing.email, reset).then(() => undefined));
     }
     return c.json({ ok: true, pending_verification: true }, 202);
   }

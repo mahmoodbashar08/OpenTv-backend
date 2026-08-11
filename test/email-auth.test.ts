@@ -375,6 +375,25 @@ describe('email sign-in over HTTP', () => {
       expect(cred().reset_hash).toBeNull();
     });
 
+    // REGRESSION. The taken-address branch used to pass the literal string
+    // 'account-exists' where `sendResetEmail` expects a token, so the mail it
+    // sent carried a link no row could match. A stored `reset_hash` is the
+    // only observable proof that a usable one was issued instead.
+    it('gives a re-registered address a reset token that actually exists', async () => {
+      await register('me@example.com');
+      const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
+      raw
+        .prepare('UPDATE email_credentials SET updated_at = ? WHERE profile_id = ?')
+        .run(new Date(Date.now() - 61_000).toISOString(), row.profile_id);
+
+      const again = await call(env, 'POST', '/v1/auth/email/register', {
+        body: { email: 'me@example.com', password: 'a-good-long-password' },
+      });
+
+      expect(again.status).toBe(202);
+      expect(cred().reset_hash).not.toBeNull();
+    });
+
     it('lets a reset through once the minute has passed', async () => {
       await register('me@example.com');
       const row = raw.prepare('SELECT profile_id FROM email_credentials').get() as { profile_id: string };
