@@ -41,6 +41,20 @@ export type Env = {
   RESEND_API_KEY?: string;
   /** e.g. `OpenTV <hello@opentv.app>`. Must be a verified Resend domain. */
   MAIL_FROM?: string;
+  /**
+   * "off" closes email SIGN-UP, and nothing else.
+   *
+   * A kill switch rather than a code change, because the reason to use it is
+   * always "right now": 1.3.0 shipped a claim that cannot succeed on an
+   * unverified session, so every account made with an address was stranded on a
+   * `user_p_…` handle it had no way to change. Blocking new ones for a day
+   * costs a few sign-ups; letting them through costs those people their name.
+   *
+   * Sign-IN stays open — the people already stuck must still be able to get in
+   * and be repaired by the next release. Apple and Google are unaffected: they
+   * arrive verified, so the bug never applied to them.
+   */
+  EMAIL_SIGNUP?: string;
   /** Deep links the emails point at. Defaults are the app's own scheme. */
   APP_LINK_BASE?: string;
   APP_RESET_LINK_BASE?: string;

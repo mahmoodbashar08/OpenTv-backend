@@ -118,6 +118,12 @@ emailAuth.post('/auth/email/register', async (c) => {
    * Counted BEFORE the address is even parsed, so a malformed body costs a slot
    * too — otherwise the cheapest way to probe is to send rubbish.
    */
+  // CLOSED FOR NOW? See `EMAIL_SIGNUP` in env.ts. Checked before anything else
+  // so a closed door costs no work and no rate-limit slot.
+  if ((c.env.EMAIL_SIGNUP ?? 'on').toLowerCase() === 'off') {
+    return fail(c, 503, 'unavailable', 'Email sign-up is temporarily unavailable. Use Apple or Google.');
+  }
+
   const ip = c.req.header('CF-Connecting-IP') ?? '0.0.0.0';
   if (await overBudget(c.env, 'register', ip, REGISTER_BUDGET, Date.now())) {
     return fail(c, 429, 'rate_limited', 'Too many accounts from here. Try again later.');

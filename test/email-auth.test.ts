@@ -262,6 +262,24 @@ describe('email sign-in over HTTP', () => {
     expect(n.n).toBe(5);
   });
 
+  it('can be closed to new sign-ups without closing sign-in', async () => {
+    await register('already@example.com');
+    const closed = { ...env, EMAIL_SIGNUP: 'off' };
+
+    const blocked = await call(closed, 'POST', '/v1/auth/email/register', {
+      body: { email: 'new@example.com', password: 'a-good-long-password' },
+    });
+    expect(blocked.status).toBe(503);
+    expect(blocked.json.error.code).toBe('unavailable');
+
+    // The people already here must still be able to get in — they are the ones
+    // the switch exists to protect.
+    const login = await call(closed, 'POST', '/v1/auth/email/login', {
+      body: { email: 'already@example.com', password: 'correct horse battery' },
+    });
+    expect(login.status).toBe(200);
+  });
+
   it('treats the address case-insensitively', async () => {
     await register('Me@Example.com');
     const login = await call(env, 'POST', '/v1/auth/email/login', {
