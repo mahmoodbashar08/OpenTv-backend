@@ -214,7 +214,12 @@ describe('email sign-in over HTTP', () => {
     expect(login.status).toBe(200);
   });
 
-  it('gives the same 401 for a wrong password and an unknown address', async () => {
+  /**
+   * The two now differ ON PURPOSE — see the route. Registration already names
+   * the providers on an address, so hiding it one screen later bought nothing
+   * and cost the person a guess at a door that is not there.
+   */
+  it('separates a wrong password from an address with no account', async () => {
     await register('me@example.com');
     const wrongPassword = await call(env, 'POST', '/v1/auth/email/login', {
       body: { email: 'me@example.com', password: 'not the password' },
@@ -223,8 +228,24 @@ describe('email sign-in over HTTP', () => {
       body: { email: 'nobody@example.com', password: 'not the password' },
     });
     expect(wrongPassword.status).toBe(401);
-    expect(unknown.status).toBe(401);
-    expect(wrongPassword.json).toEqual(unknown.json);
+    expect(wrongPassword.json.error.code).toBe('unauthenticated');
+    expect(unknown.status).toBe(404);
+    expect(unknown.json.error.code).toBe('no_account');
+  });
+
+  it('tells a Google account to use Google, rather than its password', async () => {
+    raw.prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+      .run('p_google', 'googler', 'googler', new Date().toISOString());
+    raw.prepare('INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('google', 'sub-123', 'p_google', 'both@example.com', new Date().toISOString());
+
+    const res = await call(env, 'POST', '/v1/auth/email/login', {
+      body: { email: 'both@example.com', password: 'anything at all' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.json.error.code).toBe('use_provider');
+    expect(res.json.providers).toEqual(['google']);
   });
 
   it('locks ONE account after repeated failures, which an IP limit would not', async () => {

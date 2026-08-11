@@ -31,6 +31,13 @@ export type ErrorCode =
   // these apart: one is "you may not", the other is "finish this first", and
   // only the second has a screen to send somebody to.
   | 'email_unverified'
+  // Sign-in against an address with no account at all. Its own code because
+  // "wrong password" sends somebody to try again at a door that is not there,
+  // and the only useful reply is "create one".
+  | 'no_account'
+  // Sign-in against an address whose account uses Apple or Google. The reply
+  // carries a `providers` array alongside the envelope so the app can name it.
+  | 'use_provider'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */

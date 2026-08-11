@@ -484,6 +484,13 @@ auth.delete('/me', async (c) => {
     // Signing in again must create a NEW profile — that is what "deleted"
     // means to the user.
     db.prepare('DELETE FROM identities WHERE profile_id = ?').bind(me),
+    // AND THE CREDENTIAL, or the address is burnt for ever. `email_lower` is
+    // UNIQUE, so a surviving row means the person who just deleted their
+    // account can never register that address again — and until registration
+    // learned to clear the debris, it answered them with a 500. Deleting the
+    // identity alone was never enough: this table is the other half of an
+    // email sign-in, and it holds the password hash besides.
+    db.prepare('DELETE FROM email_credentials WHERE profile_id = ?').bind(me),
     db.prepare('DELETE FROM comment_likes WHERE user_id = ?').bind(me),
     db.prepare('DELETE FROM comments WHERE author_id = ?').bind(me),
     db.prepare('DELETE FROM ratings WHERE author_id = ?').bind(me),

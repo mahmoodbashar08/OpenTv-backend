@@ -268,7 +268,41 @@ emailAuth.post('/auth/email/login', async (c) => {
     // NO EARLY RETURN WITHOUT WORK. Answering an unknown address instantly
     // while a known one takes 210,000 PBKDF2 rounds is a timing oracle that
     // enumerates users. Burn a comparable amount against a throwaway hash.
+    //
+    // Kept even though the answer below now distinguishes the two cases: the
+    // timing must not become a SECOND channel that works when this route is
+    // called with a garbage body, or from a client that ignores the code.
     await verifyPassword(password, DUMMY_HASH);
+
+    /**
+     * NO PASSWORD HERE — but is there an account at all?
+     *
+     * "That email or password is wrong" is true and useless in the two cases
+     * that actually happen. Somebody who has never registered is told their
+     * password is wrong, and somebody whose account is a Google one is told the
+     * same about a password that has never existed. Both then try again.
+     *
+     * Registration already names the providers on an address, so saying it here
+     * concedes nothing that is not two taps away on the previous screen — and
+     * this is the screen where knowing it saves the person from guessing.
+     */
+    const claims = await c.env.DB.prepare(
+      `SELECT DISTINCT i.provider FROM identities i JOIN profiles p ON p.id = i.profile_id
+        WHERE LOWER(i.email) = ? AND p.deleted_at IS NULL`,
+    )
+      .bind(email)
+      .all<{ provider: string }>();
+
+    const providers = (claims.results ?? []).map((r) => r.provider).filter((p) => p !== 'email');
+    if (providers.length > 0) {
+      return c.json(
+        { error: { code: 'use_provider', message: 'That address signs in another way.' }, providers },
+        409,
+      );
+    }
+    if ((claims.results ?? []).length === 0) {
+      return fail(c, 404, 'no_account', 'There is no account with that address yet.');
+    }
     return wrong();
   }
 
