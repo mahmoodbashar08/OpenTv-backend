@@ -50,6 +50,18 @@ export const ADMIN_PAGE = `<!doctype html>
               font-size:10px; color:#6b6b72; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
   .foot { color:#6b6b72; font-size:12px; margin-top:34px; }
+  table { width:100%; border-collapse:collapse; background:#16161a; border-radius:12px;
+          overflow:hidden; font-size:14px; }
+  th { text-align:left; color:#8a8a92; font-size:11px; text-transform:uppercase;
+       letter-spacing:.05em; padding:10px 12px; background:#1b1b1f; font-weight:700; }
+  td { padding:10px 12px; border-top:1px solid #202024; white-space:nowrap; }
+  td.num { text-align:right; color:#a7a7ae; }
+  .who { color:#e9e9ee; font-weight:700; }
+  .name { color:#8a8a92; font-weight:400; }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:999px;
+         background:#26262b; color:#a7a7ae; }
+  .tag.warn { background:#3a3213; color:#ffd400; }
+  .scroll { overflow-x:auto; }
 </style>
 </head>
 <body>
@@ -74,6 +86,8 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="people"></div>
     <h2>Activity</h2>
     <div class="grid" id="activity"></div>
+    <h2>People, newest first</h2>
+    <div class="scroll"><table id="users"></table></div>
     <h2>Joins, last 14 days</h2>
     <div class="bars" id="bars"></div>
     <p class="foot" id="foot"></p>
@@ -133,7 +147,25 @@ async function load() {
     '<div class="bar ' + (n ? 'on' : '') + '" style="height:' + Math.round((n / max) * 100) + '%" title="' +
     day + ': ' + n + '"><span>' + day.slice(8) + '</span></div>').join('');
 
-  $('foot').textContent = 'Counts only — this page can see how many, never what. Read ' +
+  const people = await (await fetch('/v1/admin/users', { credentials: 'same-origin' })).json();
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  $('users').innerHTML =
+    '<tr><th>Handle</th><th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
+    '<th class="num">Ratings</th><th class="num">Followers</th></tr>' +
+    (people.items || []).map((u) => {
+      const placeholder = String(u.handle).startsWith('user_p_');
+      const who = '<span class="who">@' + esc(u.handle) + '</span>' +
+        (placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
+        (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
+      const how = esc((u.providers || '').split(',').join(', ')) +
+        (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
+      return '<tr><td>' + who + '</td><td>' + how + '</td><td>' + esc(String(u.created_at).slice(0, 10)) +
+        '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
+        '</td><td class="num">' + u.followers + '</td></tr>';
+    }).join('');
+
+  $('foot').textContent = 'This page can see how many, and who — never what anybody wrote. Read ' +
     new Date().toLocaleTimeString();
 }
 

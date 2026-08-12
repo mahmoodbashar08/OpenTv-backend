@@ -176,3 +176,46 @@ admin.get('/admin/stats', async (c) => {
     'Cache-Control': 'no-store',
   });
 });
+
+// ── GET /v1/admin/users ──────────────────────────────────────────────────────
+
+/**
+ * WHO IS HERE — and the line this route sits on.
+ *
+ * The stats route reads how many; this one reads who. That is a real step, and
+ * it is taken deliberately rather than by accident: an owner needs to see that
+ * an account is stuck on a placeholder handle, or that somebody registered and
+ * never confirmed, and neither is answerable by a count.
+ *
+ * WHAT IT STILL WILL NOT SHOW: a single word anybody wrote. Comment bodies,
+ * ratings, what they watched — none of it is selected here, and the counts
+ * beside each person say how much, never what. Moderation reads content
+ * through the report queue, where somebody has asked for it to be read.
+ */
+admin.get('/admin/users', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+
+  const res = await c.env.DB.prepare(
+    `SELECT p.handle,
+            p.display_name,
+            p.created_at,
+            -- The address only where the person typed one into this app. A
+            -- provider's copy is Apple's or Google's to show, not ours to
+            -- collect a list of.
+            c.email,
+            c.verified_at IS NULL AND c.profile_id IS NOT NULL AS unconfirmed,
+            (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
+            (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
+            (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
+            (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id) AS followers
+       FROM profiles p
+       LEFT JOIN email_credentials c ON c.profile_id = p.id
+      WHERE p.deleted_at IS NULL
+      ORDER BY p.created_at DESC
+      LIMIT 200`,
+  ).all<Record<string, unknown>>();
+
+  return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
+});

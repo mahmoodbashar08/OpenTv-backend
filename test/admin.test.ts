@@ -64,6 +64,21 @@ describe('the admin dashboard', () => {
     expect(Array.isArray(res.json.joins)).toBe(true);
   });
 
+  it('lists people without listing anything they wrote', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.json.items)).toBe(true);
+    // The line this route sits on: who, and how much, never what. A body field
+    // appearing here would be the thing to catch.
+    expect(res.text).not.toContain('body');
+  });
+
+  it('refuses the people list without a cookie', async () => {
+    expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
+  });
+
   it('serves the page itself, unindexed', async () => {
     const res = await call(env, 'GET', '/admin/dashboard');
     expect(res.status).toBe(200);
