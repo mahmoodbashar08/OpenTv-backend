@@ -55,6 +55,15 @@ export type Env = {
    * arrive verified, so the bug never applied to them.
    */
   EMAIL_SIGNUP?: string;
+  /**
+   * The admin dashboard's two credentials, both SECRETS — never vars, because
+   * vars live in wrangler.jsonc and wrangler.jsonc lives in git.
+   *
+   * Unset means the door is closed: `/v1/admin/login` answers 503 rather than
+   * comparing against undefined and letting anybody in.
+   */
+  ADMIN_EMAIL?: string;
+  ADMIN_PASSWORD?: string;
   /** Deep links the emails point at. Defaults are the app's own scheme. */
   APP_LINK_BASE?: string;
   APP_RESET_LINK_BASE?: string;

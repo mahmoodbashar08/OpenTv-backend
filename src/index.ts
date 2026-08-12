@@ -17,6 +17,8 @@ import { notifications } from '@/routes/notifications';
 import { push } from '@/routes/push';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
+import { ADMIN_PAGE } from '@/admin-page';
+import { admin } from '@/routes/admin';
 import { reconcile } from '@/routes/reconcile';
 import { reports } from '@/routes/reports';
 import { support } from '@/routes/support';
@@ -132,6 +134,18 @@ v1.route('/', profiles);
 v1.route('/', notifications);
 v1.route('/', push);
 v1.route('/', reconcile);
+v1.route('/', admin);
+
+// ── the dashboard page ───────────────────────────────────────────────────────
+//
+// Outside /v1 because it is not the API: a browser asks for it by typing the
+// address. Served by the Worker rather than Pages so it is same-origin with
+// the routes it reads — no CORS to open, and the session can be an HttpOnly
+// cookie that no script on the page can read. `noindex` is in the page's own
+// meta; this header says it again for anything that only reads headers.
+app.get('/admin/dashboard', (c) =>
+  c.html(ADMIN_PAGE, 200, { 'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'no-store' }),
+);
 
 app.route('/v1', v1);
 

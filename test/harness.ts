@@ -231,7 +231,7 @@ export async function call(
   method: string,
   path: string,
   opts: CallOptions = {},
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: any; text: string; headers: Headers }> {
   const headers = new Headers(opts.headers ?? {});
   if (opts.token) headers.set('Authorization', `Bearer ${opts.token}`);
   if (opts.body !== undefined) headers.set('Content-Type', 'application/json');
@@ -247,7 +247,20 @@ export async function call(
   );
 
   const text = await res.text();
-  return { status: res.status, json: text.length === 0 ? null : JSON.parse(text) };
+  // HEADERS AND RAW TEXT AS WELL AS JSON. A route can be entirely correct in its
+  // body and wrong in what it sets — an auth cookie without HttpOnly is the
+  // example that prompted this — and a helper that throws the headers away
+  // cannot be asked. `json` stays null for a body that is not JSON, so a route
+  // answering HTML is testable rather than a parse error.
+  let json: unknown = null;
+  if (text.length > 0) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+  return { status: res.status, json, text, headers: res.headers };
 }
 
 // ── row helpers, shared by every SQL-backed suite ────────────────────────────
