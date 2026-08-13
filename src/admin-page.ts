@@ -79,6 +79,10 @@ export const ADMIN_PAGE = `<!doctype html>
   .shot .btns { display:flex; gap:6px; padding:0 11px 11px; }
   .shot button { flex:1; padding:8px 0; font-size:12.5px; border-radius:8px; }
   .shot .no { background:#2a1618; color:#e5484d; font-weight:700; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tab { background:#16161a; color:#8a8a92; font-weight:600; font-size:13px;
+         padding:7px 14px; border-radius:999px; }
+  .tab.on { background:#26262b; color:#e9e9ee; }
   .bulkbar { margin-top:14px; }
   .bulkbar button { width:auto; }
 </style>
@@ -110,7 +114,12 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="activity"></div>
     <h2>People, newest first</h2>
     <div class="scroll"><table id="users"></table></div>
-    <h2>Photos awaiting review</h2>
+    <h2>Photos</h2>
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-status="pending">Waiting</button>
+      <button class="tab" data-status="clean">Shown</button>
+      <button class="tab" data-status="blocked">Blocked</button>
+    </div>
     <p class="note" id="revnote"></p>
     <div class="shots" id="review"></div>
     <div class="bulkbar" id="bulkbar" hidden>
@@ -223,17 +232,27 @@ async function load() {
  * this is deliberately one picture, one caption, two buttons — no select-all,
  * no "approve the rest", no keyboard shortcut that could run away with a list.
  */
+let reviewStatus = 'pending';
+
 async function loadReview() {
-  const res = await fetch('/v1/admin/images?status=pending', { credentials: 'same-origin' });
+  const res = await fetch('/v1/admin/images?status=' + reviewStatus, { credentials: 'same-origin' });
   if (!res.ok) return;
   const { items = [] } = await res.json();
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
-  $('revnote').textContent = items.length
-    ? items.length + ' waiting. Nobody can see these until you decide. Scroll them before using "Show all" — that button clears exactly what is on this page, nothing that arrives later.'
-    : 'Nothing waiting.';
-  $('bulkbar').hidden = items.length === 0;
+  // Each status is a different sentence, because each is a different question:
+  // what have I not decided, what am I publishing, what did I refuse.
+  const notes = {
+    pending: items.length + ' waiting. Nobody can see these until you decide. Scroll them before using "Show all" — that button clears exactly what is on this page, nothing that arrives later.',
+    clean: items.length + ' visible to everyone right now, on the comment each belongs to. Block anything here and it stops being served.',
+    blocked: items.length + ' refused. The file is still stored; nobody is served it.',
+  };
+  const empty = { pending: 'Nothing waiting.', clean: 'Nothing is being shown.', blocked: 'Nothing blocked.' };
+  $('revnote').textContent = items.length ? notes[reviewStatus] : empty[reviewStatus];
+  // "Show all" is a way to clear a backlog, not a way to re-approve or to undo
+  // a block, so it belongs to the waiting list alone.
+  $('bulkbar').hidden = items.length === 0 || reviewStatus !== 'pending';
 
   $('review').innerHTML = items.map((i) => {
     const where = i.season == null ? '' :
@@ -242,10 +261,20 @@ async function loadReview() {
       '<img loading="lazy" src="/v1/admin/image/' + encodeURIComponent(i.comment_id) + '" alt="">' +
       '<div class="meta"><div class="who">@' + esc(i.handle) + (i.is_gif ? ' · GIF' : '') + '</div>' +
       '<div class="cap">' + esc(i.body || '(no caption)') + esc(where) + '</div></div>' +
-      '<div class="btns"><button data-do="clean">Show</button>' +
-      '<button class="no" data-do="blocked">Block</button></div></div>';
+      '<div class="btns">' +
+      (reviewStatus === 'clean' ? '' : '<button data-do="clean">Show</button>') +
+      (reviewStatus === 'blocked' ? '' : '<button class="no" data-do="blocked">Block</button>') +
+      '</div></div>';
   }).join('');
 }
+
+$('tabs').addEventListener('click', (ev) => {
+  const tab = ev.target.closest('.tab');
+  if (!tab) return;
+  reviewStatus = tab.dataset.status;
+  [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === tab));
+  void loadReview();
+});
 
 $('showall').addEventListener('click', async () => {
   const ids = [...$('review').children].map((el) => el.dataset.id);
@@ -280,7 +309,7 @@ $('review').addEventListener('click', async (ev) => {
   });
   if (res.ok) card.remove();
   else btn.disabled = false;
-  if (!$('review').children.length) $('revnote').textContent = 'Nothing waiting.';
+  if (!$('review').children.length) void loadReview();
 });
 
 function show(ok) {
