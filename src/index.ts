@@ -153,6 +153,14 @@ app.get('/admin/dashboard', (c) =>
 );
 
 app.route('/v1', v1);
+/**
+ * /v2 IS /v1 — an alias, not a fork. It marks the Plus era in client requests
+ * without splitting the API: the same router answers both prefixes, so nothing
+ * is maintained twice and the two can never disagree. A real v2 happens the
+ * day an existing route has to change meaning, and not before. The Plus-era
+ * app calls /v2; every shipped build keeps calling /v1; both hit this code.
+ */
+app.route('/v2', v1);
 
 /**
  * The safety net. Every route builds its failures with `fail()`, but an
