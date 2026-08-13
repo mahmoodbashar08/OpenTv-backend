@@ -261,8 +261,10 @@ describe('reconcile returns which friend each match is', () => {
     expect(res.status).toBe(200);
     // Without this the same human shows up twice in a merged follow list:
     // once as a TV Time row and once as an OpenTV one.
+    // `id` alongside it, because following takes an id: a match the app cannot
+    // follow from the list it appears in is a list nobody acts on.
     expect(res.json.matched).toEqual([
-      { handle: 'sara', display_name: null, avatar_key: null, tvtime_user_id: 53635487 },
+      { id: 'p2', handle: 'sara', display_name: null, avatar_key: null, tvtime_user_id: 53635487 },
     ]);
   });
 });

@@ -130,6 +130,12 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
 
   return c.json({
     matched: matches.map((m) => ({
+      // THE PROFILE ID, because following takes one. Without it the app could
+      // show "3 of your friends are here" and offer no way to follow them
+      // without opening each profile in turn — which is most of the reason
+      // reconnection existed and none of the reason anybody used it. It is not
+      // a secret: every profile the app can open already carries its id.
+      id: m.id,
       handle: m.handle,
       display_name: m.display_name,
       avatar_key: m.avatar_key,
