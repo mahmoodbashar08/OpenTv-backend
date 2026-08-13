@@ -12,6 +12,7 @@ import {
   numberOrNull,
   pageSize,
   parseCursor,
+  plusOn,
   replyDepthOk,
   shouldNotify,
   validateCommentBody,
@@ -54,6 +55,8 @@ export type CommentRow = {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  is_plus?: number;
+  plus_until?: string | null;
   liked_by_me?: number;
   reply_count?: number;
   /**
@@ -76,6 +79,11 @@ export function shapeComment(row: CommentRow) {
       handle: row.handle,
       display_name: row.display_name,
       avatar_key: row.avatar_key,
+      // The badge belongs to the name, wherever the name is drawn — see the
+      // note in `routes/profiles.ts`. Optional on the row rather than
+      // required: an older query that does not select it reads as not-Plus,
+      // which is the safe direction to be wrong in.
+      is_plus: plusOn(row, new Date().toISOString()),
     },
     target_source: row.target_source,
     target_key: row.target_key,
@@ -113,7 +121,7 @@ export function shapeComment(row: CommentRow) {
 const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
        c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
        c.created_at, c.edited_at,
-       p.handle, p.display_name, p.avatar_key,
+       p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
        ci.width AS image_w, ci.height AS image_h, ci.is_gif AS image_gif,
        (ci.scan_status = 'clean') AS image_ok`;
 

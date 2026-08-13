@@ -53,6 +53,9 @@ describe('GET /v1/users', () => {
       display_name: null,
       avatar_key: null,
       is_private: false,
+      // The badge rides with the shell — a result row draws the name, and the
+      // badge belongs to the name wherever it is drawn.
+      is_plus: false,
     });
   });
 

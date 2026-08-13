@@ -3,7 +3,7 @@ import type { App } from '@/env';
 import { fail } from '@/http';
 import { sendPush } from '@/push';
 import { requireAuth } from '@/middleware';
-import { FOLLOW_PAGE, makeCursor, parseCursor, shouldNotify } from '@/pure';
+import { FOLLOW_PAGE, makeCursor, parseCursor, plusOn, shouldNotify } from '@/pure';
 import { newNotificationId } from '@/routes/comments';
 
 /**
@@ -96,15 +96,21 @@ type EdgeRow = {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  is_plus: number;
+  plus_until: string | null;
   created_at: string;
 };
 
-function shapeEdge(row: EdgeRow) {
+/** The same shell a search result carries, badge included — see the note in
+ *  `routes/profiles.ts`: a badge that appears on the profile and not in the
+ *  follower list it was opened from reads as a bug. */
+function shapeEdge(row: EdgeRow, nowIso: string) {
   return {
     id: row.id,
     handle: row.handle,
     display_name: row.display_name,
     avatar_key: row.avatar_key,
+    is_plus: plusOn(row, nowIso),
     followed_at: row.created_at,
   };
 }
@@ -133,7 +139,7 @@ export async function edgePage(
 
   const res = await db
     .prepare(
-      `SELECT p.id, p.handle, p.display_name, p.avatar_key, f.created_at
+      `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until, f.created_at
        FROM follows f JOIN profiles p ON p.id = f.${side}
        WHERE ${where.join(' AND ')}
        ORDER BY f.created_at DESC, f.${side} DESC
@@ -148,7 +154,7 @@ export async function edgePage(
   const page = rows.slice(0, FOLLOW_PAGE);
   const last = page[page.length - 1];
   return {
-    items: page.map(shapeEdge),
+    items: page.map((r) => shapeEdge(r, new Date().toISOString())),
     next_cursor: rows.length > FOLLOW_PAGE && last ? makeCursor(last.created_at, last.id) : null,
   };
 }

@@ -77,6 +77,19 @@ export type Env = {
    */
   COMMENT_IMAGES?: R2Bucket;
 
+  /**
+   * The exact string RevenueCat is configured to send as the `Authorization`
+   * header of its webhook — RC has no signature scheme, only this shared
+   * secret, so it IS the whole of the authentication.
+   *
+   * `wrangler secret put RC_WEBHOOK_SECRET`, and paste the same value into
+   * RevenueCat → Integrations → Webhooks → Authorization header.
+   *
+   * Unset means the door is closed, exactly as with ADMIN_PASSWORD: the route
+   * answers 503 rather than comparing against undefined and letting anybody
+   * grant themselves Plus. A deployment that has not opted in has no webhook.
+   */
+  RC_WEBHOOK_SECRET?: string;
 };
 
 /** What `requireAuth` puts on the context. */

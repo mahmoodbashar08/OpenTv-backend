@@ -3,11 +3,11 @@ import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import {
   handlePrefixPattern,
-  isPlus,
   makeCursor,
   normaliseHandle,
   pageSize,
   parseCursor,
+  plusOn,
   USER_SEARCH_LIMIT,
   visibleProfileFields,
 } from '@/pure';
@@ -42,6 +42,7 @@ type ProfileReadRow = {
   is_private: number;
   links: string | null;
   plus_until: string | null;
+  is_plus: number;
   created_at: string;
   followers: number;
   following: number;
@@ -70,7 +71,7 @@ function parseLinks(raw: string | null): unknown {
 async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
     `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.bio, p.is_private, p.links,
-            p.plus_until, p.created_at,
+            p.plus_until, p.is_plus, p.created_at,
             (SELECT COUNT(*) FROM follows f WHERE f.followee_id = p.id) AS followers,
             (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id) AS following,
             (SELECT COUNT(*) FROM comments c
@@ -101,7 +102,7 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
       is_private: row.is_private === 1,
       links: parseLinks(row.links),
       // A boolean, never the date (docs/IMPLEMENTATION.md Step 4).
-      is_plus: isPlus(row.plus_until, nowIso),
+      is_plus: plusOn(row, nowIso),
       counts: {
         followers: row.followers,
         following: row.following,
@@ -139,6 +140,8 @@ type UserSearchRow = {
   display_name: string | null;
   avatar_key: string | null;
   is_private: number;
+  is_plus: number;
+  plus_until: string | null;
 };
 
 profiles.get('/users', async (c) => {
@@ -150,7 +153,7 @@ profiles.get('/users', async (c) => {
   const viewer = await optionalViewer(c.env, c.req.header('Authorization'));
 
   const res = await c.env.DB.prepare(
-    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_private
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_private, p.is_plus, p.plus_until
        FROM profiles p
       -- NAME AS WELL AS HANDLE. A handle is a slug — "Mahmood Bashar" becomes
       -- @mahmood_bashar — so somebody typing the name they actually know finds
@@ -175,6 +178,11 @@ profiles.get('/users', async (c) => {
 
   // The shell only. A search result is a row in a list, not a profile — counts,
   // bio and links stay behind `GET /v1/profiles/:handle` and its privacy matrix.
+  // `is_plus` rides along with the shell, unlike everything else behind the
+  // privacy matrix: the badge is drawn next to the name wherever the name
+  // appears, and a badge that shows on the profile and not in the list it was
+  // opened from reads as a bug.
+  const nowIso = new Date().toISOString();
   return c.json({
     items: (res.results ?? []).map((r) => ({
       id: r.id,
@@ -182,6 +190,7 @@ profiles.get('/users', async (c) => {
       display_name: r.display_name,
       avatar_key: r.avatar_key,
       is_private: r.is_private === 1,
+      is_plus: plusOn(r, nowIso),
     })),
   });
 });
@@ -366,7 +375,7 @@ profiles.get('/profiles/:handle/comments', async (c) => {
     `SELECT c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
             c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
             c.created_at, c.edited_at,
-            p.handle, p.display_name, p.avatar_key,
+            p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
             EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
             -- COUNTED, not zero. It used to be hardcoded, on the reasoning
             -- that a profile feed is a list of what somebody wrote rather than
@@ -408,6 +417,8 @@ type ListDetailRow = ListRow & {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  is_plus: number;
+  plus_until: string | null;
   blocked: number;
 };
 
@@ -416,7 +427,7 @@ profiles.get('/lists/:id', async (c) => {
 
   const row = await c.env.DB.prepare(
     `SELECT l.id, l.name, l.description, l.is_public, l.created_at, l.owner_id,
-            p.handle, p.display_name, p.avatar_key,
+            p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
             0 AS item_count,
             EXISTS(SELECT 1 FROM blocks b
                    WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
@@ -461,6 +472,7 @@ profiles.get('/lists/:id', async (c) => {
       handle: row.handle,
       display_name: row.display_name,
       avatar_key: row.avatar_key,
+      is_plus: plusOn(row, new Date().toISOString()),
     },
     items: results,
   });

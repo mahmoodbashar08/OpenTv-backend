@@ -1,0 +1,21 @@
+-- OpenTV Plus — the entitlement, as a flag the server can trust.
+--
+-- `plus_until` (migration 0001) modelled the subscription as a DATE, which
+-- means every read has to compare it against now and every write has to know
+-- when the current period ends. RevenueCat already tracks the period; what this
+-- server needs from it is one bit — "is this person Plus right now" — and that
+-- bit changes only when RevenueCat says so. A flag is what the webhook can set
+-- correctly with the information a webhook actually carries.
+--
+-- `plus_since` is the FIRST time Plus was granted and is never cleared on
+-- expiry: it is the "member since" line, not the billing state, and a
+-- resubscribe should not erase that somebody was here from the beginning.
+-- Nothing about amounts, currencies, product ids or store receipts is stored —
+-- that is RevenueCat's ledger and none of this server's business.
+--
+-- `plus_until` stays, unused by the webhook, as the hand-grant escape hatch:
+-- a date poked in with `wrangler d1 execute` still reads as Plus (see
+-- `plusOn()`), which is how a refund, a gift or a support case gets settled
+-- without a subscription existing.
+ALTER TABLE profiles ADD COLUMN is_plus INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN plus_since TEXT;

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { chunk, RECONCILE_IDS_PER_QUERY, RECONCILE_MAX_IDS, validateFriendIds } from '@/pure';
+import { chunk, plusOn, RECONCILE_IDS_PER_QUERY, RECONCILE_MAX_IDS, validateFriendIds } from '@/pure';
 import { newNotificationId } from '@/routes/comments';
 
 /**
@@ -21,6 +21,8 @@ type MatchRow = {
   handle: string;
   display_name: string | null;
   avatar_key: string | null;
+  is_plus: number;
+  plus_until: string | null;
   /** Which of the caller's OWN friend ids this profile answers to. */
   tvtime_user_id: number | null;
 };
@@ -100,7 +102,7 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
     chunk(friends.ids, RECONCILE_IDS_PER_QUERY).map((ids) =>
       db
         .prepare(
-          `SELECT id, handle, display_name, avatar_key, tvtime_user_id
+          `SELECT id, handle, display_name, avatar_key, is_plus, plus_until, tvtime_user_id
        FROM profiles p
        WHERE p.tvtime_user_id IN (${ids.map(() => '?').join(',')})
          AND p.deleted_at IS NULL
@@ -139,6 +141,7 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
       handle: m.handle,
       display_name: m.display_name,
       avatar_key: m.avatar_key,
+      is_plus: plusOn(m, new Date().toISOString()),
       // WHICH friend this is. The caller sent these ids and already holds the
       // name and avatar the export gave for each; without the id coming back,
       // a matched handle cannot be tied to the person it belongs to, and the

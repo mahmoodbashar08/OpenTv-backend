@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
+import { constantTimeEqual } from '@/pure';
 import { overBudget } from '@/rate-limit';
 
 /**
@@ -36,14 +37,6 @@ const LOGIN_BUDGET = { limit: 5, windowSeconds: 3600 };
 function b64url(bytes: Uint8Array | string): string {
   const buf = typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : Buffer.from(bytes);
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/** Length-independent, so a wrong answer costs the same as a right one. */
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }
 
 async function hmac(env: Env, data: string): Promise<string> {

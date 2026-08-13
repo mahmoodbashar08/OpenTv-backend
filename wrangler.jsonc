@@ -14,8 +14,8 @@
   "triggers": { "crons": ["0 4 * * *"] },
 
   // Public identifiers only — they appear in every client binary anyway.
-  // Secrets (SESSION_SECRET, later REVENUECAT_WEBHOOK_SECRET) go in with
-  // `wrangler secret put` and never live here. Locally they come from .dev.vars.
+  // Secrets (SESSION_SECRET, RC_WEBHOOK_SECRET) go in with `wrangler secret
+  // put` and never live here. Locally they come from .dev.vars.
   "vars": {
     "APPLE_BUNDLE_ID": "com.insightfy.opentv",
     // The verified Resend domain. Not a secret — it is the address every

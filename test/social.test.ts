@@ -264,7 +264,7 @@ describe('reconcile returns which friend each match is', () => {
     // `id` alongside it, because following takes an id: a match the app cannot
     // follow from the list it appears in is a list nobody acts on.
     expect(res.json.matched).toEqual([
-      { id: 'p2', handle: 'sara', display_name: null, avatar_key: null, tvtime_user_id: 53635487 },
+      { id: 'p2', handle: 'sara', display_name: null, avatar_key: null, is_plus: false, tvtime_user_id: 53635487 },
     ]);
   });
 });

@@ -9,6 +9,7 @@ import {
   needsHandle,
   normaliseHandle,
   placeholderHandle,
+  plusOn,
   validCoverUrl,
   type Provider,
 } from '@/pure';
@@ -37,6 +38,7 @@ type ProfileRow = {
   tvtime_handle: string | null;
   links: string | null;
   plus_until: string | null;
+  is_plus: number;
   created_at: string;
   deleted_at: string | null;
 };
@@ -64,6 +66,10 @@ function ownProfile(row: ProfileRow) {
     tvtime_handle: row.tvtime_handle,
     links: parseLinks(row.links),
     plus_until: row.plus_until,
+    // The same boolean everybody else's profile carries, so the app has one
+    // field to read whether it is drawing itself or a stranger. The owner also
+    // gets the raw date above — it is their own billing, not a stranger's.
+    is_plus: plusOn(row, new Date().toISOString()),
     created_at: row.created_at,
   };
 }
@@ -305,7 +311,8 @@ auth.patch('/me', async (c) => {
   }
   const b = body as Record<string, unknown>;
 
-  // `plus_until`, `handle` and `tvtime_user_id` are not merely ignored — the
+  // `is_plus`, `plus_since`, `plus_until`, `handle` and `tvtime_user_id` are
+  // not merely ignored — the
   // whole body is refused, so a client that thinks it is granting itself Plus
   // finds out immediately (docs/IMPLEMENTATION.md §1d).
   const keys = Object.keys(b);

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { chunk, D1_MAX_BOUND_PARAMS, isTargetSource, listId, numberOrNull } from '@/pure';
+import { chunk, D1_MAX_BOUND_PARAMS, isTargetSource, listId, numberOrNull, plusOn } from '@/pure';
 import { optionalViewer } from '@/routes/comments';
 
 /**
@@ -26,6 +26,52 @@ import { optionalViewer } from '@/routes/comments';
  */
 
 export const published = new Hono<App>();
+
+/**
+ * WHAT A FREE PROFILE MAY PUBLISH — the server half of OpenTV Plus.
+ *
+ * Enforced HERE rather than on the phone, because a cap the client alone
+ * enforces is a cap that lasts until somebody edits a JS bundle. The phone
+ * still enforces it too, so the user is told before they publish rather than
+ * after; this is the half that has to be true.
+ *
+ * These are caps on what is PUBLISHED, never on what somebody keeps. A free
+ * user's own library is untouched — they may have two hundred lists and every
+ * one of them stays on their phone, working exactly as before. Plus buys reach,
+ * not ownership, which is the only shape of paywall this app can honestly have
+ * given that the phone is the source of truth.
+ */
+export const FREE_MAX_LISTS = 10;
+export const FREE_MAX_FAVOURITES = 20;
+
+/**
+ * GRANDFATHERING, and it is the whole reason these are functions rather than
+ * constants.
+ *
+ * People published before Plus existed. A cap that binds retroactively would
+ * mean the first sync after this ships silently deletes work somebody did last
+ * year — and because the intake REPLACES the whole set, it would do it without
+ * anybody pressing anything. So the effective cap is never lower than what is
+ * already there: 12 lists published in 2026 stay 12 for ever, and the cap only
+ * ever refuses the 13th.
+ *
+ * The count is read fresh on each publish rather than stamped on the profile,
+ * because a stamp is a second source of truth for a number the table already
+ * holds, and it would have to be maintained by every path that deletes a row.
+ */
+async function effectiveCap(db: D1Database, sql: string, binds: unknown[], freeCap: number): Promise<number> {
+  const row = await db.prepare(sql).bind(...binds).first<{ n: number }>();
+  return Math.max(freeCap, row?.n ?? 0);
+}
+
+/** One read, one answer: does this profile pay? See `plusOn` for the two sources. */
+async function isPlusProfile(db: D1Database, profileId: string, nowIso: string): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT is_plus, plus_until FROM profiles WHERE id = ?')
+    .bind(profileId)
+    .first<{ is_plus: number; plus_until: string | null }>();
+  return row ? plusOn(row, nowIso) : false;
+}
 
 /** One request replaces one kind's shelf. Chosen so 250 titles stay inside the
  *  100-parameter ceiling at 9 binds each — see `TITLE_BINDS`. */
@@ -104,6 +150,47 @@ published.put('/me/published', requireAuth, async (c) => {
     });
   }
 
+  /**
+   * THE FAVOURITES CAP — the shelf keeps every title, the star comes off the
+   * ones past the allowance.
+   *
+   * Dropping the rows outright was the other option and is worse: the shelf
+   * would lose titles the person watched, over a paid feature about
+   * highlighting. Clearing the flag costs them the highlight and nothing else,
+   * and re-subscribing restores it on the next sync with no data to recover.
+   *
+   * PER KIND, deliberately: one publish carries one kind, and counting the
+   * other kind's favourites would make publishing films quietly shrink the
+   * shows shelf — a cap that bites where the user was not looking. Twenty shows
+   * and twenty films is a shelf, not an archive, which is the line these
+   * numbers are drawn on.
+   *
+   * THE CLIENT'S OWN ORDER decides which twenty survive: the array as sent,
+   * which is the owner's drag order. The server has no opinion about which of
+   * somebody's favourites matters more.
+   */
+  const plus = await isPlusProfile(db, me, nowIso);
+  let capped = false;
+  let favouritesKept = rows.filter((r) => r.favourite === 1).length;
+  if (!plus) {
+    const allowance = await effectiveCap(
+      db,
+      'SELECT COUNT(*) AS n FROM profile_titles WHERE profile_id = ? AND kind = ? AND favourite = 1',
+      [me, kind],
+      FREE_MAX_FAVOURITES,
+    );
+    let kept = 0;
+    for (const r of rows) {
+      if (r.favourite !== 1) continue;
+      if (kept < allowance) kept += 1;
+      else {
+        r.favourite = 0;
+        capped = true;
+      }
+    }
+    favouritesKept = kept;
+  }
+
   // REPLACE, not merge. A shelf is the whole truth about one kind at one
   // moment: a title unfollowed on the phone has to disappear here, and a merge
   // could only ever grow. The delete and the inserts go in one batch so a
@@ -154,7 +241,18 @@ published.put('/me/published', requireAuth, async (c) => {
     )
     .run();
 
-  return c.json({ ok: true, kind, titles: rows.length });
+  /**
+   * A SUCCESS WITH A NOTE, not a 409.
+   *
+   * Every failure this intake has is a malformed body the phone should never
+   * send again; a publish that was too generous is neither malformed nor worth
+   * retrying, and the correct outcome is that the shelf goes up. So the cap
+   * rides in the success envelope — `capped` for "we trimmed something",
+   * `kept` for how many favourites survived, which is what an upsell line has
+   * to say. The fields are absent when nothing was trimmed, so a client that
+   * never reads them sees the old response exactly.
+   */
+  return c.json({ ok: true, kind, titles: rows.length, ...(capped ? { capped: true, kept: favouritesKept } : {}) });
 });
 
 // ── GET /v1/profiles/:handle/published ──────────────────────────────────────
@@ -338,6 +436,24 @@ published.post('/published/lists', requireAuth, async (c) => {
     lists.push({ id: listId(me, name), name, description: null, items });
   }
 
+  /**
+   * THE LISTS CAP. The first ten in the order the phone sent — the owner's own
+   * arrangement, which is also the order the profile draws them in, so what
+   * survives is the top of their own screen rather than an arbitrary ten.
+   *
+   * Grandfathered: see `effectiveCap`. The count is taken BEFORE the delete
+   * below, which is the only moment it can be taken — this intake replaces the
+   * whole set, so a cap read afterwards would always see zero and never bind.
+   */
+  const kept = (await isPlusProfile(db, me, nowIso))
+    ? lists.length
+    : Math.min(
+        lists.length,
+        await effectiveCap(db, 'SELECT COUNT(*) AS n FROM lists WHERE owner_id = ?', [me], FREE_MAX_LISTS),
+      );
+  const capped = kept < lists.length;
+  lists.length = kept;
+
   const statements = [
     db.prepare('DELETE FROM list_items WHERE list_id IN (SELECT id FROM lists WHERE owner_id = ?)').bind(me),
     db.prepare('DELETE FROM lists WHERE owner_id = ?').bind(me),
@@ -366,5 +482,6 @@ published.post('/published/lists', requireAuth, async (c) => {
   });
 
   await db.batch(statements);
-  return c.json({ lists: lists.length });
+  // Same idiom as the shelf above: a success, plus what was trimmed.
+  return c.json({ lists: lists.length, ...(capped ? { capped: true, kept } : {}) });
 });

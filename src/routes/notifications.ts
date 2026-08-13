@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { makeCursor, pageSize, parseCursor } from '@/pure';
+import { makeCursor, pageSize, parseCursor, plusOn } from '@/pure';
 
 /**
  * The inbox. docs/IMPLEMENTATION.md Step 4, "Notification write paths".
@@ -25,6 +25,8 @@ type NotificationRow = {
   handle: string | null;
   display_name: string | null;
   avatar_key: string | null;
+  is_plus: number | null;
+  plus_until: string | null;
 };
 
 function shape(row: NotificationRow) {
@@ -41,6 +43,7 @@ function shape(row: NotificationRow) {
             handle: row.handle,
             display_name: row.display_name,
             avatar_key: row.avatar_key,
+            is_plus: plusOn(row, new Date().toISOString()),
           }
         : null,
     subject_type: row.subject_type,
@@ -73,7 +76,7 @@ notifications.get('/notifications', requireAuth, async (c) => {
   // is a mute with a back door.
   const res = await c.env.DB.prepare(
     `SELECT n.id, n.kind, n.subject_type, n.subject_id, n.read_at, n.created_at,
-            n.actor_id, a.handle, a.display_name, a.avatar_key
+            n.actor_id, a.handle, a.display_name, a.avatar_key, a.is_plus, a.plus_until
      FROM notifications n
      LEFT JOIN profiles a ON a.id = n.actor_id
      WHERE ${where.join(' AND ')}

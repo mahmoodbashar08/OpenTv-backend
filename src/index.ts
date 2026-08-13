@@ -17,6 +17,7 @@ import { notifications } from '@/routes/notifications';
 import { push } from '@/routes/push';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
+import { rc } from '@/routes/rc';
 import { ADMIN_PAGE } from '@/admin-page';
 import { admin } from '@/routes/admin';
 import { reconcile } from '@/routes/reconcile';
@@ -134,6 +135,10 @@ v1.route('/', profiles);
 v1.route('/', notifications);
 v1.route('/', push);
 v1.route('/', reconcile);
+// Machine-to-machine, authenticated by its own shared secret rather than by a
+// session — it belongs to no user, so it sits with `admin` rather than in the
+// social routers.
+v1.route('/', rc);
 v1.route('/', admin);
 
 // ── the dashboard page ───────────────────────────────────────────────────────

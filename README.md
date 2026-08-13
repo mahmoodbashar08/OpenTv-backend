@@ -26,6 +26,24 @@ npm run db:local                   # apply migrations locally
 npm run dev
 ```
 
+## OpenTV Plus
+
+`POST /v1/rc/webhook` is the only thing that may grant Plus — a client that
+could set it would make Plus free within a week. RevenueCat authenticates with
+a shared string in the `Authorization` header:
+
+```bash
+wrangler secret put RC_WEBHOOK_SECRET   # same value in RevenueCat → Integrations → Webhooks
+```
+
+Unset means the route answers 503: no secret, no webhook. Grants on
+INITIAL_PURCHASE / RENEWAL / UNCANCELLATION / PRODUCT_CHANGE /
+NON_RENEWING_PURCHASE naming the `plus` entitlement; revokes on EXPIRATION
+alone, because CANCELLATION only means auto-renew is off and the period is
+still paid for. Free profiles publish at most 10 lists and 20 favourites per
+kind, enforced in `routes/published.ts` and grandfathered so a set published
+before Plus existed is never shrunk.
+
 ## Read before changing anything
 
 - [`docs/PLAN.md`](docs/PLAN.md) — decisions, reasoning, build order, blockers

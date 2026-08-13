@@ -1174,6 +1174,33 @@ export function isPlus(plusUntil: string | null | undefined, nowIso: string): bo
   return typeof plusUntil === 'string' && plusUntil.length > 0 && plusUntil > nowIso;
 }
 
+/**
+ * THE ONE ANSWER to "is this person Plus", used by every shaper.
+ *
+ * Two sources, deliberately. `is_plus` is the flag the RevenueCat webhook
+ * writes and is how every real subscriber gets here. `plus_until` is the hand
+ * grant — a date poked into the row to settle a refund, a gift or a support
+ * case — and it keeps working because a server that can only be told things by
+ * a third party has no way to fix that third party being wrong.
+ *
+ * Neither is ever writable by a client: `PATCH /v1/me` refuses the whole body
+ * if it mentions either.
+ */
+export function plusOn(
+  row: { is_plus?: number | null; plus_until?: string | null },
+  nowIso: string,
+): boolean {
+  return row.is_plus === 1 || isPlus(row.plus_until, nowIso);
+}
+
+/** Length-independent, so a wrong answer costs the same as a right one. */
+export function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 export type ProfileCounts = {
   followers: number;
   following: number;
