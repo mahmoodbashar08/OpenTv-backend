@@ -134,3 +134,67 @@ images.post('/comments/image', requireAuth, async (c) => {
 
   return c.json({ ok: true, stored: true, comment_id: id });
 });
+
+// ── GET /v1/comments/:id/image — open, cached, `clean` only ─────────────────
+
+/**
+ * SERVING A RESCUED PHOTOGRAPH, and the line it may not cross.
+ *
+ * This file spent its whole life storing images and refusing to hand any back,
+ * for a reason that has not changed: publishing somebody's picture to strangers
+ * means owning what is in it. What has changed is that the alternative turned
+ * out to have a cost too — 136 photographs saved from a dead CDN, belonging to
+ * four people, visible to nobody including the people who took them, on screens
+ * whose whole point was that the comments came back.
+ *
+ * So it serves exactly one category: `scan_status = 'clean'`, which is set by a
+ * person looking at the picture and saying so, through the admin review page.
+ * There is no route, flag or default that turns `pending` into `clean` without
+ * that. Anything not cleared answers 404 — the same answer as a comment with no
+ * picture, because "there is an image here you may not see" is a question
+ * nobody should have to field.
+ *
+ * NEW UPLOADS ARE STILL NOT POSSIBLE. The app has no attach button; the POST
+ * above exists for the archive rescue alone. Serving the rescue does not open
+ * that door, and it should not be opened without the automated scan the
+ * constraint in migration 0001 was written for.
+ *
+ * IMMUTABLE ONCE PUBLIC. An image is bytes that never change, keyed by a
+ * comment id that never changes, so a long cache is honest — and it keeps this
+ * route off both D1 and R2 for everybody after the first reader. A picture
+ * withdrawn later stops being served at the edge's next miss; the review page
+ * exists to catch things before that matters.
+ */
+images.get('/comments/:id/image', async (c) => {
+  const bucket = c.env.COMMENT_IMAGES;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Image storage is not configured.');
+
+  const row = await c.env.DB.prepare(
+    `SELECT ci.r2_key
+       FROM comment_images ci
+       JOIN comments cm ON cm.id = ci.comment_id
+      WHERE ci.comment_id = ?
+        AND ci.scan_status = 'clean'
+        -- A deleted or hidden comment takes its picture with it. Moderating the
+        -- text and leaving the image reachable by its own URL would make the
+        -- hide cosmetic.
+        AND cm.deleted_at IS NULL
+        AND cm.hidden_at IS NULL`,
+  )
+    .bind(c.req.param('id'))
+    .first<{ r2_key: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No image.');
+
+  const object = await bucket.get(row.r2_key);
+  if (!object) return fail(c, 404, 'not_found', 'No image.');
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      // Nothing here is a document, and a browser that decides otherwise about
+      // user-supplied bytes is the start of a different kind of problem.
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+});

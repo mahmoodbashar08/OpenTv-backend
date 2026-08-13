@@ -66,6 +66,19 @@ export const ADMIN_PAGE = `<!doctype html>
          background:#26262b; color:#a7a7ae; }
   .tag.warn { background:#3a3213; color:#ffd400; }
   .scroll { overflow-x:auto; }
+  .note { color:#6b6b72; font-size:12px; margin:0 0 10px; }
+  .shots { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
+  .shot { background:#16161a; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+  /* Contained, never cropped: a decision about a picture has to be made about
+     all of it. Checkerboard so transparent PNGs are not judged on a dark void. */
+  .shot img { width:100%; height:190px; object-fit:contain; background:
+      repeating-conic-gradient(#1b1b1f 0% 25%, #141417 0% 50%) 50%/16px 16px; }
+  .shot .meta { padding:9px 11px; font-size:12px; color:#8a8a92; flex:1; }
+  .shot .who { color:#e9e9ee; font-weight:700; font-size:12.5px; }
+  .shot .cap { color:#a7a7ae; margin-top:4px; word-break:break-word; }
+  .shot .btns { display:flex; gap:6px; padding:0 11px 11px; }
+  .shot button { flex:1; padding:8px 0; font-size:12.5px; border-radius:8px; }
+  .shot .no { background:#2a1618; color:#e5484d; font-weight:700; }
 </style>
 </head>
 <body>
@@ -95,6 +108,9 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="activity"></div>
     <h2>People, newest first</h2>
     <div class="scroll"><table id="users"></table></div>
+    <h2>Photos awaiting review</h2>
+    <p class="note" id="revnote"></p>
+    <div class="shots" id="review"></div>
     <h2>Joins, last 14 days</h2>
     <div class="bars" id="bars"></div>
     <p class="foot" id="foot"></p>
@@ -150,7 +166,11 @@ async function load() {
     ['Likes', t.likes],
     ['Follows', t.follows],
     ['Lists', t.lists],
-    ['Images held', t.images],
+    ['Photos held', t.images],
+    // The only queue on this page a person has to work through by hand: an
+    // image is invisible to everybody until somebody here has looked at it.
+    ['Photos to review', t.images_pending, t.images_pending ? 'warn' : ''],
+    ['Photos shown', t.images_clean],
     // The only number with a clock on it — 24 hours is the moderation promise.
     ['Open reports', t.open_reports, t.open_reports ? 'bad' : ''],
   ]);
@@ -187,9 +207,56 @@ async function load() {
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('');
 
+  await loadReview();
+
   $('foot').textContent = 'This page can see how many, and who — never what anybody wrote. Read ' +
     new Date().toLocaleTimeString();
 }
+
+/**
+ * The review queue. Nothing else in the system can make an image public, so
+ * this is deliberately one picture, one caption, two buttons — no select-all,
+ * no "approve the rest", no keyboard shortcut that could run away with a list.
+ */
+async function loadReview() {
+  const res = await fetch('/v1/admin/images?status=pending', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const { items = [] } = await res.json();
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+  $('revnote').textContent = items.length
+    ? 'Nobody can see these until you decide. Shown = visible to everyone on that comment.'
+    : 'Nothing waiting.';
+
+  $('review').innerHTML = items.map((i) => {
+    const where = i.season == null ? '' :
+      ' · S' + i.season + (i.episode == null ? '' : 'E' + i.episode);
+    return '<div class="shot" data-id="' + esc(i.comment_id) + '">' +
+      '<img loading="lazy" src="/v1/admin/image/' + encodeURIComponent(i.comment_id) + '" alt="">' +
+      '<div class="meta"><div class="who">@' + esc(i.handle) + (i.is_gif ? ' · GIF' : '') + '</div>' +
+      '<div class="cap">' + esc(i.body || '(no caption)') + esc(where) + '</div></div>' +
+      '<div class="btns"><button data-do="clean">Show</button>' +
+      '<button class="no" data-do="blocked">Block</button></div></div>';
+  }).join('');
+}
+
+// Delegated, so buttons rendered after this file loads still work.
+$('review').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-do]');
+  if (!btn) return;
+  const card = btn.closest('.shot');
+  btn.disabled = true;
+  const res = await fetch('/v1/admin/images/' + encodeURIComponent(card.dataset.id), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ status: btn.dataset.do }),
+  });
+  if (res.ok) card.remove();
+  else btn.disabled = false;
+  if (!$('review').children.length) $('revnote').textContent = 'Nothing waiting.';
+});
 
 function show(ok) {
   $('login').hidden = ok;

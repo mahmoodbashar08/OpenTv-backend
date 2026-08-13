@@ -56,6 +56,15 @@ export type CommentRow = {
   avatar_key: string | null;
   liked_by_me?: number;
   reply_count?: number;
+  /**
+   * The rescued TV Time photograph, joined in from `comment_images` — and only
+   * when a person has looked at it. `scan_status` is checked in SQL rather than
+   * here so an unreviewed image cannot reach the shaper at all.
+   */
+  image_w?: number | null;
+  image_h?: number | null;
+  image_gif?: number | null;
+  image_ok?: number | null;
 };
 
 /** One shaper for POST and GET, so the row the author sees is the row the thread shows. */
@@ -84,6 +93,19 @@ export function shapeComment(row: CommentRow) {
     reply_count: row.reply_count ?? 0,
     created_at: row.created_at,
     edited_at: row.edited_at,
+    /**
+     * THE PICTURE, once somebody has cleared it.
+     *
+     * Not a URL — the app builds one from the comment id, which it already has,
+     * so nothing here needs to know the Worker's own hostname. `null` covers
+     * three different things deliberately: no image, an image nobody has
+     * reviewed, and an image that was reviewed and refused. A reader is not
+     * told which, because "there is a picture here you are not allowed to see"
+     * is an invitation to ask why.
+     */
+    image: row.image_ok
+      ? { width: row.image_w ?? null, height: row.image_h ?? null, is_gif: !!row.image_gif }
+      : null,
   };
 }
 
@@ -91,7 +113,19 @@ export function shapeComment(row: CommentRow) {
 const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
        c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
        c.created_at, c.edited_at,
-       p.handle, p.display_name, p.avatar_key`;
+       p.handle, p.display_name, p.avatar_key,
+       ci.width AS image_w, ci.height AS image_h, ci.is_gif AS image_gif,
+       (ci.scan_status = 'clean') AS image_ok`;
+
+/**
+ * The image join, on every read of a comment.
+ *
+ * LEFT, because most comments have no picture and an inner join would silently
+ * drop every one of them. The `clean` test lives in `COMMENT_COLUMNS` rather
+ * than here so a pending image still joins and simply reports itself as absent
+ * — one query shape for every case.
+ */
+const IMAGE_JOIN = 'LEFT JOIN comment_images ci ON ci.comment_id = c.id';
 
 /**
  * The block filter, both directions, as a fragment. `?me` is `''` for an
@@ -268,7 +302,7 @@ comments.post('/comments', requireAuth, async (c) => {
 
   const row = await db
     .prepare(
-      `SELECT ${COMMENT_COLUMNS} FROM comments c JOIN profiles p ON p.id = c.author_id WHERE c.id = ?`,
+      `SELECT ${COMMENT_COLUMNS} FROM comments c JOIN profiles p ON p.id = c.author_id ${IMAGE_JOIN} WHERE c.id = ?`,
     )
     .bind(id)
     .first<CommentRow>();
@@ -353,7 +387,7 @@ comments.get('/comments', async (c) => {
     `SELECT ${COMMENT_COLUMNS},
             EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
             ${replyCount}
-     FROM comments c JOIN profiles p ON p.id = c.author_id
+     FROM comments c JOIN profiles p ON p.id = c.author_id ${IMAGE_JOIN}
      WHERE ${where.join(' AND ')}
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT ?`,
@@ -391,7 +425,7 @@ comments.get('/comments/:id', async (c) => {
                 AND NOT EXISTS (SELECT 1 FROM blocks rb
                                 WHERE (rb.blocker_id = ? AND rb.blocked_id = r.author_id)
                                    OR (rb.blocker_id = r.author_id AND rb.blocked_id = ?))) AS reply_count
-     FROM comments c JOIN profiles p ON p.id = c.author_id
+     FROM comments c JOIN profiles p ON p.id = c.author_id ${IMAGE_JOIN}
      WHERE c.id = ? AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND p.deleted_at IS NULL
        AND ${NOT_BLOCKED}`,
   )

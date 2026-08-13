@@ -157,6 +157,8 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM follows)                                                AS follows,
        (SELECT COUNT(*) FROM lists)                                                  AS lists,
        (SELECT COUNT(*) FROM comment_images)                                         AS images,
+       (SELECT COUNT(*) FROM comment_images WHERE scan_status = 'pending')            AS images_pending,
+       (SELECT COUNT(*) FROM comment_images WHERE scan_status = 'clean')              AS images_clean,
        (SELECT COUNT(*) FROM push_tokens)                                            AS push_devices,
        -- The queue that has a clock on it: a report unanswered for 24 hours is
        -- the one number here worth being woken up about.
@@ -225,4 +227,104 @@ admin.get('/admin/users', async (c) => {
   ).all<Record<string, unknown>>();
 
   return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
+});
+
+// ── Image review ────────────────────────────────────────────────────────────
+
+/**
+ * THE ONLY WAY AN IMAGE BECOMES VISIBLE.
+ *
+ * `GET /v1/comments/:id/image` serves `clean` and nothing else, and nothing in
+ * the codebase writes `clean` except the route below — one person, signed in,
+ * having looked at the picture. There is no bulk approve, no default, and no
+ * "approve everything from this user": each of those would be a way for an
+ * image to become public without being seen, which is the single thing this
+ * queue exists to prevent.
+ *
+ * The reviewer sees the picture through `GET /v1/admin/image/:id`, which is
+ * cookie-gated and serves ANY status — that is the whole job. It is the one
+ * place in the server where an unreviewed image is readable, and it is readable
+ * by exactly the person who has to decide about it.
+ */
+admin.get('/admin/images', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const status = c.req.query('status') ?? 'pending';
+  if (!['pending', 'clean', 'blocked'].includes(status)) {
+    return fail(c, 400, 'invalid_body', 'Unknown status.');
+  }
+
+  const res = await c.env.DB.prepare(
+    `SELECT ci.comment_id, ci.is_gif, ci.scan_status, ci.created_at,
+            p.handle,
+            cm.target_source, cm.target_key, cm.season, cm.episode,
+            -- The caption, because a picture is judged with the sentence it was
+            -- attached to. Trimmed: this is a queue, not a reading list.
+            substr(cm.body, 1, 140) AS body
+       FROM comment_images ci
+       JOIN comments cm ON cm.id = ci.comment_id
+       JOIN profiles p  ON p.id  = cm.author_id
+      WHERE ci.scan_status = ? AND cm.deleted_at IS NULL
+      ORDER BY ci.created_at DESC
+      LIMIT 200`,
+  )
+    .bind(status)
+    .all<Record<string, unknown>>();
+
+  return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.post('/admin/images/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const status = (body as { status?: unknown }).status;
+  // Deliberately not 'pending': a decision can be changed from clean to blocked
+  // or back, but nothing returns an image to "nobody has looked at this yet".
+  if (status !== 'clean' && status !== 'blocked') {
+    return fail(c, 400, 'invalid_body', 'status must be clean or blocked.');
+  }
+
+  const res = await c.env.DB.prepare(
+    'UPDATE comment_images SET scan_status = ?, scanned_at = ? WHERE comment_id = ?',
+  )
+    .bind(status, new Date().toISOString(), c.req.param('id'))
+    .run();
+
+  if (!res.meta.changes) return fail(c, 404, 'not_found', 'No such image.');
+  return c.json({ ok: true, status });
+});
+
+/** The picture itself, at any status, to the one person who must look at it. */
+admin.get('/admin/image/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const bucket = c.env.COMMENT_IMAGES;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Image storage is not configured.');
+
+  const row = await c.env.DB.prepare('SELECT r2_key FROM comment_images WHERE comment_id = ?')
+    .bind(c.req.param('id'))
+    .first<{ r2_key: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No image.');
+
+  const object = await bucket.get(row.r2_key);
+  if (!object) return fail(c, 404, 'not_found', 'No image.');
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+      // Never cached: a reviewed image changes status, and a stale copy in a
+      // browser is a decision made about the wrong picture.
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 });
