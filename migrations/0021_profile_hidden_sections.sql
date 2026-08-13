@@ -1,0 +1,19 @@
+-- Which parts of their own profile the owner does not want shown.
+--
+-- `is_private` is all-or-nothing: everybody, or only accepted followers. The
+-- thing people actually ask for is narrower — "my lists are public, my watch
+-- stats are nobody's business" — and there was no way to say it.
+--
+-- A JSON array of section keys, NULL meaning nothing is hidden, so every
+-- existing profile keeps rendering exactly as it does today with no backfill.
+-- The keys are a closed set validated at `PATCH /v1/me`; the column is opaque
+-- here, exactly as `links` is, because a CHECK over JSON text would have to be
+-- rewritten by a migration every time the app grows a section.
+--
+-- NOT A PLUS FEATURE, deliberately: hiding your own things is privacy, and a
+-- paywall in front of privacy is indefensible.
+--
+-- HIDING MUST OMIT THE DATA, not advertise a preference. The reads that feed
+-- each section drop it server-side for everyone but the owner — a section
+-- honoured only by the client is a promise anybody with curl can break.
+ALTER TABLE profiles ADD COLUMN hidden_sections TEXT;

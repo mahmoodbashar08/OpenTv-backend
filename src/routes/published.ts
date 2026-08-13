@@ -2,7 +2,15 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { chunk, D1_MAX_BOUND_PARAMS, isTargetSource, listId, numberOrNull, plusOn } from '@/pure';
+import {
+  chunk,
+  D1_MAX_BOUND_PARAMS,
+  isTargetSource,
+  listId,
+  numberOrNull,
+  plusOn,
+  sectionHidden,
+} from '@/pure';
 import { optionalViewer } from '@/routes/comments';
 
 /**
@@ -277,8 +285,12 @@ published.get('/profiles/:handle/published', async (c) => {
   // which would confirm the account exists.
   const owner = await db
     .prepare(
-      `SELECT p.id, p.is_private,
-              EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.followee_id = p.id) AS followed_by_me,
+      `SELECT p.id, p.is_private, p.hidden_sections,
+              -- ACCEPTED ONLY. This boolean is the gate on a private profile's
+              -- entire published history; a pending request must open nothing,
+              -- or asking to follow would BE following.
+              EXISTS(SELECT 1 FROM follows f
+                      WHERE f.follower_id = ? AND f.followee_id = p.id AND f.state = 'accepted') AS followed_by_me,
               EXISTS(SELECT 1 FROM blocks b
                      WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                         OR (b.blocker_id = p.id AND b.blocked_id = ?)) AS blocked
@@ -286,7 +298,13 @@ published.get('/profiles/:handle/published', async (c) => {
         WHERE p.handle_lower = ? AND p.deleted_at IS NULL`,
     )
     .bind(viewer, viewer, viewer, (c.req.param('handle') ?? '').toLowerCase())
-    .first<{ id: string; is_private: number; followed_by_me: number; blocked: number }>();
+    .first<{
+      id: string;
+      is_private: number;
+      hidden_sections: string | null;
+      followed_by_me: number;
+      blocked: number;
+    }>();
 
   if (!owner || owner.blocked === 1) return fail(c, 404, 'not_found', 'No such profile.');
   const maySee = owner.is_private === 0 || owner.id === viewer || owner.followed_by_me === 1;
@@ -323,23 +341,42 @@ published.get('/profiles/:handle/published', async (c) => {
     .bind(owner.id)
     .all<ShelfRow>();
 
-  const shape = (r: ShelfRow) => ({
-    target_source: r.target_source,
-    target_key: r.target_key,
-    name: r.name,
-    poster: r.poster,
-    favourite: r.favourite === 1,
-    // Sent so the client can order the FAVOURITES shelf on its own terms —
-    // the owner's drag order, which is not the main shelf's order.
-    fav_rank: r.fav_rank,
-  });
+  /**
+   * PER-SECTION HIDING, enforced on the data rather than on the client.
+   *
+   * Every shelf this route draws is one of the owner's switches, so each one is
+   * dropped here for anybody but them. A hidden favourites rail is subtler than
+   * a hidden shelf: the titles stay — they are the ordinary watched shelf —
+   * and only the STAR comes off, because it is the "these are my favourites"
+   * claim that was hidden, not the fact that the person watched them.
+   */
+  const owns = owner.id === viewer;
+  const hides = (key: 'stats' | 'shows' | 'movies' | 'favourite_shows' | 'favourite_movies') =>
+    !owns && sectionHidden(owner.hidden_sections, key);
+
+  const shape = (r: ShelfRow) => {
+    const favouritesShown = !hides(r.kind === 'show' ? 'favourite_shows' : 'favourite_movies');
+    return {
+      target_source: r.target_source,
+      target_key: r.target_key,
+      name: r.name,
+      poster: r.poster,
+      favourite: favouritesShown && r.favourite === 1,
+      // Sent so the client can order the FAVOURITES shelf on its own terms —
+      // the owner's drag order, which is not the main shelf's order.
+      fav_rank: favouritesShown ? r.fav_rank : null,
+    };
+  };
   const all = res.results ?? [];
+  const shelf = (kind: 'show' | 'movie') =>
+    hides(kind === 'show' ? 'shows' : 'movies') ? [] : all.filter((r) => r.kind === kind).map(shape);
 
   return c.json({
     // Null rather than zeroes when nothing has been published: a profile that
     // has never synced must render as "no stats yet", not as somebody who has
-    // watched nothing.
-    stats: stats
+    // watched nothing. A HIDDEN stats section reads as the same null, which is
+    // the shape the client already knows how to draw nothing from.
+    stats: stats && !hides('stats')
       ? {
           episodes_watched: stats.episodes_watched,
           minutes_watched: stats.minutes_watched,
@@ -349,8 +386,8 @@ published.get('/profiles/:handle/published', async (c) => {
           updated_at: stats.updated_at,
         }
       : null,
-    shows: all.filter((r) => r.kind === 'show').map(shape),
-    movies: all.filter((r) => r.kind === 'movie').map(shape),
+    shows: shelf('show'),
+    movies: shelf('movie'),
   });
 });
 

@@ -147,7 +147,10 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM character_votes)                                        AS character_votes,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
-       (SELECT COUNT(*) FROM follows)                                                AS follows,
+       -- ACCEPTED ONLY, like every other count of this table: a pending row is
+       -- a question nobody has answered, and counting it would inflate the one
+       -- number this page has for how connected the community actually is.
+       (SELECT COUNT(*) FROM follows WHERE state = 'accepted')                       AS follows,
        (SELECT COUNT(*) FROM lists)                                                  AS lists,
        (SELECT COUNT(*) FROM comment_images)                                         AS images,
        (SELECT COUNT(*) FROM comment_images WHERE scan_status = 'pending')            AS images_pending,
@@ -204,7 +207,7 @@ admin.get('/admin/users', async (c) => {
             (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
             (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
             (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
-            (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id) AS followers,
+            (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id AND x.state = 'accepted') AS followers,
             (SELECT COUNT(*) FROM lists     x WHERE x.owner_id = p.id) AS lists,
             -- How many of their photographs the rescue actually caught. Zero
             -- against thousands of comments means their import ran after TV

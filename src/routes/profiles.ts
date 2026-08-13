@@ -7,7 +7,9 @@ import {
   normaliseHandle,
   pageSize,
   parseCursor,
+  parseHiddenSections,
   plusOn,
+  sectionHidden,
   USER_SEARCH_LIMIT,
   visibleProfileFields,
 } from '@/pure';
@@ -45,12 +47,14 @@ type ProfileReadRow = {
   links: string | null;
   plus_until: string | null;
   is_plus: number;
+  hidden_sections: string | null;
   created_at: string;
   followers: number;
   following: number;
   comments: number;
   lists: number;
   followed_by_me: number;
+  follow_requested_by_me: number;
   blocked: number;
 };
 
@@ -73,26 +77,42 @@ function parseLinks(raw: string | null): unknown {
 async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
     `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.bio, p.is_private, p.links,
-            p.plus_until, p.is_plus, p.created_at,
-            (SELECT COUNT(*) FROM follows f WHERE f.followee_id = p.id) AS followers,
-            (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id) AS following,
+            p.plus_until, p.is_plus, p.hidden_sections, p.created_at,
+            -- ACCEPTED ONLY, in all four. A pending request is a question, and
+            -- counting it would make "12 followers" mean "9 followers and 3
+            -- people who asked" — and followed_by_me is worse than wrong: it
+            -- is the gate maySeeDetail opens the private half of the profile
+            -- with, so an unfiltered read would let anybody who tapped Follow
+            -- straight past the thing they were asking permission for.
+            (SELECT COUNT(*) FROM follows f WHERE f.followee_id = p.id AND f.state = 'accepted') AS followers,
+            (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id AND f.state = 'accepted') AS following,
             (SELECT COUNT(*) FROM comments c
               WHERE c.author_id = p.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL
                 AND c.parent_id IS NULL) AS comments,
             (SELECT COUNT(*) FROM lists l WHERE l.owner_id = p.id AND l.is_public = 1) AS lists,
-            EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.followee_id = p.id) AS followed_by_me,
+            EXISTS(SELECT 1 FROM follows f
+                    WHERE f.follower_id = ? AND f.followee_id = p.id AND f.state = 'accepted') AS followed_by_me,
+            EXISTS(SELECT 1 FROM follows f
+                    WHERE f.follower_id = ? AND f.followee_id = p.id AND f.state = 'pending') AS follow_requested_by_me,
             EXISTS(SELECT 1 FROM blocks b
                    WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                       OR (b.blocker_id = p.id AND b.blocked_id = ?)) AS blocked
      FROM profiles p
      WHERE p.handle_lower = ? AND p.deleted_at IS NULL`,
   )
-    .bind(viewer, viewer, viewer, normaliseHandle(handle))
+    .bind(viewer, viewer, viewer, viewer, normaliseHandle(handle))
     .first<ProfileReadRow>();
 }
 
 /** `lists` counts PUBLIC lists only — a private list must not be inferable from a number. */
 function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
+  // THE COUNT GOES WITH THE SECTION. The two counts that stand over a hidden
+  // section would otherwise announce exactly what the owner asked not to show —
+  // "88 comments" above nothing is a worse gap than no number at all, and it is
+  // still a disclosure. The owner keeps their own numbers.
+  const owns = row.id === viewer;
+  const hidden = (key: 'comments' | 'lists') => !owns && sectionHidden(row.hidden_sections, key);
+
   return visibleProfileFields(
     {
       id: row.id,
@@ -110,10 +130,12 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
       counts: {
         followers: row.followers,
         following: row.following,
-        comments: row.comments,
-        lists: row.lists,
+        comments: hidden('comments') ? 0 : row.comments,
+        lists: hidden('lists') ? 0 : row.lists,
       },
       followed_by_me: row.followed_by_me === 1,
+      follow_requested_by_me: row.follow_requested_by_me === 1,
+      hidden_sections: parseHiddenSections(row.hidden_sections),
       created_at: row.created_at,
     },
     row.followed_by_me === 1,
@@ -300,6 +322,15 @@ profiles.get('/profiles/:handle/lists', async (c) => {
   if (!row || row.blocked === 1) return fail(c, 404, 'not_found', 'No such profile.');
   if (!maySeeDetail(row, viewer)) return fail(c, 403, 'forbidden', 'This profile is private.');
 
+  // HIDDEN MEANS ABSENT, not "the app knows not to draw it". A section the
+  // server still serves is hidden from a screen and from nobody else, and the
+  // owner was told it was hidden. 200 with nothing rather than 403: the
+  // section is not forbidden, it is empty, and `hidden_sections` on the profile
+  // already says why.
+  if (row.id !== viewer && sectionHidden(row.hidden_sections, 'lists')) {
+    return c.json({ items: [] });
+  }
+
   // Public lists only, even for the owner: this is the shop window, and an
   // owner who wants their drafts has `GET /v1/lists/:id` for each.
   //
@@ -354,6 +385,14 @@ profiles.get('/profiles/:handle/comments', async (c) => {
   const row = await readProfile(c.env, c.req.param('handle'), viewer);
   if (!row || row.blocked === 1) return fail(c, 404, 'not_found', 'No such profile.');
   if (!maySeeDetail(row, viewer)) return fail(c, 403, 'forbidden', 'This profile is private.');
+
+  // The same rule the lists route follows: hidden is empty, for everybody but
+  // the owner. The comments themselves are untouched and still appear in the
+  // threads they were written in — this hides the FEED of somebody's writing,
+  // which is the thing that reads as a diary, not each remark.
+  if (row.id !== viewer && sectionHidden(row.hidden_sections, 'comments')) {
+    return c.json({ items: [], next_cursor: null });
+  }
 
   const url = new URL(c.req.url);
   const limit = pageSize(url.searchParams.get('limit'));

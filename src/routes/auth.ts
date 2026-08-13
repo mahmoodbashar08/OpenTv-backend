@@ -5,11 +5,14 @@ import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
 import {
   COVER_HOSTS,
+  HIDEABLE_SECTIONS,
   isHandleValid,
   needsHandle,
   normaliseHandle,
+  parseHiddenSections,
   placeholderHandle,
   plusOn,
+  validateHiddenSections,
   validCoverUrl,
   type Provider,
 } from '@/pure';
@@ -41,6 +44,7 @@ type ProfileRow = {
   links: string | null;
   plus_until: string | null;
   is_plus: number;
+  hidden_sections: string | null;
   created_at: string;
   deleted_at: string | null;
 };
@@ -74,6 +78,10 @@ function ownProfile(row: ProfileRow) {
     // field to read whether it is drawing itself or a stranger. The owner also
     // gets the raw date above — it is their own billing, not a stranger's.
     is_plus: plusOn(row, new Date().toISOString()),
+    // ALWAYS, and as an array. This is the settings screen's own state: a
+    // switch it cannot read is a switch that draws itself off after every sign
+    // in, and the user turns it on a second time believing it never worked.
+    hidden_sections: parseHiddenSections(row.hidden_sections),
     created_at: row.created_at,
   };
 }
@@ -298,7 +306,16 @@ auth.get('/me', async (c) => {
 // ── PATCH /v1/me ─────────────────────────────────────────────────────────────
 
 /** Everything a user may change about themselves. Nothing else, ever. */
-const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url', 'theme_color', 'theme_layout'] as const;
+const PATCHABLE = [
+  'display_name',
+  'bio',
+  'is_private',
+  'links',
+  'cover_url',
+  'theme_color',
+  'theme_layout',
+  'hidden_sections',
+] as const;
 
 const MAX_DISPLAY_NAME = 100;
 const MAX_BIO = 500;
@@ -321,7 +338,7 @@ auth.patch('/me', async (c) => {
   // finds out immediately (docs/IMPLEMENTATION.md §1d).
   const keys = Object.keys(b);
   if (keys.some((k) => !(PATCHABLE as readonly string[]).includes(k))) {
-    return fail(c, 400, 'invalid_body', 'Only display_name, bio, is_private and links may be changed.');
+    return fail(c, 400, 'invalid_body', 'Only display_name, bio, is_private, links, cover_url, the theme fields and hidden_sections may be changed.');
   }
   if (keys.length === 0) return fail(c, 400, 'invalid_body', 'Nothing to change.');
 
@@ -417,6 +434,24 @@ auth.patch('/me', async (c) => {
     }
     sets.push('theme_layout = ?');
     binds.push(v);
+  }
+
+  if ('hidden_sections' in b) {
+    // NOT PLUS-GATED, unlike the two blocks above, and that is a decision
+    // rather than an omission: the theme is a cosmetic somebody else sees, and
+    // this is the user withholding their own things. Charging for privacy is
+    // indefensible, and a lapsed subscriber's stats must not quietly reappear.
+    const parsed = validateHiddenSections(b.hidden_sections);
+    if (!parsed.ok) {
+      return fail(
+        c,
+        400,
+        'invalid_body',
+        `hidden_sections must be null or an array of ${HIDEABLE_SECTIONS.join(', ')}.`,
+      );
+    }
+    sets.push('hidden_sections = ?');
+    binds.push(parsed.value);
   }
 
   const res = await c.env.DB.prepare(

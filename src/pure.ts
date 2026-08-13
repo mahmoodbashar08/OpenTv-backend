@@ -1208,6 +1208,77 @@ export type ProfileCounts = {
   lists: number;
 };
 
+// ── per-section hiding ───────────────────────────────────────────────────────
+
+/**
+ * The sections an owner may hide, and nothing else.
+ *
+ * A CLOSED SET, checked at the PATCH. The keys are rendering instructions to
+ * every visitor's app and to the reads below; an unrecognised one would be a
+ * preference stored for ever that nothing enforces, which is the exact failure
+ * "the server must omit the data" exists to prevent.
+ *
+ * `activity` is RESERVED and enforced nowhere, because there is nothing to
+ * enforce it on: this server holds no per-day watch counts and publishing a
+ * heatmap is a separate decision nobody has made. It is in the set so the app
+ * can offer the switch without a migration the day that decision is taken.
+ */
+export const HIDEABLE_SECTIONS = [
+  'stats',
+  'activity',
+  'lists',
+  'favourite_shows',
+  'favourite_movies',
+  'shows',
+  'movies',
+  'comments',
+] as const;
+
+export type HideableSection = (typeof HIDEABLE_SECTIONS)[number];
+
+/** The stored column as the array it represents. Anything unparseable reads as "nothing hidden". */
+export function parseHiddenSections(raw: string | null | undefined): HideableSection[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((k): k is HideableSection =>
+      (HIDEABLE_SECTIONS as readonly string[]).includes(k as string),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Is this section hidden, given the raw column? The one test every filtered read makes. */
+export function sectionHidden(raw: string | null | undefined, key: HideableSection): boolean {
+  return parseHiddenSections(raw).includes(key);
+}
+
+/**
+ * What `PATCH /v1/me` may store, or a refusal.
+ *
+ * An unknown key is a 400 rather than a silent drop: a client that sends
+ * `"watchlist"` and gets a 200 believes it is hidden, and the section it meant
+ * stays visible for ever with nobody looking for the bug.
+ *
+ * An empty array normalises to NULL — "nothing hidden" has one representation
+ * in the column, so a read never has to tell `[]` from absent.
+ */
+export function validateHiddenSections(
+  v: unknown,
+): { ok: true; value: string | null } | { ok: false } {
+  if (v === null) return { ok: true, value: null };
+  if (!Array.isArray(v)) return { ok: false };
+  for (const k of v) {
+    if (typeof k !== 'string' || !(HIDEABLE_SECTIONS as readonly string[]).includes(k)) {
+      return { ok: false };
+    }
+  }
+  const unique = [...new Set(v as HideableSection[])];
+  return { ok: true, value: unique.length === 0 ? null : JSON.stringify(unique) };
+}
+
 /** Everything a profile read gathers, before the privacy rule is applied. */
 export type FullProfileView = {
   id: string;
@@ -1223,6 +1294,19 @@ export type FullProfileView = {
   is_plus: boolean;
   counts: ProfileCounts;
   followed_by_me: boolean;
+  /**
+   * A follow this viewer has ASKED for and not yet been given. Part of the
+   * shell, alongside `followed_by_me`: the button on a private profile has
+   * three states, and without this one it falls back to "Follow" after every
+   * app restart and the request looks like it was never sent.
+   */
+  follow_requested_by_me?: boolean;
+  /**
+   * Which sections the owner has hidden — returned to strangers as well as to
+   * the owner, because an unexplained gap reads as a broken screen while a
+   * known absence reads as a choice.
+   */
+  hidden_sections?: HideableSection[];
   created_at: string;
 };
 

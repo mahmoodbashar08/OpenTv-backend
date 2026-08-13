@@ -75,6 +75,7 @@ Table profiles {
   avatar_key     text [note: 'R2 key — FREE, not a Plus feature']
   bio            text
   is_private     integer [default: 0, note: 'hides activity from followers']
+  hidden_sections text [note: 'JSON array of section keys the owner hides. NULL = nothing hidden. Enforced server-side by the reads that feed each section']
 
   tvtime_user_id integer [note: 'numeric TV Time id — friend.csv references THIS, not the name']
   tvtime_handle  text [note: 'old display name, for a human "is this you?" only']
@@ -101,6 +102,7 @@ Table follows {
   follower_id text [ref: > profiles.id, not null]
   followee_id text [ref: > profiles.id, not null]
   created_at  text [not null]
+  state       text [default: 'accepted', note: 'accepted | pending. A follow of a private profile starts pending; every count and list must filter on accepted']
 
   indexes {
     (follower_id, followee_id) [pk]
