@@ -79,6 +79,8 @@ export const ADMIN_PAGE = `<!doctype html>
   .shot .btns { display:flex; gap:6px; padding:0 11px 11px; }
   .shot button { flex:1; padding:8px 0; font-size:12.5px; border-radius:8px; }
   .shot .no { background:#2a1618; color:#e5484d; font-weight:700; }
+  .bulkbar { margin-top:14px; }
+  .bulkbar button { width:auto; }
 </style>
 </head>
 <body>
@@ -111,6 +113,9 @@ export const ADMIN_PAGE = `<!doctype html>
     <h2>Photos awaiting review</h2>
     <p class="note" id="revnote"></p>
     <div class="shots" id="review"></div>
+    <div class="bulkbar" id="bulkbar" hidden>
+      <button class="ghost" id="showall">Show all on this page</button>
+    </div>
     <h2>Joins, last 14 days</h2>
     <div class="bars" id="bars"></div>
     <p class="foot" id="foot"></p>
@@ -226,8 +231,9 @@ async function loadReview() {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
   $('revnote').textContent = items.length
-    ? 'Nobody can see these until you decide. Shown = visible to everyone on that comment.'
+    ? items.length + ' waiting. Nobody can see these until you decide. Scroll them before using "Show all" — that button clears exactly what is on this page, nothing that arrives later.'
     : 'Nothing waiting.';
+  $('bulkbar').hidden = items.length === 0;
 
   $('review').innerHTML = items.map((i) => {
     const where = i.season == null ? '' :
@@ -240,6 +246,25 @@ async function loadReview() {
       '<button class="no" data-do="blocked">Block</button></div></div>';
   }).join('');
 }
+
+$('showall').addEventListener('click', async () => {
+  const ids = [...$('review').children].map((el) => el.dataset.id);
+  if (!ids.length) return;
+  // The one confirm on this page. A bulk approve is the only action here that
+  // cannot be taken back one picture at a time.
+  if (!confirm('Show all ' + ids.length + ' of these photos to everyone?')) return;
+  $('showall').disabled = true;
+  $('showall').textContent = 'Working…';
+  const res = await fetch('/v1/admin/images/bulk', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ ids, status: 'clean' }),
+  });
+  $('showall').disabled = false;
+  $('showall').textContent = 'Show all on this page';
+  if (res.ok) { await load(); }
+});
 
 // Delegated, so buttons rendered after this file loads still work.
 $('review').addEventListener('click', async (ev) => {
