@@ -1215,6 +1215,7 @@ export type FullProfileView = {
   display_name: string | null;
   avatar_key: string | null;
   cover_url: string | null;
+  theme_color?: string | null;
   bio: string | null;
   is_private: boolean;
   links: unknown;

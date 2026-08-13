@@ -13,6 +13,9 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 export type ErrorCode =
   | 'unauthenticated'
   | 'forbidden'
+  // The act needs OpenTV Plus. Its own code, not `forbidden`: the app answers
+  // it with the paywall, which is a different response from "you may not".
+  | 'plus_required'
   | 'not_found'
   | 'invalid_body'
   | 'handle_taken'

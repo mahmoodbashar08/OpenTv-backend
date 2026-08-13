@@ -291,3 +291,70 @@ describe('published favourites are capped for a free profile', () => {
     expect(countFavourites()).toBe(30);
   });
 });
+
+/**
+ * The profile theme — the first Plus feature a visitor can see besides the
+ * badge. The decisions worth pinning: setting it is paid, CLEARING it is not
+ * (cosmetics are not stripped off a lapsed subscriber), the format check is
+ * strict because every visitor's phone renders the value verbatim, and it
+ * rides the public profile payload.
+ */
+describe('PATCH /v1/me theme_color', () => {
+  let env: ReturnType<typeof makeEnv>;
+  let raw: ReturnType<typeof freshDatabase>['raw'];
+
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    insertProfile(raw, 'p2', 'sara');
+  });
+
+  it('needs Plus to set, with its own code so the app can answer with the paywall', async () => {
+    const res = await call(env, 'PATCH', '/v1/me', {
+      token: await tokenFor(env, 'p1'),
+      body: { theme_color: '#8B5CF6' },
+    });
+    expect(res.status).toBe(403);
+    expect(res.json.error.code).toBe('plus_required');
+  });
+
+  it('sets for a Plus profile, uppercased, and comes back on GET /v1/me', async () => {
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    const res = await call(env, 'PATCH', '/v1/me', {
+      token: await tokenFor(env, 'p1'),
+      body: { theme_color: '#8b5cf6' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.theme_color).toBe('#8B5CF6');
+  });
+
+  it('clears without Plus — a lapsed subscriber may always undo, never redo', async () => {
+    raw.prepare("UPDATE profiles SET theme_color = '#8B5CF6' WHERE id = 'p1'").run();
+    const res = await call(env, 'PATCH', '/v1/me', {
+      token: await tokenFor(env, 'p1'),
+      body: { theme_color: null },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.theme_color).toBeNull();
+  });
+
+  it('refuses anything that is not #RRGGBB', async () => {
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    for (const bad of ['8B5CF6', '#8B5', '#8B5CF6FF', 'purple', '#8B5CG6']) {
+      const res = await call(env, 'PATCH', '/v1/me', {
+        token: await tokenFor(env, 'p1'),
+        body: { theme_color: bad },
+      });
+      expect(res.status, bad).toBe(400);
+    }
+  });
+
+  it('rides the public profile payload for every visitor', async () => {
+    raw.prepare("UPDATE profiles SET theme_color = '#14C8B8' WHERE id = 'p2'").run();
+    const res = await call(env, 'GET', '/v1/profiles/sara', {});
+    expect(res.status).toBe(200);
+    expect(res.json.theme_color).toBe('#14C8B8');
+  });
+});

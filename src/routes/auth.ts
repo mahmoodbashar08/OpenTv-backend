@@ -32,6 +32,7 @@ type ProfileRow = {
   display_name: string | null;
   avatar_key: string | null;
   cover_url: string | null;
+  theme_color: string | null;
   bio: string | null;
   is_private: number;
   tvtime_user_id: number | null;
@@ -60,6 +61,7 @@ function ownProfile(row: ProfileRow) {
     display_name: row.display_name,
     avatar_key: row.avatar_key,
     cover_url: row.cover_url,
+    theme_color: row.theme_color,
     bio: row.bio,
     is_private: row.is_private,
     tvtime_user_id: row.tvtime_user_id,
@@ -294,7 +296,7 @@ auth.get('/me', async (c) => {
 // ── PATCH /v1/me ─────────────────────────────────────────────────────────────
 
 /** Everything a user may change about themselves. Nothing else, ever. */
-const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url'] as const;
+const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url', 'theme_color'] as const;
 
 const MAX_DISPLAY_NAME = 100;
 const MAX_BIO = 500;
@@ -369,6 +371,31 @@ auth.patch('/me', async (c) => {
   }
 
   const me = c.get('profileId');
+
+  if ('theme_color' in b) {
+    const v = b.theme_color;
+    // #RRGGBB and nothing else — the value is rendered verbatim by every
+    // visitor's phone, so the format check is the whole safety story.
+    if (v !== null && (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v))) {
+      return fail(c, 400, 'invalid_body', 'theme_color must be "#RRGGBB" or null.');
+    }
+    // SETTING the theme is Plus; CLEARING it never is. A lapsed subscriber
+    // keeps the colour they chose — cosmetics are not stripped off people —
+    // but choosing a new one is the paid act, checked here because a client
+    // that lies about entitlement must not get the feature by PATCHing.
+    if (v !== null) {
+      const owner = await c.env.DB.prepare(
+        'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+      ).bind(me).first<{ is_plus: number; plus_until: string | null }>();
+      if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+      if (!plusOn(owner, new Date().toISOString())) {
+        return fail(c, 403, 'plus_required', 'A profile theme needs OpenTV Plus.');
+      }
+    }
+    sets.push('theme_color = ?');
+    binds.push(v === null ? null : (v as string).toUpperCase());
+  }
+
   const res = await c.env.DB.prepare(
     `UPDATE profiles SET ${sets.join(', ')} WHERE id = ? AND deleted_at IS NULL`,
   )
