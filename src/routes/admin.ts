@@ -209,7 +209,14 @@ admin.get('/admin/users', async (c) => {
             (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
             (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
             (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
-            (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id) AS followers
+            (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id) AS followers,
+            (SELECT COUNT(*) FROM lists     x WHERE x.owner_id = p.id) AS lists,
+            -- How many of their photographs the rescue actually caught. Zero
+            -- against thousands of comments means their import ran after TV
+            -- Time's CDN died, and those pictures are gone for good.
+            (SELECT COUNT(*) FROM comment_images ci
+               JOIN comments cm ON cm.id = ci.comment_id
+              WHERE cm.author_id = p.id) AS images
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL

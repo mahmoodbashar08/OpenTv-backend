@@ -25,6 +25,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .wrap { max-width: 900px; margin: 0 auto; padding: 40px 20px 80px; }
   h1 { font-size:20px; margin:0 0 4px; color:#ffd400; letter-spacing:.02em; }
   .sub { color:#8a8a92; font-size:13px; margin:0 0 28px; }
+  /* An explicit display beats the hidden attribute's display:none, so the
+     sign-in form stayed on screen after signing in. Anything hidden is hidden. */
+  [hidden] { display:none !important; }
   form { max-width:340px; display:flex; flex-direction:column; gap:10px; }
   input { background:#16161a; border:1px solid #26262b; border-radius:10px;
           padding:12px 14px; color:#e9e9ee; font-size:15px; }
@@ -49,6 +52,7 @@ export const ADMIN_PAGE = `<!doctype html>
   .bar span { position:absolute; bottom:-20px; left:0; right:0; text-align:center;
               font-size:10px; color:#6b6b72; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .acts { display:flex; gap:8px; }
   .foot { color:#6b6b72; font-size:12px; margin-top:34px; }
   table { width:100%; border-collapse:collapse; background:#16161a; border-radius:12px;
           overflow:hidden; font-size:14px; }
@@ -71,7 +75,10 @@ export const ADMIN_PAGE = `<!doctype html>
       <h1>OpenTV</h1>
       <p class="sub" id="sub">Community dashboard</p>
     </div>
-    <button class="ghost" id="out" hidden>Sign out</button>
+    <div class="acts">
+      <button class="ghost" id="refresh" hidden>Refresh</button>
+      <button class="ghost" id="out" hidden>Sign out</button>
+    </div>
   </div>
 
   <form id="login">
@@ -96,6 +103,19 @@ export const ADMIN_PAGE = `<!doctype html>
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Times land here as UTC and are read in Baghdad. Showing the date alone hid
+// which ones happened in the same hour as each other, which is the whole
+// question when you are watching people arrive after a post.
+function baghdad(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso ?? '');
+  return d.toLocaleString('en-GB', {
+    timeZone: 'Asia/Baghdad',
+    day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
 
 function cards(el, items) {
   el.innerHTML = items.map(([k, n, cls]) =>
@@ -152,7 +172,8 @@ async function load() {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
-    '<th class="num">Ratings</th><th class="num">Followers</th></tr>' +
+    '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
+    '<th class="num">Followers</th></tr>' +
     (people.items || []).map((u) => {
       const placeholder = String(u.handle).startsWith('user_p_');
       const who = '<span class="who">@' + esc(u.handle) + '</span>' +
@@ -160,8 +181,9 @@ async function load() {
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
         (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
-      return '<tr><td>' + who + '</td><td>' + how + '</td><td>' + esc(String(u.created_at).slice(0, 10)) +
+      return '<tr><td>' + who + '</td><td>' + how + '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
+        '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('');
 
@@ -173,8 +195,17 @@ function show(ok) {
   $('login').hidden = ok;
   $('panel').hidden = !ok;
   $('out').hidden = !ok;
+  $('refresh').hidden = !ok;
   $('sub').textContent = ok ? 'Community dashboard' : 'Sign in to continue';
+  // The password field survives a failed sign-in; it must not survive a
+  // successful one, and it must not be sitting in the DOM behind the panel.
+  if (ok) { $('email').value = ''; $('password').value = ''; }
 }
+
+$('refresh').addEventListener('click', () => {
+  $('refresh').textContent = 'Reading…';
+  load().finally(() => { $('refresh').textContent = 'Refresh'; });
+});
 
 $('login').addEventListener('submit', async (e) => {
   e.preventDefault();
