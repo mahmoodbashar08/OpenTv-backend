@@ -39,6 +39,7 @@ type ProfileReadRow = {
   avatar_key: string | null;
   cover_url: string | null;
   theme_color: string | null;
+  theme_layout: string | null;
   bio: string | null;
   is_private: number;
   links: string | null;
@@ -71,7 +72,7 @@ function parseLinks(raw: string | null): unknown {
  */
 async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
-    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.bio, p.is_private, p.links,
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.bio, p.is_private, p.links,
             p.plus_until, p.is_plus, p.created_at,
             (SELECT COUNT(*) FROM follows f WHERE f.followee_id = p.id) AS followers,
             (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id) AS following,
@@ -100,6 +101,7 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
       avatar_key: row.avatar_key,
       cover_url: row.cover_url,
       theme_color: row.theme_color,
+      theme_layout: row.theme_layout,
       bio: row.bio,
       is_private: row.is_private === 1,
       links: parseLinks(row.links),

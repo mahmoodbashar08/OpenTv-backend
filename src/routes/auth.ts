@@ -33,6 +33,7 @@ type ProfileRow = {
   avatar_key: string | null;
   cover_url: string | null;
   theme_color: string | null;
+  theme_layout: string | null;
   bio: string | null;
   is_private: number;
   tvtime_user_id: number | null;
@@ -62,6 +63,7 @@ function ownProfile(row: ProfileRow) {
     avatar_key: row.avatar_key,
     cover_url: row.cover_url,
     theme_color: row.theme_color,
+    theme_layout: row.theme_layout,
     bio: row.bio,
     is_private: row.is_private,
     tvtime_user_id: row.tvtime_user_id,
@@ -296,7 +298,7 @@ auth.get('/me', async (c) => {
 // ── PATCH /v1/me ─────────────────────────────────────────────────────────────
 
 /** Everything a user may change about themselves. Nothing else, ever. */
-const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url', 'theme_color'] as const;
+const PATCHABLE = ['display_name', 'bio', 'is_private', 'links', 'cover_url', 'theme_color', 'theme_layout'] as const;
 
 const MAX_DISPLAY_NAME = 100;
 const MAX_BIO = 500;
@@ -394,6 +396,27 @@ auth.patch('/me', async (c) => {
     }
     sets.push('theme_color = ?');
     binds.push(v === null ? null : (v as string).toUpperCase());
+  }
+
+  if ('theme_layout' in b) {
+    const v = b.theme_layout;
+    // A closed set, checked here: the value is a rendering instruction to
+    // every visitor's app, and an unknown one would be a profile that draws
+    // nothing. Unsetting is always allowed, like the colour.
+    if (v !== null && v !== 'classic' && v !== 'cards') {
+      return fail(c, 400, 'invalid_body', 'theme_layout must be "classic", "cards" or null.');
+    }
+    if (v !== null) {
+      const owner = await c.env.DB.prepare(
+        'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+      ).bind(me).first<{ is_plus: number; plus_until: string | null }>();
+      if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+      if (!plusOn(owner, new Date().toISOString())) {
+        return fail(c, 403, 'plus_required', 'A profile layout needs OpenTV Plus.');
+      }
+    }
+    sets.push('theme_layout = ?');
+    binds.push(v);
   }
 
   const res = await c.env.DB.prepare(

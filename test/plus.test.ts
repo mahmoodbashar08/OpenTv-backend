@@ -358,3 +358,41 @@ describe('PATCH /v1/me theme_color', () => {
     expect(res.json.theme_color).toBe('#14C8B8');
   });
 });
+
+describe('PATCH /v1/me theme_layout', () => {
+  let env: ReturnType<typeof makeEnv>;
+  let raw: ReturnType<typeof freshDatabase>['raw'];
+
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    insertProfile(raw, 'p2', 'sara');
+  });
+
+  it('needs Plus to set, and refuses a layout the app cannot draw', async () => {
+    const token = await tokenFor(env, 'p1');
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { theme_layout: 'cards' } })).status).toBe(403);
+
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { theme_layout: 'spiral' } })).status).toBe(400);
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { theme_layout: 'cards' } })).status).toBe(200);
+  });
+
+  it('rides the public profile, so a visitor sees the layout its owner chose', async () => {
+    raw.prepare("UPDATE profiles SET theme_layout = 'cards' WHERE id = 'p2'").run();
+    const res = await call(env, 'GET', '/v1/profiles/sara', {});
+    expect(res.json.theme_layout).toBe('cards');
+  });
+
+  it('clears without Plus, like every other cosmetic', async () => {
+    raw.prepare("UPDATE profiles SET theme_layout = 'cards' WHERE id = 'p1'").run();
+    const res = await call(env, 'PATCH', '/v1/me', {
+      token: await tokenFor(env, 'p1'),
+      body: { theme_layout: null },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json.theme_layout).toBeNull();
+  });
+});

@@ -33,6 +33,7 @@ const MIGRATION_FILES = [
   '../migrations/0016_comment_parent_index.sql',
   '../migrations/0017_plus_flag.sql',
   '../migrations/0018_profile_theme.sql',
+  '../migrations/0019_profile_layout.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
