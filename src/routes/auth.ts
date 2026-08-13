@@ -403,8 +403,8 @@ auth.patch('/me', async (c) => {
     // A closed set, checked here: the value is a rendering instruction to
     // every visitor's app, and an unknown one would be a profile that draws
     // nothing. Unsetting is always allowed, like the colour.
-    if (v !== null && v !== 'classic' && v !== 'cards') {
-      return fail(c, 400, 'invalid_body', 'theme_layout must be "classic", "cards" or null.');
+    if (v !== null && v !== 'classic' && v !== 'cards' && v !== 'poster') {
+      return fail(c, 400, 'invalid_body', 'theme_layout must be "classic", "cards", "poster" or null.');
     }
     if (v !== null) {
       const owner = await c.env.DB.prepare(
