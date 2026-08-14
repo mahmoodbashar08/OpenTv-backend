@@ -120,8 +120,20 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
       display_name: row.display_name,
       avatar_key: row.avatar_key,
       cover_url: row.cover_url,
-      theme_color: row.theme_color,
-      theme_layout: row.theme_layout,
+      /**
+       * THE THEME STOPS APPLYING WHEN THE SUBSCRIPTION DOES, and it is nulled
+       * HERE rather than deleted from the row. The stored choice survives, so
+       * resubscribing restores the profile instead of asking somebody to pick
+       * it all over again as a penalty for having lapsed.
+       *
+       * Nulled on the way out rather than left to the app: a lapsed member's
+       * theme reaching every visitor's phone is the server publishing a paid
+       * look for somebody who is not paying, and the app cannot be the only
+       * thing standing between the two -- there are older builds out there that
+       * will render whatever this sends, for ever.
+       */
+      theme_color: plusOn(row, nowIso) ? row.theme_color : null,
+      theme_layout: plusOn(row, nowIso) ? row.theme_layout : null,
       bio: row.bio,
       is_private: row.is_private === 1,
       links: parseLinks(row.links),
