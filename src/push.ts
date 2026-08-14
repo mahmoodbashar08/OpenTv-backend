@@ -24,7 +24,7 @@ const EXPO_SEND = 'https://exp.host/--/api/v2/push/send';
 /** Expo rejects a batch of more than 100. */
 const BATCH = 100;
 
-export type PushKind = 'follow' | 'like' | 'reply' | 'comment';
+export type PushKind = 'follow' | 'like' | 'reply' | 'comment' | 'shared_list_add' | 'shared_list_join';
 
 type Message = {
   to: string;
@@ -67,6 +67,13 @@ function line(kind: PushKind, who: string): { title: string; body: string } {
       return { title: 'OpenTV', body: `${who} replied to you` };
     case 'comment':
       return { title: 'OpenTV', body: `${who} commented` };
+    // A shared list is the one thing here that asks the reader to DO something
+    // -- go and look at what was suggested -- so its line names the act rather
+    // than the object.
+    case 'shared_list_add':
+      return { title: 'OpenTV', body: `${who} added something to your shared list` };
+    case 'shared_list_join':
+      return { title: 'OpenTV', body: `${who} joined your shared list` };
   }
 }
 

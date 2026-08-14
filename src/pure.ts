@@ -1486,3 +1486,101 @@ export function listId(ownerId: string, name: string): string {
   }
   return `l_${h.toString(36)}${g.toString(36)}`;
 }
+
+// ── shared lists ─────────────────────────────────────────────────────────────
+
+/**
+ * How many shared lists a free account may OWN.
+ *
+ * One, and one is a decision rather than a number pulled out of the air.
+ * Joining is free and unlimited -- that is the whole design, because a list
+ * only works if the people invited can actually get in, and a paywall on the
+ * door empties the room. What Plus buys is the right to START them.
+ *
+ * So a free account gets exactly one of its own: enough to understand what the
+ * feature is by using it properly with a friend, not enough to run the group.
+ */
+export const FREE_SHARED_LISTS = 1;
+
+export const SHARED_LIST_MAX_NAME = 60;
+export const SHARED_LIST_MAX_ITEMS = 300;
+/** Members, the owner included. Past this a "shared list" is a public list. */
+export const SHARED_LIST_MAX_MEMBERS = 25;
+
+/**
+ * The invite code that goes in a link.
+ *
+ * NO 0/O/1/I/L. The code gets read aloud, retyped from a screenshot, and sent
+ * over a voice note -- an alphabet where two characters look the same turns a
+ * working invite into "it says the code is wrong" with nothing to debug.
+ *
+ * Ten characters from a 30-character alphabet is about 49 bits, which is the
+ * relevant number because THE CODE IS THE ONLY THING GUARDING THE LIST. Anyone
+ * holding it can join. That is intentional -- it is how a link works -- and it
+ * is why guessing one has to be hopeless.
+ */
+const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+export function newInviteCode(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < 10; i += 1) {
+    out += INVITE_ALPHABET[bytes[i]! % INVITE_ALPHABET.length];
+  }
+  return out;
+}
+
+/** Codes are shown and typed in upper case; accept whatever case arrives. */
+export function normaliseInviteCode(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return cleaned.length === 10 ? cleaned : null;
+}
+
+export function validSharedListName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim().replace(/\s+/g, ' ');
+  if (name.length === 0 || name.length > SHARED_LIST_MAX_NAME) return null;
+  return name;
+}
+
+export type SharedTarget = { source: 'tvdb' | 'movie'; key: string };
+
+/**
+ * An item's identity, which must match what the app already uses to open a
+ * thing: a show is a TheTVDB id, a film is its name. Anything else is refused
+ * rather than stored, because a row nobody can open is worse than a refusal --
+ * it sits in the list looking like a title and does nothing when tapped.
+ */
+export function validSharedTarget(source: unknown, key: unknown): SharedTarget | null {
+  if (typeof key !== 'string') return null;
+  const k = key.trim();
+  if (k.length === 0 || k.length > 200) return null;
+  if (source === 'tvdb') {
+    return /^[1-9][0-9]{0,9}$/.test(k) ? { source: 'tvdb', key: k } : null;
+  }
+  if (source === 'movie') return { source: 'movie', key: k };
+  return null;
+}
+
+/**
+ * Progress through a shared list, per member.
+ *
+ * COUNTED FROM THE LIST, NOT FROM ANYBODY'S LIBRARY. The server has no watch
+ * history and this is not one: it counts the items in THIS list that a member
+ * ticked off IN this list. Somebody who saw a film years ago reads as 0 until
+ * they say so here, which is correct -- what the list is tracking is the
+ * group's progress through the group's list.
+ */
+export function sharedProgress(
+  total: number,
+  watched: readonly { member_id: string }[],
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of watched) {
+    out[row.member_id] = (out[row.member_id] ?? 0) + 1;
+  }
+  // total is the caller's business; returned untouched so a caller can render
+  // "3 of 12" without a second query
+  void total;
+  return out;
+}

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import type { Env } from '@/env';
@@ -12,35 +12,20 @@ import { sign } from '@/session';
  * The schema is READ FROM THE MIGRATION FILES, never restated here. A copied
  * schema drifts from the real one the first time a migration lands, and a test
  * that passes against a schema production does not have is worse than no test.
- * **Every new migration goes in this list.**
+ *
+ * READ FROM THE DIRECTORY, not from a list maintained by hand. The list was a
+ * bookkeeping bug waiting to happen, and it happened: migration 0022 shipped
+ * and the suite kept running against a database without its tables, failing as
+ * `no such table` in whichever test touched them first rather than as anything
+ * that named the cause. Sorted by filename, which is what the numeric prefixes
+ * are for.
  */
-const MIGRATION_FILES = [
-  '../migrations/0001_initial.sql',
-  '../migrations/0002_comment_hidden.sql',
-  '../migrations/0003_character_votes.sql',
-  '../migrations/0004_score_distribution.sql',
-  '../migrations/0005_emotion_votes.sql',
-  '../migrations/0006_published_profile.sql',
-  '../migrations/0007_profile_movie_stats.sql',
-  '../migrations/0008_profile_title_fav_rank.sql',
-  '../migrations/0009_push_tokens.sql',
-  '../migrations/0010_list_item_poster.sql',
-  '../migrations/0011_list_position.sql',
-  '../migrations/0012_profile_cover.sql',
-  '../migrations/0013_email_credentials.sql',
-  '../migrations/0014_session_epoch.sql',
-  '../migrations/0015_verify_code.sql',
-  '../migrations/0016_comment_parent_index.sql',
-  '../migrations/0017_plus_flag.sql',
-  '../migrations/0018_profile_theme.sql',
-  '../migrations/0019_profile_layout.sql',
-  '../migrations/0020_follow_state.sql',
-  '../migrations/0021_profile_hidden_sections.sql',
-];
+const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations/', import.meta.url));
 
-export const MIGRATIONS = MIGRATION_FILES.map((p) =>
-  readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8'),
-);
+export const MIGRATIONS = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith('.sql'))
+  .sort()
+  .map((f) => readFileSync(`${MIGRATIONS_DIR}${f}`, 'utf8'));
 
 /**
  * The smallest honest D1 shim: `prepare().bind().run()/all()/first()` with

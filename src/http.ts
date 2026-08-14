@@ -24,6 +24,10 @@ export type ErrorCode =
   | 'target_invalid'
   | 'too_large'
   | 'blocked'
+  // A shared list at its member ceiling. Its own code so the app can say what
+  // is actually wrong — "this list is full" is a fact about the list, and
+  // `forbidden` would read to the invitee as "you are not welcome".
+  | 'list_full'
   // The image binding is absent from this deployment — a capability that is
   // off, not a request that was wrong.
   | 'unavailable'

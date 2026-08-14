@@ -21,6 +21,7 @@ import { rc } from '@/routes/rc';
 import { ADMIN_PAGE } from '@/admin-page';
 import { admin } from '@/routes/admin';
 import { reconcile } from '@/routes/reconcile';
+import { sharedLists } from '@/routes/shared-lists';
 import { reports } from '@/routes/reports';
 
 export type { Env } from '@/env';
@@ -128,6 +129,10 @@ v1.route('/', profiles);
 v1.route('/', notifications);
 v1.route('/', push);
 v1.route('/', reconcile);
+// Lists two people build together -- the one place the server, not a phone,
+// holds the truth. See routes/shared-lists.ts for why that does not break the
+// rule the rest of this file follows.
+v1.route('/', sharedLists);
 // Machine-to-machine, authenticated by its own shared secret rather than by a
 // session — it belongs to no user, so it sits with `admin` rather than in the
 // social routers.
