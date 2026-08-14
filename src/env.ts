@@ -23,11 +23,10 @@ export type Env = {
   AVATARS?: R2Bucket;
 
   /**
-   * Shared secret for the `/v1/admin/*` routes — support-bundle requests and
-   * downloads. `wrangler secret put ADMIN_SECRET`. Absent means the admin
+   * Shared secret for the `/v1/admin/*` routes — moderation and the comment
+   * image queue. `wrangler secret put ADMIN_SECRET`. Absent means the admin
    * surface is OFF (every admin route 404s), so a deployment without it
-   * exposes nothing, and a support bundle can never be requested or pulled
-   * until the operator opts in by setting it.
+   * exposes nothing until the operator opts in by setting it.
    */
   ADMIN_SECRET?: string;
 
