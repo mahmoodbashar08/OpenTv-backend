@@ -351,11 +351,38 @@ describe('PATCH /v1/me theme_color', () => {
     }
   });
 
-  it('rides the public profile payload for every visitor', async () => {
-    raw.prepare("UPDATE profiles SET theme_color = '#14C8B8' WHERE id = 'p2'").run();
+  it('rides the public profile payload for every visitor — while its owner pays', async () => {
+    raw.prepare("UPDATE profiles SET theme_color = '#14C8B8', is_plus = 1 WHERE id = 'p2'").run();
     const res = await call(env, 'GET', '/v1/profiles/sara', {});
     expect(res.status).toBe(200);
     expect(res.json.theme_color).toBe('#14C8B8');
+  });
+
+  /**
+   * THE THEME IS A SUBSCRIPTION, NOT A PURCHASE. Serving it after the
+   * subscription ends means one paid month buys the look for ever, and the app
+   * cannot be the only thing stopping that: older builds render whatever this
+   * sends, for as long as they exist.
+   */
+  it('stops serving the theme when the subscription ends', async () => {
+    raw.prepare("UPDATE profiles SET theme_color = '#14C8B8', is_plus = 0 WHERE id = 'p2'").run();
+    const res = await call(env, 'GET', '/v1/profiles/sara', {});
+    expect(res.json.theme_color).toBeNull();
+  });
+
+  /** NULLED ON THE WAY OUT, NOT DELETED — so resubscribing restores it rather
+   *  than asking somebody to choose again as a penalty for having lapsed. */
+  it('keeps the chosen colour in the row, so resubscribing brings it back', async () => {
+    raw.prepare("UPDATE profiles SET theme_color = '#14C8B8', is_plus = 0 WHERE id = 'p2'").run();
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.theme_color).toBeNull();
+
+    const stored = raw.prepare("SELECT theme_color FROM profiles WHERE id = 'p2'").get() as {
+      theme_color: string | null;
+    };
+    expect(stored.theme_color).toBe('#14C8B8');
+
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p2'").run();
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.theme_color).toBe('#14C8B8');
   });
 });
 
@@ -380,10 +407,17 @@ describe('PATCH /v1/me theme_layout', () => {
     expect((await call(env, 'PATCH', '/v1/me', { token, body: { theme_layout: 'cards' } })).status).toBe(200);
   });
 
-  it('rides the public profile, so a visitor sees the layout its owner chose', async () => {
-    raw.prepare("UPDATE profiles SET theme_layout = 'cards' WHERE id = 'p2'").run();
-    const res = await call(env, 'GET', '/v1/profiles/sara', {});
-    expect(res.json.theme_layout).toBe('cards');
+  it('rides the public profile while its owner pays, and stops when they do not', async () => {
+    raw.prepare("UPDATE profiles SET theme_layout = 'cards', is_plus = 1 WHERE id = 'p2'").run();
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.theme_layout).toBe('cards');
+
+    raw.prepare("UPDATE profiles SET is_plus = 0 WHERE id = 'p2'").run();
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.theme_layout).toBeNull();
+    // and the choice itself survives, ready for a resubscribe
+    const stored = raw.prepare("SELECT theme_layout FROM profiles WHERE id = 'p2'").get() as {
+      theme_layout: string | null;
+    };
+    expect(stored.theme_layout).toBe('cards');
   });
 
   it('clears without Plus, like every other cosmetic', async () => {
