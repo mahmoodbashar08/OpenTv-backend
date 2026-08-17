@@ -1,0 +1,24 @@
+-- The arrangement of a profile's body, as its owner built it.
+--
+-- A JSON BLOB, NOT A TABLE, and deliberately opaque to this server. Nothing
+-- here ever queries inside it: the only reader is the app, which already owns
+-- the catalogue of what a widget is and how each one draws. A table of
+-- (position, widget_id, span, value) would buy queries nobody runs and cost a
+-- schema migration every time the app invents a widget — the same trade
+-- `theme_layout` already made one column over.
+--
+-- IT CARRIES VALUES, NOT ONLY PLACES, and that is forced by the design rather
+-- than chosen. This server has no watch-history table by design, so it cannot
+-- compute "12 days in a row" or "Drama, 41%" for a visitor. Whatever a widget
+-- says about somebody must be published with it or the widget cannot exist on
+-- anybody else's screen.
+--
+-- Which makes what is ABSENT from this column the privacy decision. The widgets
+-- marked `private` in the app's catalogue — the hour of the evening somebody
+-- watches at, their first ever episode, what is on their watchlist — are never
+-- written here. They are facts about a person's habits rather than their
+-- library, and the profile they belong to is the only screen that shows them.
+--
+-- NULL means "never arranged", which is every profile that exists today: the
+-- app falls back to the layout it ships with, so nothing needs backfilling.
+ALTER TABLE profiles ADD COLUMN widgets TEXT;

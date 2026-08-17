@@ -42,6 +42,7 @@ type ProfileReadRow = {
   cover_url: string | null;
   theme_color: string | null;
   theme_layout: string | null;
+  widgets: string | null;
   bio: string | null;
   is_private: number;
   links: string | null;
@@ -76,7 +77,7 @@ function parseLinks(raw: string | null): unknown {
  */
 async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
-    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.bio, p.is_private, p.links,
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.widgets, p.bio, p.is_private, p.links,
             p.plus_until, p.is_plus, p.hidden_sections, p.created_at,
             -- ACCEPTED ONLY, in all four. A pending request is a question, and
             -- counting it would make "12 followers" mean "9 followers and 3
@@ -134,6 +135,17 @@ function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
        */
       theme_color: plusOn(row, nowIso) ? row.theme_color : null,
       theme_layout: plusOn(row, nowIso) ? row.theme_layout : null,
+      /*
+       * The arrangement, and the SAME Plus rule as the colour and the layout —
+       * for the same reason, spelled out three lines above: older builds will
+       * render whatever this sends, for ever, so a lapsed subscription has to
+       * stop being paid-for HERE rather than in an app that may never update.
+       *
+       * Sent as the stored string. Parsing it is the app's job because the app
+       * owns what a widget means; this route's contract is only that a profile
+       * either has an arrangement or does not.
+       */
+      widgets: plusOn(row, nowIso) ? row.widgets : null,
       bio: row.bio,
       is_private: row.is_private === 1,
       links: parseLinks(row.links),

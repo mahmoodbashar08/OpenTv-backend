@@ -386,6 +386,70 @@ describe('PATCH /v1/me theme_color', () => {
   });
 });
 
+describe('PATCH /v1/me widgets', () => {
+  let env: ReturnType<typeof makeEnv>;
+  let raw: ReturnType<typeof freshDatabase>['raw'];
+
+  const ARRANGEMENT = JSON.stringify([
+    { id: 'banners', span: '2x1' },
+    { id: 'streak', span: '1x1', value: { n: 12 } },
+  ]);
+
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    insertProfile(raw, 'p2', 'sara');
+  });
+
+  it('needs Plus, and takes any well-formed array', async () => {
+    const token = await tokenFor(env, 'p1');
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: ARRANGEMENT } })).status).toBe(403);
+
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: ARRANGEMENT } })).status).toBe(200);
+  });
+
+  it('refuses what is not an arrangement, without knowing what a widget is', async () => {
+    const token = await tokenFor(env, 'p1');
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    // Shape only — this server must NOT validate widget ids, or it would reject
+    // a profile arranged by a newer app than itself.
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: 'not json' } })).status).toBe(400);
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: '{"a":1}' } })).status).toBe(400);
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: 42 } })).status).toBe(400);
+    expect(
+      (await call(env, 'PATCH', '/v1/me', { token, body: { widgets: JSON.stringify([{ id: 'nobody-has-heard-of' }]) } }))
+        .status,
+    ).toBe(200);
+  });
+
+  it('is too large to be used as storage', async () => {
+    const token = await tokenFor(env, 'p1');
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    const huge = JSON.stringify([{ id: 'x', data: 'y'.repeat(9000) }]);
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: huge } })).status).toBe(400);
+  });
+
+  it('unsetting never needs Plus, so a lapsed subscriber can still tidy up', async () => {
+    const token = await tokenFor(env, 'p1');
+    expect((await call(env, 'PATCH', '/v1/me', { token, body: { widgets: null } })).status).toBe(200);
+  });
+
+  it('rides the public profile while its owner pays, and stops when they do not', async () => {
+    raw.prepare('UPDATE profiles SET widgets = ?, is_plus = 1 WHERE id = ?').run(ARRANGEMENT, 'p2');
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.widgets).toBe(ARRANGEMENT);
+
+    raw.prepare("UPDATE profiles SET is_plus = 0 WHERE id = 'p2'").run();
+    expect((await call(env, 'GET', '/v1/profiles/sara', {})).json.widgets).toBeNull();
+    // The arrangement itself survives, ready for a resubscribe — losing
+    // somebody's layout because a card expired would be unforgivable.
+    const stored = raw.prepare("SELECT widgets FROM profiles WHERE id = 'p2'").get() as { widgets: string | null };
+    expect(stored.widgets).toBe(ARRANGEMENT);
+  });
+});
+
 describe('PATCH /v1/me theme_layout', () => {
   let env: ReturnType<typeof makeEnv>;
   let raw: ReturnType<typeof freshDatabase>['raw'];

@@ -1288,6 +1288,9 @@ export type FullProfileView = {
   cover_url: string | null;
   theme_color?: string | null;
   theme_layout?: string | null;
+  /** The owner's arrangement, as the opaque JSON string it is stored as. Null
+   *  when never arranged, or when their Plus has lapsed. */
+  widgets?: string | null;
   bio: string | null;
   is_private: boolean;
   links: unknown;

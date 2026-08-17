@@ -37,6 +37,7 @@ type ProfileRow = {
   cover_url: string | null;
   theme_color: string | null;
   theme_layout: string | null;
+  widgets: string | null;
   bio: string | null;
   is_private: number;
   tvtime_user_id: number | null;
@@ -68,6 +69,7 @@ function ownProfile(row: ProfileRow) {
     cover_url: row.cover_url,
     theme_color: row.theme_color,
     theme_layout: row.theme_layout,
+    widgets: row.widgets,
     bio: row.bio,
     is_private: row.is_private,
     tvtime_user_id: row.tvtime_user_id,
@@ -314,8 +316,13 @@ const PATCHABLE = [
   'cover_url',
   'theme_color',
   'theme_layout',
+  'widgets',
   'hidden_sections',
 ] as const;
+
+/** Generous for twenty-odd widgets with a value each, small enough that a bad
+ *  client cannot use a profile row as storage. */
+const MAX_WIDGETS = 8000;
 
 const MAX_DISPLAY_NAME = 100;
 const MAX_BIO = 500;
@@ -434,6 +441,43 @@ auth.patch('/me', async (c) => {
     }
     sets.push('theme_layout = ?');
     binds.push(v);
+  }
+
+  if ('widgets' in b) {
+    /*
+     * THE ARRANGEMENT, VALIDATED AS SHAPE AND NOTHING MORE.
+     *
+     * This server does not know what a widget is and should not learn: the
+     * catalogue lives in the app, gains entries every release, and a server
+     * that validated widget ids would reject a profile arranged by a newer
+     * build than itself. So the checks here are the ones a server can make
+     * honestly — it is JSON, it is an array, it is not enormous.
+     *
+     * Plus-gated on the same reasoning as `theme_color` above: the value is
+     * published to every visitor, and older apps will render whatever arrives
+     * for ever. A lapsed subscription has to stop being paid-for here.
+     */
+    const v = b.widgets;
+    if (v !== null) {
+      if (typeof v !== 'string') return fail(c, 400, 'invalid_body', 'widgets must be a JSON string or null.');
+      if (v.length > MAX_WIDGETS) return fail(c, 400, 'invalid_body', 'widgets is too large.');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(v);
+      } catch {
+        return fail(c, 400, 'invalid_body', 'widgets must be valid JSON.');
+      }
+      if (!Array.isArray(parsed)) return fail(c, 400, 'invalid_body', 'widgets must be a JSON array.');
+      const owner = await c.env.DB.prepare(
+        'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+      ).bind(me).first<{ is_plus: number; plus_until: string | null }>();
+      if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+      if (!plusOn(owner, new Date().toISOString())) {
+        return fail(c, 403, 'plus_required', 'Arranging a profile needs OpenTV Plus.');
+      }
+    }
+    sets.push('widgets = ?');
+    binds.push(v === null ? null : (v as string));
   }
 
   if ('hidden_sections' in b) {
