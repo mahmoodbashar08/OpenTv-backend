@@ -1532,3 +1532,30 @@ export function detectSourceLang(text: string): string {
   if (share(/\p{Script=Han}/gu) > 0.3) return 'zh';
   return 'en';
 }
+
+/**
+ * Whether a URL is safe to hand to the app, which opens it with no further
+ * questions.
+ *
+ * HTTPS ONLY. `Linking.openURL` will open whatever it is given -- a
+ * `javascript:` URL, a custom scheme belonging to another app, an `intent://`
+ * on Android. These rows are ours and should never contain one, but a table is
+ * a thing that can be edited by hand at three in the morning, and this is the
+ * last place that can still say no.
+ *
+ * Rejected rather than repaired: a link that has to be rewritten to be safe is
+ * a link nobody checked, and silently turning it into something else would ship
+ * a destination the author never wrote.
+ *
+ * Whitespace anywhere is a refusal, not something to strip. It is how a scheme
+ * is smuggled past a naive prefix check, and a URL with a space in it was
+ * mistyped in any case.
+ */
+export function isSafeLinkUrl(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  if (url.length === 0 || url.length > 300) return false;
+  if (/\s/.test(url)) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001F\u007F]/.test(url)) return false;
+  return /^https:\/\/[^/]+\./i.test(url);
+}
