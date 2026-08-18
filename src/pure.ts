@@ -1489,3 +1489,46 @@ export function listId(ownerId: string, name: string): string {
   }
   return `l_${h.toString(36)}${g.toString(36)}`;
 }
+
+/**
+ * The languages a comment may be translated INTO.
+ *
+ * Exactly the six the app ships, and deliberately not "whatever the model
+ * supports". A translation is stored for ever under this key, so an open list
+ * would let one client fill the table with languages no reader has.
+ */
+export const TRANSLATE_TARGETS = ['en', 'ar', 'fr', 'it', 'es', 'pt'] as const;
+export type TranslateTarget = (typeof TRANSLATE_TARGETS)[number];
+
+export function isTranslateTarget(v: unknown): v is TranslateTarget {
+  return typeof v === 'string' && (TRANSLATE_TARGETS as readonly string[]).includes(v);
+}
+
+/**
+ * A guess at what language a comment is already in, from its script alone.
+ *
+ * WHY GUESS AT ALL. `m2m100` takes an optional `source_lang` that defaults to
+ * English, and an Arabic comment translated "from English" comes back mangled.
+ * A wrong guess costs quality; no guess costs it too, for every non-English
+ * comment in the archive.
+ *
+ * SCRIPT, NOT LANGUAGE, and the limit is honest: this separates Arabic from
+ * French, and cannot separate French from Spanish. That is the split that
+ * matters — the latin languages all degrade gracefully because the model reads
+ * them anyway, while the wrong SCRIPT is what produces nonsense.
+ *
+ * Ratio rather than first-match: one Arabic name quoted inside an English
+ * sentence must not make the sentence Arabic.
+ */
+export function detectSourceLang(text: string): string {
+  const letters = text.replace(/[\s\d\p{P}\p{S}]/gu, '');
+  if (letters.length === 0) return 'en';
+  const share = (re: RegExp) => (letters.match(re) ?? []).length / letters.length;
+  if (share(/\p{Script=Arabic}/gu) > 0.3) return 'ar';
+  if (share(/\p{Script=Hebrew}/gu) > 0.3) return 'he';
+  if (share(/\p{Script=Cyrillic}/gu) > 0.3) return 'ru';
+  if (share(/\p{Script=Hangul}/gu) > 0.3) return 'ko';
+  if (share(/\p{Script=Hiragana}|\p{Script=Katakana}/gu) > 0.3) return 'ja';
+  if (share(/\p{Script=Han}/gu) > 0.3) return 'zh';
+  return 'en';
+}

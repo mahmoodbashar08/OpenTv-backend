@@ -22,6 +22,7 @@ import { ADMIN_PAGE } from '@/admin-page';
 import { admin } from '@/routes/admin';
 import { reconcile } from '@/routes/reconcile';
 import { reports } from '@/routes/reports';
+import { translate } from '@/routes/translate';
 
 export type { Env } from '@/env';
 
@@ -121,6 +122,7 @@ v1.route('/', characterVotes);
 v1.route('/', images);
 v1.route('/', published);
 v1.route('/', comments);
+v1.route('/', translate);
 v1.route('/', reports);
 v1.route('/', blocks);
 v1.route('/', follows);

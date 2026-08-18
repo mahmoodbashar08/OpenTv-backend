@@ -29,6 +29,11 @@ export type ErrorCode =
   | 'unavailable'
   // An upload that is not one of the image types the bucket accepts.
   | 'unsupported_type'
+  // The translation model failed or was rate-limited. TRANSIENT, and its own
+  // code so the app can offer "try again" rather than hiding the row for good —
+  // `unavailable` means the capability is off, which is permanent from the
+  // phone's point of view.
+  | 'translate_failed'
   // Signed in, but the email address behind the account is still unconfirmed.
   // Its own code rather than a plain `forbidden` because the app has to tell
   // these apart: one is "you may not", the other is "finish this first", and

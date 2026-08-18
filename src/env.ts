@@ -23,6 +23,17 @@ export type Env = {
   AVATARS?: R2Bucket;
 
   /**
+   * Workers AI — translating comments, and nothing else.
+   *
+   * OPTIONAL, like every other capability here: absent means the Translate row
+   * never appears rather than a route that 500s. It is also why translation is
+   * allowed at all — the comment is already on this server, so running the
+   * model here sends it nowhere new, which would not be true of Google
+   * Translate or DeepL.
+   */
+  AI?: Ai;
+
+  /**
    * Shared secret for the `/v1/admin/*` routes — moderation and the comment
    * image queue. `wrangler secret put ADMIN_SECRET`. Absent means the admin
    * surface is OFF (every admin route 404s), so a deployment without it

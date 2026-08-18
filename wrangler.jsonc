@@ -43,6 +43,10 @@
     }
   ],
 
+  // Translating comments, and nothing else. See routes/translate.ts for why
+  // this runs here rather than at a translation vendor.
+  "ai": { "binding": "AI" },
+
   // Caches provider JWKS so token verification does not fetch on every request.
   "kv_namespaces": [
     { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" }
