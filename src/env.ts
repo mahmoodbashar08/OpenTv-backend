@@ -23,6 +23,16 @@ export type Env = {
   AVATARS?: R2Bucket;
 
   /**
+   * The development Plus switch — see `routes/dev.ts`.
+   *
+   * UNSET IN PRODUCTION, and that is the whole guard: without it the route
+   * 404s, so a deployment that never sets it does not have the feature. Set it
+   * only where the tier is being tested before it can be bought:
+   *   wrangler secret put DEV_PLUS_SECRET
+   */
+  DEV_PLUS_SECRET?: string;
+
+  /**
    * Workers AI — translating comments, and nothing else.
    *
    * OPTIONAL, like every other capability here: absent means the Translate row
