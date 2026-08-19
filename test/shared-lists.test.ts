@@ -96,13 +96,35 @@ describe('joining', () => {
 });
 
 describe('reading a list', () => {
-  it('tells a non-member nothing, not even that it exists', async () => {
+  it('lets a non-member read it, because it is on its members\' profiles', async () => {
+    /*
+     * This asserted a 404 while an invite code was the only way to learn a list
+     * existed. Now the list is printed on every member's public profile, so
+     * refusing to open it would only mean the profile advertises doors that do
+     * not open. Read is open; joining, adding and ticking still are not.
+     */
     const { env, owner, stranger } = await world();
     const { id } = await makeList(env, owner);
     const res = await call(env, 'GET', `/v1/shared-lists/${id}`, { token: stranger });
-    // 404 and not 403: "you may not see this" confirms it is there.
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(res.json.is_member).toBe(false);
+    // the key to PARTICIPATING is still the owner's alone
+    expect(res.json.invite_code).toBe(null);
+    // and how far each member has got stays between the members
+    expect(res.json.members.every((m: { watched: number }) => m.watched === 0)).toBe(true);
   });
+
+  it('still refuses a non-member every way IN', async () => {
+    // Read opened; write did not. This is the half that keeps the code meaning
+    // something now that it no longer guards knowing the list exists.
+    const { env, owner, stranger } = await world();
+    const { id } = await makeList(env, owner);
+    const add = await call(env, 'POST', `/v1/shared-lists/${id}/items`, {
+      token: stranger,
+      body: { source: 'tvdb', key: '1', title: 'X', poster: null },
+    });
+    expect(add.status).toBe(404);
+  });;
 
   it('gives the invite code to the owner and to nobody else', async () => {
     const { env, owner, friend } = await world();

@@ -186,11 +186,42 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
   const me = c.get('profileId');
   const id = c.req.param('id');
   const role = await roleOf(c.env.DB, id, me);
-  // A NON-MEMBER GETS 404, not 403: "you may not see this list" confirms the
-  // list exists, and an invite code is the only thing that should reveal that.
-  if (!role) return fail(c, 404, 'not_found', 'No such list.');
 
-  const list = await c.env.DB.prepare('SELECT id, name, invite_code, created_at FROM shared_lists WHERE id = ?')
+  /**
+   * A NON-MEMBER MAY NOW READ, BUT NOT TOUCH — because the list is on its
+   * members' public profiles, and a shelf whose every tap dead-ends is worse
+   * than no shelf.
+   *
+   * The 404 that used to stand here was right when an invite code was the only
+   * way to learn a list existed: refusing by name confirms the name. That is no
+   * longer true of a list already printed on a profile a stranger is reading,
+   * and keeping the refusal would only mean the profile advertises doors that
+   * do not open.
+   *
+   * So the code changes job rather than losing it. It was READ ACCESS AND WRITE
+   * ACCESS AT ONCE; it is now the key to PARTICIPATING — joining, adding,
+   * ticking off. Every mutating route below still demands membership, and this
+   * one still refuses to hand a non-member the invite code (see `invite_code`),
+   * so nobody reads their way into a list or passes the key on.
+   *
+   * What a non-member does NOT get is the per-member progress: who has watched
+   * how much is between the people in the list. A visitor sees what the list is
+   * and who is in it, which is what the profile already told them.
+   */
+  const member = role != null;
+
+  /*
+   * `deleted_at IS NULL` is load-bearing NOW in a way it was not before.
+   *
+   * The membership gate above used to answer for this: deleting a list takes
+   * its members with it, so a deleted list had no members and every reader was
+   * refused. Opening the route to non-members removed that side effect, and a
+   * deleted list became readable by anyone holding its id -- caught by the test
+   * that deletes a list and expects everybody to lose it.
+   */
+  const list = await c.env.DB.prepare(
+    'SELECT id, name, invite_code, created_at FROM shared_lists WHERE id = ? AND deleted_at IS NULL',
+  )
     .bind(id)
     .first<{ id: string; name: string; invite_code: string; created_at: string }>();
   if (!list) return fail(c, 404, 'not_found', 'No such list.');
@@ -243,6 +274,7 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
     // THE CODE IS THE OWNER'S ALONE. It lets a stranger in, so a member who
     // was invited cannot hand that power on without the owner knowing.
     invite_code: role === 'owner' ? list.invite_code : null,
+    is_member: member,
     created_at: list.created_at,
     members: (members.results ?? []).map((m) => ({
       id: m.id,
@@ -252,7 +284,8 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
       is_plus: plusOn(m, nowIso),
       role: m.role,
       is_me: m.id === me,
-      watched: m.watched,
+      // Between the members. A visitor sees who is here, not how far each has got.
+      watched: member ? m.watched : 0,
     })),
     items: (items.results ?? []).map((i) => ({
       id: i.id,

@@ -90,7 +90,10 @@ async function readProfile(env: Env, handle: string, viewer: string): Promise<Pr
             (SELECT COUNT(*) FROM comments c
               WHERE c.author_id = p.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL
                 AND c.parent_id IS NULL) AS comments,
-            (SELECT COUNT(*) FROM lists l WHERE l.owner_id = p.id AND l.is_public = 1) AS lists,
+            (SELECT COUNT(*) FROM lists l WHERE l.owner_id = p.id AND l.is_public = 1)
+              + (SELECT COUNT(*) FROM shared_list_members m
+                   JOIN shared_lists sl ON sl.id = m.list_id
+                  WHERE m.member_id = p.id AND sl.deleted_at IS NULL) AS lists,
             EXISTS(SELECT 1 FROM follows f
                     WHERE f.follower_id = ? AND f.followee_id = p.id AND f.state = 'accepted') AS followed_by_me,
             EXISTS(SELECT 1 FROM follows f
@@ -327,6 +330,8 @@ type ListRow = {
   is_public: number;
   created_at: string;
   item_count: number;
+  shared?: number;
+  member_count?: number | null;
 };
 
 function shapeList(row: ListRow) {
@@ -337,6 +342,16 @@ function shapeList(row: ListRow) {
     is_public: row.is_public === 1,
     item_count: row.item_count,
     created_at: row.created_at,
+    /**
+     * A shared list is flagged rather than disguised as an ordinary one.
+     *
+     * The two are not the same object and must not look it: this one has other
+     * people in it, its id belongs to `shared_lists`, and opening it goes
+     * through a different route. The app needs to know which before it can
+     * route a tap correctly, so the distinction travels with the row.
+     */
+    shared: row.shared === 1,
+    member_count: row.shared === 1 ? row.member_count : null,
   };
 }
 
@@ -364,7 +379,8 @@ profiles.get('/profiles/:handle/lists', async (c) => {
   // existed — they all default to 0.
   const res = await c.env.DB.prepare(
     `SELECT l.id, l.name, l.description, l.is_public, l.created_at,
-            (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count
+            (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count,
+            0 AS shared, NULL AS member_count
      FROM lists l
      WHERE l.owner_id = ? AND l.is_public = 1
      ORDER BY l.position ASC, l.created_at DESC, l.id DESC`,
@@ -372,7 +388,41 @@ profiles.get('/profiles/:handle/lists', async (c) => {
     .bind(row.id)
     .all<ListRow>();
 
-  return c.json({ items: (res.results ?? []).map(shapeList) });
+  /**
+   * THE SHARED LISTS THIS PERSON IS IN — on every member's profile, not the
+   * owner's alone.
+   *
+   * A shared list has no single author. Three people fill it and one of them
+   * happened to press the button first; putting it on that one profile would
+   * credit one person for everybody's work and leave the other two with
+   * nothing to show for a list they built. So membership is what puts it on a
+   * profile, and it appears on all of theirs at once.
+   *
+   * `is_public` has no equivalent here and is not wanted: an ordinary list is
+   * one person's, so it needs a switch saying whether the world may see it. A
+   * shared list is already an agreement between several people to share, and a
+   * per-member switch would mean the same list is public on one profile and
+   * hidden on another — one member could quietly reveal what another was
+   * hiding. The `hidden_sections` lists flag still removes the whole shelf for
+   * anybody who wants none of it.
+   *
+   * Ordered after the ordinary lists and by joining time: they have no
+   * `position`, because there is no single owner to arrange them.
+   */
+  const shared = await c.env.DB.prepare(
+    `SELECT sl.id, sl.name, NULL AS description, 1 AS is_public, sl.created_at,
+            (SELECT COUNT(*) FROM shared_list_items i WHERE i.list_id = sl.id) AS item_count,
+            1 AS shared,
+            (SELECT COUNT(*) FROM shared_list_members m2 WHERE m2.list_id = sl.id) AS member_count
+     FROM shared_list_members m
+     JOIN shared_lists sl ON sl.id = m.list_id
+     WHERE m.member_id = ? AND sl.deleted_at IS NULL
+     ORDER BY m.joined_at DESC, sl.id DESC`,
+  )
+    .bind(row.id)
+    .all<ListRow>();
+
+  return c.json({ items: [...(res.results ?? []), ...(shared.results ?? [])].map(shapeList) });
 });
 
 // ── GET /v1/profiles/:handle/comments ───────────────────────────────────────
