@@ -40,6 +40,7 @@ const MIGRATION_FILES = [
   '../migrations/0023_comment_translations.sql',
   '../migrations/0024_links.sql',
   '../migrations/0025_shared_lists.sql',
+  '../migrations/0026_last_seen.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

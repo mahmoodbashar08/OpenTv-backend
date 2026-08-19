@@ -162,6 +162,12 @@ async function load() {
 
   cards($('people'), [
     ['Accounts', t.accounts],
+    // ACTIVE MEMBERS, never "active users". Only members reach this server, so
+    // this is the whole of what can honestly be counted — and the people it
+    // leaves out are the ones the app promises never to contact.
+    ['Opened today', t.active_today],
+    ['Last 7 days', t.active_7d],
+    ['Last 30 days', t.active_30d],
     ['With Apple', t.via_apple],
     ['With Google', t.via_google],
     ['With email', t.via_email],

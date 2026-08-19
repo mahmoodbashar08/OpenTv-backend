@@ -136,6 +136,22 @@ admin.get('/admin/stats', async (c) => {
     `SELECT
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL)                      AS accounts,
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NOT NULL)                  AS deleted,
+       -- ACTIVE MEMBERS, and the name is the honest one.
+       --
+       -- last_seen_at is stamped by GET /v1/me, which the app calls on every
+       -- launch, so this counts members who OPENED THE APP rather than members
+       -- who exist. It cannot count anybody else: a phone that declined the
+       -- community never contacts this server, and measuring those people would
+       -- mean breaking the promise that keeps them away from it.
+       --
+       -- Three windows because one number cannot tell "quiet today" from
+       -- "gone" — a lone DAU figure drops every weekend and reads as decline.
+       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+          AND last_seen_at >= ?)                                                     AS active_today,
+       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+          AND last_seen_at >= ?)                                                     AS active_7d,
+       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+          AND last_seen_at >= ?)                                                     AS active_30d,
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
           AND handle LIKE 'user!_p!_%' ESCAPE '!')                                   AS placeholder_handles,
        (SELECT COUNT(*) FROM identities WHERE provider = 'email')                    AS via_email,
@@ -159,7 +175,15 @@ admin.get('/admin/stats', async (c) => {
        -- The queue that has a clock on it: a report unanswered for 24 hours is
        -- the one number here worth being woken up about.
        (SELECT COUNT(*) FROM reports WHERE resolved_at IS NULL)                      AS open_reports`,
-  ).first<Record<string, number>>();
+  )
+    // Midnight UTC, seven days, thirty days — bound rather than interpolated,
+    // in the order the three windows appear above.
+    .bind(
+      `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
+      new Date(Date.now() - 7 * 864e5).toISOString(),
+      new Date(Date.now() - 30 * 864e5).toISOString(),
+    )
+    .first<Record<string, number>>();
 
   // Joins per day for the last fortnight — enough to see whether an
   // announcement did anything, and small enough to draw as bars.
