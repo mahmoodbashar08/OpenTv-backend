@@ -208,3 +208,84 @@ describe('POST /v1/comments/image', () => {
     expect(res.json.error.code).toBe('unavailable');
   });
 });
+
+describe('POST /v1/comments/:id/image — a picture on a comment written now', () => {
+  /** Write a comment through the normal route and hand back its server id. */
+  async function postComment(as = token): Promise<string> {
+    const res = await call(env, 'POST', '/v1/comments', {
+      token: as,
+      body: { target_source: 'tvdb', target_key: '121361', season: 1, episode: 4, body: 'Look at this.' },
+    });
+    expect(res.status).toBe(201);
+    return res.json.id as string;
+  }
+
+  function picture(file: File = imageFile()): FormData {
+    const fd = new FormData();
+    fd.set('image', file);
+    fd.set('width', '800');
+    fd.set('height', '600');
+    return fd;
+  }
+
+  const makePlus = (id: string) => raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run(id);
+
+  it('refuses a picture from somebody who is not Plus, and stores nothing', async () => {
+    const id = await postComment();
+    const res = await callForm(env, `/v1/comments/${id}/image`, picture(), token);
+    expect(res.status).toBe(403);
+    expect(res.json.error.code).toBe('plus_required');
+    expect(storedRow()).toBeUndefined();
+  });
+
+  it('stores a Plus subscriber\'s picture, PENDING and therefore not yet served', async () => {
+    makePlus('p1');
+    const id = await postComment();
+    const res = await callForm(env, `/v1/comments/${id}/image`, picture(), token);
+    expect(res.status).toBe(200);
+
+    const row = storedRow();
+    expect(row?.comment_id).toBe(id);
+    expect(row?.scan_status).toBe('pending'); // nothing is visible until a person says so
+    expect(row?.width).toBe(800);
+    expect(bucket.stored.has(row!.r2_key)).toBe(true);
+  });
+
+  it('takes a GIF and remembers that is what it is', async () => {
+    makePlus('p1');
+    const id = await postComment();
+    await callForm(env, `/v1/comments/${id}/image`, picture(imageFile('image/gif', 64, 'a.gif')), token);
+    expect(storedRow()?.is_gif).toBe(1);
+  });
+
+  it('will not let anyone put a picture on somebody else\'s comment', async () => {
+    makePlus('p1');
+    makePlus('p2');
+    const mine = await postComment();
+    const other = await tokenFor(env, 'p2');
+    const res = await callForm(env, `/v1/comments/${mine}/image`, picture(), other);
+    // 404, not 403: an upload attempt must not confirm that a comment exists.
+    expect(res.status).toBe(404);
+    expect(storedRow()).toBeUndefined();
+  });
+
+  it('replacing a picture sends it back for review', async () => {
+    makePlus('p1');
+    const id = await postComment();
+    await callForm(env, `/v1/comments/${id}/image`, picture(), token);
+    raw.prepare("UPDATE comment_images SET scan_status = 'clean' WHERE comment_id = ?").run(id);
+
+    await callForm(env, `/v1/comments/${id}/image`, picture(imageFile('image/png', 32, 'b.png')), token);
+    // An approved stamp on bytes nobody approved is the one thing this must
+    // never do.
+    expect(storedRow()?.scan_status).toBe('pending');
+  });
+
+  it('refuses anything that is not an image', async () => {
+    makePlus('p1');
+    const id = await postComment();
+    const res = await callForm(env, `/v1/comments/${id}/image`, picture(imageFile('application/pdf', 16, 'x.pdf')), token);
+    expect(res.status).toBe(415);
+    expect(storedRow()).toBeUndefined();
+  });
+});

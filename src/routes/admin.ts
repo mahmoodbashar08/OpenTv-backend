@@ -278,6 +278,13 @@ admin.get('/admin/images', async (c) => {
   const res = await c.env.DB.prepare(
     `SELECT ci.comment_id, ci.is_gif, ci.scan_status, ci.created_at,
             p.handle,
+            -- WHO SENT IT, because the two kinds of picture in this queue
+            -- arrive by different doors and deserve different attention. A
+            -- rescued TV Time photograph was taken years ago by somebody who
+            -- has since imported their own archive; a Plus subscriber's upload
+            -- is new, was chosen deliberately, and is the one a stranger will
+            -- see on a public thread. Same review, different weight.
+            (p.is_plus = 1 OR (p.plus_until IS NOT NULL AND p.plus_until > ?)) AS by_plus,
             cm.target_source, cm.target_key, cm.season, cm.episode,
             -- The caption, because a picture is judged with the sentence it was
             -- attached to. Trimmed: this is a queue, not a reading list.
@@ -289,7 +296,7 @@ admin.get('/admin/images', async (c) => {
       ORDER BY ci.created_at DESC
       LIMIT 200`,
   )
-    .bind(status)
+    .bind(new Date().toISOString(), status)
     .all<Record<string, unknown>>();
 
   return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });

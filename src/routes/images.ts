@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { imageExtension, MAX_COMMENT_IMAGE_BYTES, numberOrNull, stableImportId, validateCommentBody } from '@/pure';
+import { imageExtension, MAX_COMMENT_IMAGE_BYTES, numberOrNull, plusOn, stableImportId, validateCommentBody } from '@/pure';
 
 /**
  * Rescuing the photographs people attached to their TV Time comments.
@@ -197,4 +197,101 @@ images.get('/comments/:id/image', async (c) => {
       'X-Content-Type-Options': 'nosniff',
     },
   });
+});
+
+// ── POST /v1/comments/:id/image ─────────────────────────────────────────────
+
+/**
+ * A picture on a comment somebody is writing NOW, rather than one rescued from
+ * their TV Time export.
+ *
+ * WHY IT IS A SECOND ROUTE AND NOT A FLAG ON THE FIRST. The import route above
+ * derives the comment id by HASHING the comment's own fields, because a seeded
+ * comment has no id until the server computes one the same way twice. A comment
+ * written in the app already has an id -- the server made it -- so hashing is
+ * not merely unnecessary here, it is wrong: two people writing the same
+ * sentence about the same episode in the same second would collide. This route
+ * takes the id it was given and checks who owns it.
+ *
+ * PLUS ONLY, and the check is here rather than in the app. The app hides the
+ * button, which is a courtesy; this is the rule. A subscription that lapses
+ * stops new pictures at the next upload without touching the ones already sent
+ * -- taking somebody's pictures down because they stopped paying would be
+ * charging rent on things they already published.
+ *
+ * PENDING, LIKE EVERY OTHER IMAGE. `comments.ts` only serves a picture whose
+ * `scan_status` is 'clean', and nothing sets that automatically. So a Plus
+ * subscriber posts and the picture is invisible -- to them and to everyone --
+ * until it is approved in the dashboard. That is deliberate for as long as the
+ * only scanner is a person: an app carrying user-generated pictures cannot show
+ * them the instant they arrive and still be honest about what it has checked.
+ * The author is TOLD this by the app, rather than left staring at a comment
+ * that seems to have lost its picture.
+ */
+images.post('/comments/:id/image', requireAuth, async (c) => {
+  const bucket = c.env.COMMENT_IMAGES;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Image storage is not configured.');
+
+  const id = c.req.param('id');
+  const me = c.get('profileId');
+  const db = c.env.DB;
+
+  const owner = await db
+    .prepare(
+      `SELECT c.id, p.is_plus, p.plus_until
+         FROM comments c JOIN profiles p ON p.id = c.author_id
+        WHERE c.id = ? AND c.author_id = ? AND c.deleted_at IS NULL`,
+    )
+    .bind(id, me)
+    .first<{ id: string; is_plus: number | null; plus_until: string | null }>();
+  // 404 rather than 403 on somebody else's comment: whether it exists is not a
+  // question a stranger's upload attempt should be able to answer.
+  if (!owner) return fail(c, 404, 'not_found', 'No comment of yours has that id.');
+
+  const nowIso = new Date().toISOString();
+  if (!plusOn(owner, nowIso)) {
+    return fail(c, 403, 'plus_required', 'Pictures on comments are part of OpenTV Plus.');
+  }
+
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be multipart/form-data.');
+  }
+
+  const file = form.get('image');
+  if (!(file instanceof File)) return fail(c, 400, 'invalid_body', 'An image file is required.');
+  if (!ALLOWED.has(file.type)) return fail(c, 415, 'unsupported_type', `Type ${file.type || 'unknown'} is not an image.`);
+  if (file.size <= 0) return fail(c, 400, 'invalid_body', 'The image is empty.');
+  if (file.size > MAX_COMMENT_IMAGE_BYTES) {
+    return fail(c, 413, 'too_large', `An image is at most ${Math.floor(MAX_COMMENT_IMAGE_BYTES / 1_000_000)} MB.`);
+  }
+
+  // ONE PICTURE PER COMMENT, and replacing it starts the review again. The row
+  // is keyed by comment_id, so this is the schema's rule as much as a decision:
+  // a second upload overwrites, and an overwritten picture that kept its
+  // 'clean' stamp would be an approved image nobody approved.
+  const key = `comments/${id}.${imageExtension(file.type)}`;
+  await bucket.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+
+  await db
+    .prepare(
+      `INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT (comment_id) DO UPDATE SET
+            r2_key = excluded.r2_key, width = excluded.width, height = excluded.height,
+            is_gif = excluded.is_gif, scan_status = 'pending', scanned_at = NULL`,
+    )
+    .bind(
+      id,
+      key,
+      numberOrNull(form.get('width') === null ? null : Number(form.get('width'))) ?? null,
+      numberOrNull(form.get('height') === null ? null : Number(form.get('height'))) ?? null,
+      file.type === 'image/gif' ? 1 : 0,
+      nowIso,
+    )
+    .run();
+
+  return c.json({ ok: true, comment_id: id, scan_status: 'pending' });
 });
