@@ -192,7 +192,21 @@ comments.post('/comments', requireAuth, async (c) => {
   }
   const b = (body ?? {}) as Record<string, unknown>;
 
-  const text = validateCommentBody(b.body);
+  /*
+   * A PICTURE WITH NO CAPTION IS A COMMENT.
+   *
+   * TV Time allowed it and the archive is full of them, which is why
+   * `/v1/comments/import` has always accepted an empty body when a photograph
+   * follows. This route did not, so the app could not do the one thing the
+   * import proves people actually did.
+   *
+   * `has_image` is a PROMISE, and the app keeps it: the picture is uploaded
+   * against the id this returns, and a failed upload takes the comment back
+   * down (see `useCommentAttachment`). A promise broken by a crash between the
+   * two leaves one empty comment, which the author can delete -- the trade for
+   * not making somebody caption a photograph they wanted to post on its own.
+   */
+  const text = validateCommentBody(b.body, { allowEmpty: b.has_image === true });
   if (!text.ok) {
     return text.reason === 'too_long'
       ? fail(c, 400, 'too_large', 'A comment is at most 2,000 characters.')

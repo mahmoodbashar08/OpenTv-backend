@@ -119,3 +119,21 @@ describe('a picture waiting to be approved', () => {
     expect(anon.json.items[0].image_pending).toBe(false);
   });
 });
+
+describe('a picture with no caption', () => {
+  it('is accepted when a picture is promised, and refused otherwise', async () => {
+    // TV Time allowed it and the archive is full of them; /v1/comments/import
+    // has always accepted it. This route is what the app posts through.
+    const bare = { target_source: 'tvdb', target_key: '121361', season: 1, episode: 5, body: '' };
+
+    const refused = await call(env, 'POST', '/v1/comments', { token: owner, body: bare });
+    expect(refused.status).toBe(400);
+
+    const allowed = await call(env, 'POST', '/v1/comments', {
+      token: owner,
+      body: { ...bare, has_image: true },
+    });
+    expect(allowed.status).toBe(201);
+    expect(allowed.json.body).toBe('');
+  });
+});
