@@ -69,17 +69,49 @@ sharedLists.get('/shared-lists', requireAuth, async (c) => {
     `SELECT l.id, l.name, m.role,
             (SELECT COUNT(*) FROM shared_list_members x WHERE x.list_id = l.id) AS members,
             (SELECT COUNT(*) FROM shared_list_items i WHERE i.list_id = l.id) AS items,
-            (SELECT MAX(i.created_at) FROM shared_list_items i WHERE i.list_id = l.id) AS last_activity
+            (SELECT MAX(i.created_at) FROM shared_list_items i WHERE i.list_id = l.id) AS last_activity,
+            /*
+             * ENOUGH ARTWORK TO DRAW THE CARD, and no more.
+             *
+             * Every shelf that shows a list draws a collage of its first few
+             * posters; a shared list sent only a COUNT, so it drew a black
+             * rectangle with a name on it -- reported as "I added films and the
+             * cover shows nothing, for anybody".
+             *
+             * Four, because that is what the widest collage draws, joined into
+             * one string rather than fetched per list: a poster round trip per
+             * row would be a request per list on every visit to the Lists
+             * screen, for artwork that is already three columns wide.
+             */
+            (SELECT GROUP_CONCAT(p, char(10)) FROM (
+               SELECT i.poster AS p FROM shared_list_items i
+                WHERE i.list_id = l.id AND i.poster IS NOT NULL AND i.poster <> ''
+                ORDER BY i.created_at DESC LIMIT 4
+             )) AS posters
        FROM shared_list_members m
        JOIN shared_lists l ON l.id = m.list_id
       WHERE m.member_id = ? AND l.deleted_at IS NULL
       ORDER BY COALESCE(last_activity, l.created_at) DESC`,
   )
     .bind(me)
-    .all<{ id: string; name: string; role: string; members: number; items: number; last_activity: string | null }>();
+    .all<{
+      id: string;
+      name: string;
+      role: string;
+      members: number;
+      items: number;
+      last_activity: string | null;
+      posters: string | null;
+    }>();
 
   return c.json({
-    lists: (rows.results ?? []).map((r) => ({ ...r, is_owner: r.role === 'owner' })),
+    lists: (rows.results ?? []).map((r) => ({
+      ...r,
+      is_owner: r.role === 'owner',
+      // Split here rather than on the phone: GROUP_CONCAT is a transport
+      // detail, and an array is what every caller wants.
+      posters: (r.posters ?? '').split('\n').filter(Boolean),
+    })),
   });
 });
 

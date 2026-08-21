@@ -274,3 +274,38 @@ describe('renaming, rotating and leaving', () => {
     expect((await call(env, 'GET', `/v1/shared-lists/${id}`, { token: friend })).status).toBe(404);
   });
 });
+
+describe('the artwork a shelf needs', () => {
+  it('sends posters with the summary, newest first, at most four', async () => {
+    /*
+     * The summary carried only a COUNT, so every shelf drew a shared list as a
+     * black rectangle with a name on it -- "I added films and the cover shows
+     * nothing, for anybody".
+     */
+    const { env, owner } = await world();
+    const { id } = await makeList(env, owner);
+    for (let n = 1; n <= 6; n++) {
+      await call(env, 'POST', `/v1/shared-lists/${id}/items`, {
+        token: owner,
+        body: { target_source: 'tvdb', target_key: String(n), title: `Show ${n}`, poster: `https://img/${n}.jpg` },
+      });
+    }
+    const mine = await call(env, 'GET', '/v1/shared-lists', { token: owner });
+    const row = mine.json.lists[0];
+    expect(row.items).toBe(6);
+    expect(row.posters).toHaveLength(4);
+    // every entry is a real url, never an empty string from a split
+    expect(row.posters.every((p: string) => p.startsWith('https://img/'))).toBe(true);
+  });
+
+  it('a list with no artwork sends an empty array, not a blank string', async () => {
+    const { env, owner } = await world();
+    const { id } = await makeList(env, owner);
+    await call(env, 'POST', `/v1/shared-lists/${id}/items`, {
+      token: owner,
+      body: { target_source: 'tvdb', target_key: '1', title: 'No art', poster: null },
+    });
+    const mine = await call(env, 'GET', '/v1/shared-lists', { token: owner });
+    expect(mine.json.lists[0].posters).toEqual([]);
+  });
+});
