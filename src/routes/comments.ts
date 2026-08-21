@@ -15,6 +15,7 @@ import {
   plusOn,
   replyDepthOk,
   shouldNotify,
+  stableImportId,
   validateCommentBody,
 } from '@/pure';
 import { verify } from '@/session';
@@ -542,4 +543,73 @@ comments.delete('/comments/:id/like', requireAuth, async (c) => {
     .first<{ like_count: number }>();
   if (!row) return fail(c, 404, 'not_found', 'No such comment.');
   return c.json({ liked: false, like_count: row.like_count });
+});
+
+// ── POST /v1/comments/import/delete ─────────────────────────────────────────
+
+/**
+ * Delete a comment the phone knows only as an ARCHIVE ROW.
+ *
+ * WHY THIS ROUTE HAS TO EXIST. Deleting an imported comment used to write a
+ * tombstone in local storage and nothing else: the row vanished from that phone
+ * and stayed on the public profile and in the thread, for everyone. The button
+ * said "Delete comment" and meant "hide on this device", which is the wrong
+ * promise to break -- somebody removing something they wrote nine years ago is
+ * usually removing it from OTHER PEOPLE.
+ *
+ * It could not simply call `DELETE /v1/comments/:id`, because the local row has
+ * no server id. Seeded comments are addressed by a HASH of what they are
+ * (author, target, season, episode, date, body), computed here -- and the
+ * codebase deliberately refuses to reimplement that hash on the phone, for the
+ * reason `images.ts` gives: a second copy is one refactor away from silently
+ * addressing the wrong rows.
+ *
+ * So this takes the same fields the seeder already sends and derives the same
+ * id from them, exactly as the image upload does. The phone sends what it
+ * knows; the server works out which comment that is.
+ *
+ * NOT FOUND IS A SUCCESS. A comment that was never seeded, or already deleted,
+ * leaves nothing to do -- and an error there would put a failure in front of
+ * somebody whose comment is, as far as they can tell, gone. `deleted` says
+ * which happened, for a caller that cares.
+ */
+comments.post('/comments/import/delete', requireAuth, async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const targetSource = String(b.target_source ?? '');
+  const targetKey = String(b.target_key ?? '').trim();
+  const createdAt = String(b.created_at ?? '');
+  if (!['tvdb', 'tmdb', 'title'].includes(targetSource) || !targetKey || !createdAt) {
+    return fail(c, 400, 'invalid_body', 'target_source, target_key and created_at are required.');
+  }
+
+  const me = c.get('profileId');
+  const id = await stableImportId({
+    authorId: me,
+    targetSource,
+    targetKey,
+    season: typeof b.season === 'number' ? b.season : null,
+    episode: typeof b.episode === 'number' ? b.episode : null,
+    createdAt,
+    body: String(b.body ?? ''),
+  });
+
+  /*
+   * `author_id = ?` is not belt-and-braces. The id is derived FROM the caller's
+   * own id, so it can only ever name one of their comments -- but the row is
+   * checked anyway, because that reasoning is a property of a hash somewhere
+   * else and this is the line that would have to be right if it ever changed.
+   */
+  const res = await c.env.DB.prepare(
+    'UPDATE comments SET deleted_at = ? WHERE id = ? AND author_id = ? AND deleted_at IS NULL',
+  )
+    .bind(new Date().toISOString(), id, me)
+    .run();
+
+  return c.json({ ok: true, deleted: (res.meta?.changes ?? 0) > 0, comment_id: id });
 });
