@@ -69,10 +69,11 @@ export type CommentRow = {
   image_h?: number | null;
   image_gif?: number | null;
   image_ok?: number | null;
+  image_scan?: string | null;
 };
 
 /** One shaper for POST and GET, so the row the author sees is the row the thread shows. */
-export function shapeComment(row: CommentRow) {
+export function shapeComment(row: CommentRow, viewerId = '') {
   return {
     id: row.id,
     author: {
@@ -115,6 +116,21 @@ export function shapeComment(row: CommentRow) {
     image: row.image_ok
       ? { width: row.image_w ?? null, height: row.image_h ?? null, is_gif: !!row.image_gif }
       : null,
+    /**
+     * "YOUR PICTURE IS BEING LOOKED AT" — and only its own author is told.
+     *
+     * Nothing is served until a person approves it, which is right and is not
+     * changing. But saying nothing to the AUTHOR means they post a photograph
+     * and see a comment without one: indistinguishable from the upload having
+     * failed, which is what they had just been fighting. So they get the fact
+     * that it exists and is waiting, and the app draws it blurred.
+     *
+     * Everybody else gets `false`. A stranger is never told a picture is
+     * pending, because "there is something here you cannot see yet" is the same
+     * invitation as "you may not see this". `viewerId` defaults to '' so a
+     * caller that forgets it reveals nothing rather than revealing everything.
+     */
+    image_pending: row.image_scan === 'pending' && !!viewerId && row.author_id === viewerId,
   };
 }
 
@@ -124,7 +140,12 @@ const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.sea
        c.created_at, c.edited_at,
        p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
        ci.width AS image_w, ci.height AS image_h, ci.is_gif AS image_gif,
-       (ci.scan_status = 'clean') AS image_ok`;
+       (ci.scan_status = 'clean') AS image_ok,
+       -- The RAW status, because who may be told about a pending picture
+       -- depends on who is asking, and this file assembles its binds in
+       -- placeholder order: a question-mark here would silently shift every
+       -- one of them. shapeComment compares it against the viewer instead.
+       ci.scan_status AS image_scan`;
 
 /**
  * The image join, on every read of a comment.
@@ -316,7 +337,7 @@ comments.post('/comments', requireAuth, async (c) => {
     .bind(id)
     .first<CommentRow>();
 
-  return c.json(shapeComment(row!), 201);
+  return c.json(shapeComment(row!, me), 201);
 });
 
 // ── GET /v1/comments — open, block-aware when a bearer is present ────────────
@@ -409,7 +430,10 @@ comments.get('/comments', async (c) => {
   const last = page[page.length - 1];
   const nextCursor = rows.length > limit && last ? makeCursor(last.created_at, last.id) : null;
 
-  return c.json({ items: page.map(shapeComment), next_cursor: nextCursor });
+  // Explicit rather than point-free: `.map(shapeComment)` passes the INDEX
+  // as the viewer, which typechecks as nothing and reveals nothing, but only
+  // by accident.
+  return c.json({ items: page.map((r) => shapeComment(r, me)), next_cursor: nextCursor });
 });
 
 // ── GET /v1/comments/:id — one comment, open, block-aware ───────────────────
@@ -442,7 +466,7 @@ comments.get('/comments/:id', async (c) => {
     .first<CommentRow>();
 
   if (!row) return fail(c, 404, 'not_found', 'No such comment.');
-  return c.json(shapeComment(row));
+  return c.json(shapeComment(row, me));
 });
 
 // ── DELETE /v1/comments/:id ──────────────────────────────────────────────────

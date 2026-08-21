@@ -84,3 +84,38 @@ describe('POST /v1/comments/import/delete', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('a picture waiting to be approved', () => {
+  it('is reported to its AUTHOR and to nobody else', async () => {
+    /*
+     * Nothing is served until a person approves it, and that is not changing.
+     * But telling the author nothing means they post a photograph and see a
+     * comment without one -- indistinguishable from the upload failing, which
+     * is exactly what they had just been fighting.
+     */
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p_owner'").run();
+    const posted = await call(env, 'POST', '/v1/comments', {
+      token: owner,
+      body: { target_source: 'tvdb', target_key: '121361', season: 1, episode: 9, body: 'Look at this.' },
+    });
+    const id = posted.json.id as string;
+    raw
+      .prepare(
+        "INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, created_at) VALUES (?,?,?,?,0,'pending',?)",
+      )
+      .run(id, `comments/${id}.jpg`, 800, 600, new Date().toISOString());
+
+    const THREAD9 = '/v1/comments?source=tvdb&key=121361&season=1&episode=9';
+
+    const mine = await call(env, 'GET', THREAD9, { token: owner });
+    expect(mine.json.items[0].image_pending).toBe(true);
+    // still not SERVED — pending is a promise that it exists, not the picture
+    expect(mine.json.items[0].image).toBe(null);
+
+    const theirs = await call(env, 'GET', THREAD9, { token: friend });
+    expect(theirs.json.items[0].image_pending).toBe(false);
+
+    const anon = await call(env, 'GET', THREAD9);
+    expect(anon.json.items[0].image_pending).toBe(false);
+  });
+});

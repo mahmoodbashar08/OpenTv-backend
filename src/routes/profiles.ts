@@ -524,7 +524,7 @@ profiles.get('/profiles/:handle/comments', async (c) => {
   // limit + 1: the extra row is how `next_cursor` knows it is not the last page.
   const nextCursor = rows.length > limit && last ? makeCursor(last.created_at, last.id) : null;
 
-  return c.json({ items: page.map(shapeComment), next_cursor: nextCursor });
+  return c.json({ items: page.map((r) => shapeComment(r, viewer)), next_cursor: nextCursor });
 });
 
 // ── GET /v1/lists/:id ───────────────────────────────────────────────────────
