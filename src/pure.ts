@@ -1520,6 +1520,35 @@ export function isTranslateTarget(v: unknown): v is TranslateTarget {
  * Ratio rather than first-match: one Arabic name quoted inside an English
  * sentence must not make the sentence Arabic.
  */
+/**
+ * What language a comment is ACTUALLY in, from the two things we know about it.
+ *
+ * THE STORED `lang` IS NOT EVIDENCE ABOUT THE TEXT. It is `currentLocale()` on
+ * the phone that wrote the comment -- the writer's INTERFACE language. People
+ * type in their own language with the app in English constantly, and Arabic
+ * speakers do it more than anyone: a comment reading "Spider-Man: Brand New Day
+ * 🔥 فيلم ممتع جدًا" is stored `lang: 'en'` and was answered `same: true`,
+ * so the Translate button did nothing at all for the comments that needed it
+ * most.
+ *
+ * So each source is used where it is reliable:
+ *
+ *   - a NON-LATIN script is decisive. Arabic letters are Arabic, whatever the
+ *     writer's menus were in, and no stored value may override that.
+ *   - otherwise the detector cannot help -- it reads script, not language, and
+ *     answers 'en' for every latin one alike -- so the stored `lang` is the
+ *     only thing that separates French from Spanish, and it is used.
+ *
+ * The result is that a wrong `lang` can still mislabel French as Spanish, which
+ * costs a little quality, while it can no longer claim Arabic is English, which
+ * cost the feature entirely.
+ */
+export function sourceLangOf(storedLang: string | null | undefined, body: string): string {
+  const detected = detectSourceLang(body);
+  if (detected !== 'en') return detected;
+  return storedLang?.slice(0, 2) || 'en';
+}
+
 export function detectSourceLang(text: string): string {
   const letters = text.replace(/[\s\d\p{P}\p{S}]/gu, '');
   if (letters.length === 0) return 'en';

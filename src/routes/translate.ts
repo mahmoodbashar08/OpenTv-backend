@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { detectSourceLang, isTranslateTarget } from '@/pure';
+import { sourceLangOf, isTranslateTarget } from '@/pure';
 
 /**
  * Translating a comment, on demand, into the reader's own language.
@@ -80,12 +80,12 @@ translate.post('/comments/:id/translate', requireAuth, async (c) => {
   if (!row) return fail(c, 404, 'not_found', 'No such comment.');
 
   /*
-   * THE COMMENT'S OWN `lang` FIRST. The column has been there since 0001 and is
-   * what the writing app knew at the time — a far better answer than anything
-   * inferred afterwards. Detection is the fallback for the nine years of
-   * imported rows that predate anybody recording it.
+   * THE TEXT DECIDES WHEN IT CAN. See `sourceLangOf`: the stored `lang` is the
+   * writer's INTERFACE language, not the language they typed in, and trusting
+   * it made every Arabic comment written on an English phone answer `same` --
+   * the Translate button doing nothing for exactly the comments that needed it.
    */
-  const source = row.lang?.slice(0, 2) || detectSourceLang(row.body);
+  const source = sourceLangOf(row.lang, row.body);
   // ALREADY IN THAT LANGUAGE: answer without spending a call. The app hides the
   // row when it can tell, but it cannot always tell, and this is where the
   // question is actually answerable.

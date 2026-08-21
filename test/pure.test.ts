@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slug, targetKey, validCoverUrl } from '@/pure';
+import { slug, sourceLangOf, targetKey, validCoverUrl } from '@/pure';
 
 /**
  * The allow-list IS the moderation story for covers — it is the only thing
@@ -98,5 +98,33 @@ describe('slug', () => {
   it('is empty for a string with no letters or numbers', () => {
     expect(slug('')).toBe('');
     expect(slug('   ')).toBe('');
+  });
+});
+
+describe('sourceLangOf — what language a comment is actually in', () => {
+  it('a non-latin script beats the stored lang, which is the writer\'s MENUS', () => {
+    // The reported case, verbatim: Arabic typed on a phone whose interface is
+    // English. Stored 'en', answered `same: true`, Translate did nothing.
+    const body = 'Spider-Man: Brand New Day 🔥 فيلم ممتع جدًا 9/10. القتالات كانت رائعة';
+    expect(sourceLangOf('en', body)).toBe('ar');
+    expect(sourceLangOf('fr', body)).toBe('ar');
+    expect(sourceLangOf(null, body)).toBe('ar');
+  });
+
+  it('keeps the stored lang for latin languages, which the detector cannot tell apart', () => {
+    // Script detection reads Arabic from French; it cannot read French from
+    // Spanish. So the stored value is the only thing that separates them.
+    expect(sourceLangOf('fr', 'Un film vraiment excellent, 9/10.')).toBe('fr');
+    expect(sourceLangOf('es', 'Una película realmente excelente.')).toBe('es');
+    expect(sourceLangOf('pt-BR', 'Um filme muito bom.')).toBe('pt');
+  });
+
+  it('falls back to English when nothing is known', () => {
+    expect(sourceLangOf(null, 'Great film.')).toBe('en');
+    expect(sourceLangOf('', '')).toBe('en');
+  });
+
+  it('a latin title inside an Arabic sentence does not make it English', () => {
+    expect(sourceLangOf('en', 'The Hand و Hulk وكان الأفضل بالنسبة لي دائمًا')).toBe('ar');
   });
 });
