@@ -150,18 +150,36 @@ const noCache = {
 /**
  * An R2 bucket that keeps what it is given, in a Map.
  *
- * Only `put` is implemented because only `put` is called: nothing in the API
- * reads an image back out yet, by design (see `routes/images.ts`). `stored`
- * is exposed so a test can assert the bytes and the content type actually
- * reached storage rather than trusting the 200.
+ * `stored` is exposed so a test can assert the bytes and the content type
+ * actually reached storage rather than trusting the 200.
+ *
+ * `get` EXISTS NOW, and the note that used to sit here — "only `put` is
+ * implemented because only `put` is called" — was true when it was written and
+ * quietly stopped being true when `GET /v1/comments/:id/image` was added. The
+ * effect was not a failing test but an ABSENT one: the route that serves every
+ * picture in the app had no coverage at all, and the first test to reach for it
+ * got a 500 from a missing method rather than an answer about the route.
+ *
+ * The bytes are kept, not just their length, because a serving test that
+ * cannot compare what came back to what went in is only testing the status
+ * code.
  */
 export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; type?: string }> } {
   const stored = new Map<string, { size: number; type?: string }>();
+  const bytes = new Map<string, Uint8Array>();
   return {
     stored,
     async put(key: string, value: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }) {
       stored.set(key, { size: value.byteLength, type: opts?.httpMetadata?.contentType });
+      bytes.set(key, new Uint8Array(value));
       return {} as never;
+    },
+    async get(key: string) {
+      const body = bytes.get(key);
+      // A miss is `null`, exactly as R2 answers it — the route treats that as a
+      // 404, and a stub that threw instead would hide that branch.
+      if (!body) return null;
+      return { body, httpMetadata: { contentType: stored.get(key)?.type } } as never;
     },
   } as unknown as R2Bucket & { stored: Map<string, { size: number; type?: string }> };
 }

@@ -288,4 +288,68 @@ describe('POST /v1/comments/:id/image — a picture on a comment written now', (
     expect(res.status).toBe(415);
     expect(storedRow()).toBeUndefined();
   });
+
+  /**
+   * WHAT SOMEBODY KEEPS AFTER THEY STOP PAYING.
+   *
+   * They paid for the month in which they posted it, and the picture is theirs
+   * — so a lapsed subscription must take away the ABILITY TO POST, never the
+   * things already posted. A tier that quietly deletes what it sold is a tier
+   * nobody renews, and this is the same rule published lists already follow:
+   * anything published while subscribed stays published.
+   *
+   * The rule lives in the SHAPE of the two routes rather than in a flag, which
+   * is exactly why it needs pinning: the upload asks `plusOn`, and the route
+   * that serves bytes asks only whether a person approved them. Adding a Plus
+   * check to the GET would read like tidying up and would silently blank every
+   * picture posted by anybody whose card later expired.
+   */
+  describe('when the subscription ends', () => {
+    const lapse = (id: string) =>
+      raw.prepare('UPDATE profiles SET is_plus = 0, plus_until = NULL WHERE id = ?').run(id);
+
+    it('still serves a picture posted while they were Plus', async () => {
+      makePlus('p1');
+      const id = await postComment();
+      await callForm(env, `/v1/comments/${id}/image`, picture(), token);
+      // Approved, as it would be by a person on the review page.
+      raw.prepare("UPDATE comment_images SET scan_status = 'clean' WHERE comment_id = ?").run(id);
+
+      lapse('p1');
+
+      const res = await call(env, 'GET', `/v1/comments/${id}/image`);
+      expect(res.status).toBe(200);
+    });
+
+    it('and serves it to a stranger, not only to its author', async () => {
+      // The picture is part of a public thread. If it vanished for everyone
+      // else the comment would read as broken rather than as unsubscribed.
+      makePlus('p1');
+      const id = await postComment();
+      await callForm(env, `/v1/comments/${id}/image`, picture(), token);
+      raw.prepare("UPDATE comment_images SET scan_status = 'clean' WHERE comment_id = ?").run(id);
+      lapse('p1');
+
+      insertProfile(raw, 'p_reader', 'reader');
+      const reader = await tokenFor(env, 'p_reader');
+      const res = await call(env, 'GET', `/v1/comments/${id}/image`, { token: reader });
+      expect(res.status).toBe(200);
+    });
+
+    it('but refuses a NEW picture, which is the only thing that lapses', async () => {
+      makePlus('p1');
+      const kept = await postComment();
+      await callForm(env, `/v1/comments/${kept}/image`, picture(), token);
+
+      lapse('p1');
+
+      const fresh = await call(env, 'POST', '/v1/comments', {
+        token,
+        body: { ...COMMENT, episode: 9, body: 'Another thought.' },
+      });
+      const res = await callForm(env, `/v1/comments/${fresh.json.id}/image`, picture(), token);
+      expect(res.status).toBe(403);
+      expect(res.json.error.code).toBe('plus_required');
+    });
+  });
 });
