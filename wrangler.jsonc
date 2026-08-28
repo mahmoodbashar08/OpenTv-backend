@@ -20,6 +20,14 @@
    * The API keeps its own hostname. This route adds a public face to the same
    * Worker; it does not move anything.
    */
+  /*
+   * TRUE, AND NOT OPTIONAL. Declaring `routes` makes wrangler default
+   * `workers_dev` to FALSE, which silently switched off
+   * opentv-api.mahmoodbashar08.workers.dev -- the host every shipped app has
+   * baked into API_BASE_URL. The edge answered `error code: 1042` and the app
+   * could reach nothing. Adding a public page must not take the API offline.
+   */
+  "workers_dev": true,
   "routes": [{ "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" }],
 
   // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough
