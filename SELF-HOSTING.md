@@ -82,9 +82,10 @@ Push notifications are unaffected — they go through Expo, not Cloudflare.
 git pull && docker compose up -d --build
 ```
 
-Migrations run at every start and are safe to re-run, so that is the whole
-procedure. The schema comes from the same `migrations/*.sql` the hosted server
-applies; there is no separate self-hosted schema to drift.
+Each migration runs **once**, recorded in a `_migrations` table, so starting the
+container is the whole upgrade procedure. The schema comes from the same
+`migrations/*.sql` the hosted server applies; there is no separate self-hosted
+schema to drift.
 
 ## How this works, briefly
 

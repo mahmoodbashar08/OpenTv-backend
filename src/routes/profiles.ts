@@ -75,7 +75,7 @@ function parseLinks(raw: string | null): unknown {
  * The counts, `followed_by_me` and the block test all ride in the same
  * statement: a profile screen is one round trip or it is a spinner.
  */
-async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
+export async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
     `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.widgets, p.bio, p.is_private, p.links,
             p.plus_until, p.is_plus, p.hidden_sections, p.created_at,
@@ -109,7 +109,7 @@ async function readProfile(env: Env, handle: string, viewer: string): Promise<Pr
 }
 
 /** `lists` counts PUBLIC lists only — a private list must not be inferable from a number. */
-function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
+export function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string) {
   // THE COUNT GOES WITH THE SECTION. The two counts that stand over a hidden
   // section would otherwise announce exactly what the owner asked not to show —
   // "88 comments" above nothing is a worse gap than no number at all, and it is

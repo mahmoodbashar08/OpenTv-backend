@@ -15,6 +15,7 @@ import { follows } from '@/routes/follows';
 import { seeding } from '@/routes/import';
 import { notifications } from '@/routes/notifications';
 import { push } from '@/routes/push';
+import { web } from '@/routes/web';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
 import { rc } from '@/routes/rc';
@@ -152,6 +153,14 @@ v1.route('/', admin);
 app.get('/admin/dashboard', (c) =>
   c.html(ADMIN_PAGE, 200, { 'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'no-store' }),
 );
+
+/*
+ * THE PUBLIC WEB PAGE, mounted at the ROOT rather than under /v1 — a profile
+ * link is something a person types and shares, and `/v1/` in it would be an
+ * API detail leaking into somebody's signature. Read-only and anonymous; see
+ * `routes/web.ts`.
+ */
+app.route('/', web);
 
 app.route('/v1', v1);
 /**

@@ -64,17 +64,45 @@ const PORT = Number(process.env.PORT ?? 8787);
  * schema production does not have, and the first symptom is a 500 nobody can
  * reproduce.
  *
- * Applied in filename order, every start, each inside `IF NOT EXISTS`-shaped
- * SQL. Re-running is a no-op, which is what makes "start the container" the
- * entire upgrade procedure.
+ * EACH FILE RUNS ONCE, RECORDED IN A TABLE — and the first version of this did
+ * not, which is a bug the first RESTART finds rather than the first start.
+ * `CREATE TABLE IF NOT EXISTS` is re-runnable and `ALTER TABLE ADD COLUMN` is
+ * not, so the second boot died on `duplicate column name: hidden_at` and the
+ * container never came back up. Every self-hoster would have met that on their
+ * first restart, and again on every upgrade — the two moments the instructions
+ * describe as "just start it again".
+ *
+ * Wrangler tracks applied migrations the same way for the same reason. This is
+ * that, in eight lines.
  */
 function migrate(db: Database.Database): number {
+  db.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+  const done = new Set(
+    (db.prepare('SELECT name FROM _migrations').all() as { name: string }[]).map((r) => r.name),
+  );
   const dir = join(here, '..', 'migrations');
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
     .sort();
-  for (const f of files) db.exec(readFileSync(join(dir, f), 'utf8'));
-  return files.length;
+  const record = db.prepare('INSERT INTO _migrations (name, applied_at) VALUES (?, ?)');
+  let applied = 0;
+  for (const f of files) {
+    if (done.has(f)) continue;
+    // One transaction per file: a migration that fails half way leaves nothing
+    // behind and is retried whole on the next start, rather than leaving a
+    // schema that is neither the old one nor the new one.
+    db.exec('BEGIN');
+    try {
+      db.exec(readFileSync(join(dir, f), 'utf8'));
+      record.run(f, new Date().toISOString());
+      db.exec('COMMIT');
+      applied++;
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw new Error(`migration ${f} failed: ${(e as Error).message}`);
+    }
+  }
+  return applied;
 }
 
 function required(name: string): string {
@@ -112,7 +140,7 @@ const env: Env = {
 serve({ fetch: (req: Request) => worker.fetch(req, env, ctx()), port: PORT }, (info) => {
   console.log(`[opentv] listening on :${info.port}`);
   console.log(`[opentv] data in ${DATA} — back this directory up, it is everything`);
-  console.log(`[opentv] ${applied} migrations applied`);
+  console.log(`[opentv] ${applied} new migrations applied`);
   if (!process.env.GOOGLE_CLIENT_IDS) console.log('[opentv] no Google client ids — Google sign-in is off');
   console.log('[opentv] no Workers AI — comment translation is off');
 });
