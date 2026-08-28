@@ -85,6 +85,17 @@ ${image ? `<meta property="og:image" content="${esc(image)}">` : ''}
 <style>${CSS}</style></head><body>${body}</body></html>`;
 }
 
+/**
+ * WHERE THE API LIVES, ABSOLUTELY — and it cannot be a relative path.
+ *
+ * This page is served on two hostnames: the Worker's own, and `theopentv.com`
+ * via a route that deliberately matches ONLY `/@*` so the marketing site keeps
+ * every other path. A relative `/v1/avatars/…` therefore resolves against
+ * theopentv.com, which does not route it here, and every avatar on a shared
+ * link renders as a broken image. Found by looking at the live page.
+ */
+const API_ORIGIN = 'https://opentv-api.mahmoodbashar08.workers.dev';
+
 /** A number a person reads, not a number a database returns. */
 function nf(n: unknown): string {
   const v = Number(n ?? 0);
@@ -113,7 +124,18 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
 
   const p = shapeProfile(row, '', new Date().toISOString()) as Record<string, any>;
   const name: string = p.display_name || p.handle;
-  const avatar = p.avatar_key ? `/v1/avatars/${encodeURIComponent(p.avatar_key)}` : null;
+  /*
+   * `avatar_key` IS SOMETIMES ALREADY A URL. The column holds whatever the
+   * upload put there, and for anything uploaded through this server that is a
+   * full absolute address — so prefixing it produced
+   * `…/v1/avatars/https%3A%2F%2F…`, a 404 and a broken image on the live page.
+   * Prefix only a bare key.
+   */
+  const avatar = !p.avatar_key
+    ? null
+    : /^https?:\/\//.test(p.avatar_key)
+      ? p.avatar_key
+      : `${API_ORIGIN}/v1/avatars/${encodeURIComponent(p.avatar_key)}`;
 
   /*
    * A PRIVATE PROFILE GETS A NAME AND A FULL STOP. `shapeProfile` has already
@@ -138,11 +160,14 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
   }
 
   const c_ = p.counts ?? {};
+  /* The four `shapeProfile` actually carries. Shows and films are published
+     stats on another route, and asking for them here would be a second query
+     for a page that is meant to be one. */
   const stats = [
-    ['Shows', c_.shows],
-    ['Films', c_.movies],
     ['Comments', c_.comments],
+    ['Lists', c_.lists],
     ['Followers', c_.followers],
+    ['Following', c_.following],
   ]
     .filter(([, v]) => v != null)
     .map(([label, v]) => `<li class="stat"><b>${nf(v)}</b><span>${esc(label)}</span></li>`)
