@@ -78,7 +78,9 @@ h2{font-size:15px;letter-spacing:.04em;text-transform:uppercase;color:var(--fain
 .fav{position:absolute;top:6px;inset-inline-end:6px;font-size:13px;filter:drop-shadow(0 1px 2px #000)}
 .more{color:var(--faint);font-size:13px;margin:10px 0 0}
 .lists{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:0;list-style:none;margin:0}
-.listcard{background:var(--card);border-radius:12px;padding:14px}
+.listcard{display:block;background:var(--card);border-radius:12px;padding:14px;color:var(--text);text-decoration:none}
+.listcard:hover{background:#2a2a2d}
+.back{display:inline-block;color:var(--dim);text-decoration:none;margin:20px 0 0}
 .listcard b{display:block;font-size:15px}
 .listcard span{color:var(--faint);font-size:13px}
 `;
@@ -261,18 +263,21 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
    * minus the columns a page cannot draw.
    */
   const listRows = hides('lists' as never)
-    ? { results: [] as { name: string; item_count: number }[] }
+    ? { results: [] as { id: string; name: string; item_count: number }[] }
     : await c.env.DB.prepare(
-        `SELECT l.name, (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count
+        `SELECT l.id, l.name, (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count
            FROM lists l
           WHERE l.owner_id = ? AND l.is_public = 1
           ORDER BY l.position ASC, l.created_at DESC, l.id DESC
           LIMIT 12`,
       )
         .bind(row.id)
-        .all<{ name: string; item_count: number }>();
+        .all<{ id: string; name: string; item_count: number }>();
   const listsHtml = (listRows.results ?? [])
-    .map((l) => `<li class="listcard"><b>${esc(l.name)}</b><span>${nf(l.item_count)} titles</span></li>`)
+    .map(
+      (l) =>
+        `<li><a class="listcard" href="/list/${esc(l.id)}"><b>${esc(l.name)}</b><span>${nf(l.item_count)} titles</span></a></li>`,
+    )
     .join('');
 
   const c_ = p.counts ?? {};
@@ -324,6 +329,65 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
          <p class="foot">Your watch history stays on your phone.<br><a href="https://theopentv.com/privacy">Privacy</a></p>
        </div>`,
       p.theme_color,
+    ),
+  );
+});
+
+
+/**
+ * A LIST, AS A PAGE — the other half of a shareable profile. A list is the one
+ * thing on a profile somebody makes deliberately and wants to send: "here is
+ * what to watch". Until now the card said how many titles were in it and there
+ * was nowhere to go.
+ *
+ * PUBLIC ONLY, and the check is the same pair the API applies: a list belonging
+ * to a deleted account is gone, and a private list is a 404 rather than a 403 —
+ * refusing by name would confirm it exists.
+ */
+web.get('/list/:id', async (c) => {
+  const id = c.req.param('id') ?? '';
+  const row = await c.env.DB.prepare(
+    `SELECT l.id, l.name, l.description, l.is_public, p.handle, p.display_name
+       FROM lists l JOIN profiles p ON p.id = l.owner_id
+      WHERE l.id = ? AND p.deleted_at IS NULL AND p.is_private = 0`,
+  )
+    .bind(id)
+    .first<{ id: string; name: string; description: string | null; is_public: number; handle: string; display_name: string | null }>();
+
+  if (!row || row.is_public !== 1) {
+    return c.html(
+      page('Not found — OpenTV', 'No such list.', null, `<div class="wrap"><p class="bio" style="margin-top:64px">No such list.</p><a class="get" href="https://theopentv.com">Get OpenTV</a></div>`),
+      404,
+    );
+  }
+
+  const items = await c.env.DB.prepare(
+    'SELECT title, poster FROM list_items WHERE list_id = ? ORDER BY position LIMIT 60',
+  )
+    .bind(id)
+    .all<{ title: string | null; poster: string | null }>();
+
+  const owner = row.display_name || row.handle;
+  const art = (items.results ?? [])
+    .map((i) =>
+      i.poster
+        ? `<li><img src="${esc(i.poster)}" alt="${esc(i.title ?? '')}" loading="lazy"></li>`
+        : `<li><div class="noart">${esc(i.title ?? '')}</div></li>`,
+    )
+    .join('');
+
+  return c.html(
+    page(
+      `${row.name} — a list by ${owner} on OpenTV`,
+      row.description || `${(items.results ?? []).length} titles, chosen by ${owner}.`,
+      (items.results ?? []).find((i) => i.poster)?.poster ?? null,
+      `<div class="wrap">
+         <a class="back" href="/@${esc(row.handle)}">← ${esc(owner)}</a>
+         <h1 class="name" style="margin-top:12px">${esc(row.name)}</h1>
+         ${row.description ? `<p class="bio">${esc(row.description)}</p>` : ''}
+         ${art ? `<ul class="shelf" style="margin-top:24px">${art}</ul>` : '<p class="bio">This list is empty.</p>'}
+         <a class="get" href="https://theopentv.com">Get OpenTV</a>
+       </div>`,
     ),
   );
 });

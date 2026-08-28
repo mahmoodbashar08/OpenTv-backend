@@ -28,7 +28,13 @@
    * could reach nothing. Adding a public page must not take the API offline.
    */
   "workers_dev": true,
-  "routes": [{ "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" }],
+  // Two shapes, both narrow. A list card on a profile links to /list/<id>, and
+  // that path was going to the marketing site -- which answers 200 for anything,
+  // so the link looked like it worked and served the wrong page.
+  "routes": [
+    { "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" },
+    { "pattern": "theopentv.com/list/*", "zone_name": "theopentv.com" }
+  ],
 
   // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough
   // for a user base concentrated in Europe and the Middle East.
