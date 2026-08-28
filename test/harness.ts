@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import type { Env } from '@/env';
 import worker from '@/index';
-import { D1_MAX_BOUND_PARAMS } from '@/pure';
+import { d1 } from '@/adapters/d1-sqlite';
+
+export { d1 };
 import { sign } from '@/session';
 
 /**
@@ -46,81 +48,6 @@ const MIGRATION_FILES = [
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
   readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8'),
 );
-
-/**
- * The smallest honest D1 shim: `prepare().bind().run()/all()/first()` with
- * `meta.changes`. Synchronous underneath, async on the outside, exactly as D1
- * presents itself.
- *
- * `batch()` executes in order and does not roll back — the ordering is the half
- * the import endpoints actually depend on (the rollup statement's
- * `WHERE NOT EXISTS` guard must run before that item's insert), and atomicity
- * is D1's to provide.
- *
- * It also returns `results` for a SELECT, which D1 does and an earlier version
- * of this shim did not: it called `run()` on every statement and threw the rows
- * away. A batch of SELECTs would have come back as a row of empty envelopes,
- * and the first route to read a list through `batch()` would have been tested
- * against a lie.
- */
-export function d1(db: Database.Database): D1Database {
-  const prepare = (sql: string, binds: unknown[] = []): D1PreparedStatement => {
-    // THE LIMIT SQLITE DOES NOT HAVE AND D1 DOES.
-    //
-    // better-sqlite3 will happily bind a thousand parameters, so a shim without
-    // this line reports green for a statement production answers with a 500.
-    // That is exactly how the aggregate list form shipped: its tests only ever
-    // asked for one or two targets, and would have passed at a hundred.
-    if (binds.length > D1_MAX_BOUND_PARAMS) {
-      throw new Error(
-        `D1 binds at most ${D1_MAX_BOUND_PARAMS} parameters per query; this one has ${binds.length}.`,
-      );
-    }
-    const stmt = () => db.prepare(sql);
-    const api = {
-      bind: (...values: unknown[]) => prepare(sql, values),
-      async run() {
-        const info = stmt().run(...(binds as never[]));
-        return { success: true, meta: { changes: info.changes } };
-      },
-      async all() {
-        return { success: true, results: stmt().all(...(binds as never[])), meta: {} };
-      },
-      async first(col?: string) {
-        const row = stmt().get(...(binds as never[])) as Record<string, unknown> | undefined;
-        if (!row) return null;
-        return col === undefined ? row : (row[col] ?? null);
-      },
-      async raw() {
-        return [];
-      },
-      /**
-       * What one member of a `batch()` returns: rows when it reads, `changes`
-       * when it writes. better-sqlite3 refuses `all()` on a non-reader and
-       * `run()` discards rows, so the two are told apart by `stmt.reader`.
-       */
-      async batchRun() {
-        const st = stmt();
-        if (st.reader) {
-          return { success: true, results: st.all(...(binds as never[])), meta: { changes: 0 } };
-        }
-        const info = st.run(...(binds as never[]));
-        return { success: true, results: [], meta: { changes: info.changes } };
-      },
-    };
-    return api as unknown as D1PreparedStatement;
-  };
-
-  const api = {
-    prepare: (sql: string) => prepare(sql),
-    async batch(stmts: D1PreparedStatement[]) {
-      const out: unknown[] = [];
-      for (const s of stmts) out.push(await (s as unknown as { batchRun(): Promise<unknown> }).batchRun());
-      return out;
-    },
-  };
-  return api as unknown as D1Database;
-}
 
 export function freshDatabase(): { raw: Database.Database; db: D1Database } {
   const raw = new Database(':memory:');

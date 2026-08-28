@@ -1,0 +1,44 @@
+# A whole OpenTV server.
+#
+# ONE SERVICE. No database container, no cache container, no object store, no
+# reverse proxy. That is not a simplification for the example's sake — it is the
+# actual deployment: D1 is SQLite, so the data is a file; the only bytes are
+# pictures, so they are a directory.
+#
+# Put `data/` somewhere your backups already reach and the operational story is
+# finished.
+services:
+  opentv:
+    build: .
+    # Or, once images are published:
+    # image: ghcr.io/mahmoodbashar08/opentv-backend:latest
+    restart: unless-stopped
+    ports:
+      - '8787:8787'
+    volumes:
+      - ./data:/data
+    environment:
+      # REQUIRED. Sessions are signed with it, so it must be long, random and
+      # yours: anybody holding it can mint a token for any account on this
+      # instance. `openssl rand -base64 48`
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+
+      # Sign-in. Leave either blank and that button simply does not appear in
+      # the app — the same behaviour as a Worker without the binding, not a
+      # broken screen.
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
+      APPLE_BUNDLE_ID: ${APPLE_BUNDLE_ID:-com.insightfy.opentv}
+
+      # The moderation dashboard, where comment pictures are approved. Unset and
+      # the dashboard cannot be signed into — pictures then stay pending, which
+      # means stored and never served. That is a safe default, not a broken one.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+
+    healthcheck:
+      # The route the app itself uses to decide the server is reachable.
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/v1/links').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
