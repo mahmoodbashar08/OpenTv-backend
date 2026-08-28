@@ -29,6 +29,7 @@
 import { Hono } from 'hono';
 
 import type { Env } from '@/env';
+import { sectionHidden } from '@/pure';
 import { readProfile, shapeProfile } from '@/routes/profiles';
 
 export const web = new Hono<{ Bindings: Env }>();
@@ -69,9 +70,24 @@ body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system
 .get{display:block;margin:36px 0 0;padding:14px;border-radius:999px;background:var(--yellow);color:#000;font-weight:800;text-align:center;text-decoration:none}
 .foot{color:var(--faint);font-size:13px;margin-top:28px;text-align:center}
 .foot a{color:var(--faint)}
+h2{font-size:15px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin:36px 0 12px}
+.shelf{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:10px;padding:0;list-style:none;margin:0}
+.shelf li{position:relative}
+.shelf img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:10px;background:var(--card);display:block}
+.shelf .noart{width:100%;aspect-ratio:2/3;border-radius:10px;background:var(--card);display:flex;align-items:center;justify-content:center;padding:8px;font-size:11px;color:var(--dim);text-align:center}
+.fav{position:absolute;top:6px;inset-inline-end:6px;font-size:13px;filter:drop-shadow(0 1px 2px #000)}
+.more{color:var(--faint);font-size:13px;margin:10px 0 0}
 `;
 
-function page(title: string, description: string, image: string | null, body: string): string {
+/**
+ * The owner's theme colour, if they have one — `shapeProfile` has ALREADY
+ * nulled it for anybody who is not Plus, and that gate is deliberate: older
+ * app builds will render whatever the server sends, for ever, so a lapsed
+ * subscription has to stop being paid-for at the source. This page inherits
+ * that for free by reading the shaped answer rather than the row.
+ */
+function page(title: string, description: string, image: string | null, body: string, accent?: string | null): string {
+  const safeAccent = typeof accent === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(accent) ? accent : null;
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
@@ -82,7 +98,7 @@ function page(title: string, description: string, image: string | null, body: st
 <meta property="og:description" content="${esc(description)}">
 ${image ? `<meta property="og:image" content="${esc(image)}">` : ''}
 <meta name="twitter:card" content="${image ? 'summary_large_image' : 'summary'}">
-<style>${CSS}</style></head><body>${body}</body></html>`;
+<style>${CSS}${safeAccent ? `:root{--yellow:${safeAccent}}` : ''}</style></head><body>${body}</body></html>`;
 }
 
 /**
@@ -159,15 +175,68 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
     );
   }
 
+  /*
+   * THE SHELVES AND THE REAL NUMBERS, read the way `/profiles/:handle/published`
+   * reads them. Visibility was already decided above — a private or blocked
+   * profile never reaches here — so what is left is the owner's own per-section
+   * switches, and those are honoured with the SAME `sectionHidden` the API
+   * uses. A page that showed a shelf its owner had hidden would be the app's
+   * privacy settings quietly not applying on the web.
+   *
+   * `owns` is false by construction: this page has no viewer.
+   */
+  const hides = (key: 'stats' | 'shows' | 'movies' | 'favourite_shows' | 'favourite_movies') =>
+    sectionHidden(row.hidden_sections, key);
+
+  const ps = hides('stats')
+    ? null
+    : await c.env.DB.prepare(
+        'SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count FROM profile_stats WHERE profile_id = ?',
+      )
+        .bind(row.id)
+        .first<{ episodes_watched: number; minutes_watched: number; movie_minutes: number; shows_count: number; movies_count: number }>();
+
+  const titles = await c.env.DB.prepare(
+    `SELECT kind, name, poster, favourite
+       FROM profile_titles
+      WHERE profile_id = ?
+      ORDER BY kind, rank IS NULL, rank, name`,
+  )
+    .bind(row.id)
+    .all<{ kind: string; name: string | null; poster: string | null; favourite: number }>();
+
+  /** A shelf, capped — a page is a glance, not the whole library. */
+  const SHELF_MAX = 18;
+  const shelfOf = (kind: 'show' | 'movie') => {
+    if (hides(kind === 'show' ? 'shows' : 'movies')) return { html: '', total: 0 };
+    const rows = (titles.results ?? []).filter((r) => r.kind === kind);
+    const starOk = !hides(kind === 'show' ? 'favourite_shows' : 'favourite_movies');
+    const html = rows
+      .slice(0, SHELF_MAX)
+      .map((r) => {
+        const art = r.poster
+          ? `<img src="${esc(r.poster)}" alt="${esc(r.name ?? '')}" loading="lazy">`
+          : `<div class="noart">${esc(r.name ?? '')}</div>`;
+        return `<li>${art}${starOk && r.favourite === 1 ? '<span class="fav">★</span>' : ''}</li>`;
+      })
+      .join('');
+    return { html, total: rows.length };
+  };
+  const shows = shelfOf('show');
+  const films = shelfOf('movie');
+
   const c_ = p.counts ?? {};
   /* The four `shapeProfile` actually carries. Shows and films are published
      stats on another route, and asking for them here would be a second query
      for a page that is meant to be one. */
+  const days = ps ? Math.round(((ps.minutes_watched ?? 0) + (ps.movie_minutes ?? 0)) / 1440) : null;
   const stats = [
+    ['Episodes', ps?.episodes_watched],
+    ['Days watched', days],
+    ['Shows', ps?.shows_count],
+    ['Films', ps?.movies_count],
     ['Comments', c_.comments],
-    ['Lists', c_.lists],
     ['Followers', c_.followers],
-    ['Following', c_.following],
   ]
     .filter(([, v]) => v != null)
     .map(([label, v]) => `<li class="stat"><b>${nf(v)}</b><span>${esc(label)}</span></li>`)
@@ -197,9 +266,12 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
          ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
          ${stats ? `<ul class="stats">${stats}</ul>` : ''}
          ${links ? `<ul class="links">${links}</ul>` : ''}
+         ${shows.total ? `<h2>Shows</h2><ul class="shelf">${shows.html}</ul>${shows.total > SHELF_MAX ? `<p class="more">and ${nf(shows.total - SHELF_MAX)} more</p>` : ''}` : ''}
+         ${films.total ? `<h2>Films</h2><ul class="shelf">${films.html}</ul>${films.total > SHELF_MAX ? `<p class="more">and ${nf(films.total - SHELF_MAX)} more</p>` : ''}` : ''}
          <a class="get" href="https://theopentv.com">Get OpenTV</a>
          <p class="foot">Your watch history stays on your phone.<br><a href="https://theopentv.com/privacy">Privacy</a></p>
        </div>`,
+      p.theme_color,
     ),
   );
 });
