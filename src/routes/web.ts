@@ -77,6 +77,10 @@ h2{font-size:15px;letter-spacing:.04em;text-transform:uppercase;color:var(--fain
 .shelf .noart{width:100%;aspect-ratio:2/3;border-radius:10px;background:var(--card);display:flex;align-items:center;justify-content:center;padding:8px;font-size:11px;color:var(--dim);text-align:center}
 .fav{position:absolute;top:6px;inset-inline-end:6px;font-size:13px;filter:drop-shadow(0 1px 2px #000)}
 .more{color:var(--faint);font-size:13px;margin:10px 0 0}
+.lists{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:0;list-style:none;margin:0}
+.listcard{background:var(--card);border-radius:12px;padding:14px}
+.listcard b{display:block;font-size:15px}
+.listcard span{color:var(--faint);font-size:13px}
 `;
 
 /**
@@ -197,13 +201,13 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
         .first<{ episodes_watched: number; minutes_watched: number; movie_minutes: number; shows_count: number; movies_count: number }>();
 
   const titles = await c.env.DB.prepare(
-    `SELECT kind, name, poster, favourite
+    `SELECT kind, name, poster, favourite, fav_rank
        FROM profile_titles
       WHERE profile_id = ?
       ORDER BY kind, rank IS NULL, rank, name`,
   )
     .bind(row.id)
-    .all<{ kind: string; name: string | null; poster: string | null; favourite: number }>();
+    .all<{ kind: string; name: string | null; poster: string | null; favourite: number; fav_rank: number | null }>();
 
   /** A shelf, capped — a page is a glance, not the whole library. */
   const SHELF_MAX = 18;
@@ -224,6 +228,52 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
   };
   const shows = shelfOf('show');
   const films = shelfOf('movie');
+
+  /*
+   * FAVOURITES FIRST, and on their OWN order. `fav_rank` is the owner's drag
+   * order for the favourites rail, which is not the main shelf's order — the
+   * same distinction `/published` documents. A profile leads with what somebody
+   * chose to put first; leading with an alphabetical watch list buries it.
+   *
+   * Hidden separately from the shelves, because hiding "these are my
+   * favourites" is a different claim from hiding what you watched.
+   */
+  const favs = (titles.results ?? [])
+    .filter(
+      (r) =>
+        r.favourite === 1 &&
+        !hides(r.kind === 'show' ? 'favourite_shows' : 'favourite_movies') &&
+        !hides(r.kind === 'show' ? 'shows' : 'movies'),
+    )
+    .sort((a, b) => (a.fav_rank ?? 9999) - (b.fav_rank ?? 9999))
+    .slice(0, 12);
+  const favsHtml = favs
+    .map((r) =>
+      r.poster
+        ? `<li><img src="${esc(r.poster)}" alt="${esc(r.name ?? '')}" loading="lazy"></li>`
+        : `<li><div class="noart">${esc(r.name ?? '')}</div></li>`,
+    )
+    .join('');
+
+  /*
+   * LISTS — public ones only, in the owner's own arrangement, and silent when
+   * the `lists` section is switched off. Same query the API's lists route runs,
+   * minus the columns a page cannot draw.
+   */
+  const listRows = hides('lists' as never)
+    ? { results: [] as { name: string; item_count: number }[] }
+    : await c.env.DB.prepare(
+        `SELECT l.name, (SELECT COUNT(*) FROM list_items i WHERE i.list_id = l.id) AS item_count
+           FROM lists l
+          WHERE l.owner_id = ? AND l.is_public = 1
+          ORDER BY l.position ASC, l.created_at DESC, l.id DESC
+          LIMIT 12`,
+      )
+        .bind(row.id)
+        .all<{ name: string; item_count: number }>();
+  const listsHtml = (listRows.results ?? [])
+    .map((l) => `<li class="listcard"><b>${esc(l.name)}</b><span>${nf(l.item_count)} titles</span></li>`)
+    .join('');
 
   const c_ = p.counts ?? {};
   /* The four `shapeProfile` actually carries. Shows and films are published
@@ -266,6 +316,8 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
          ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
          ${stats ? `<ul class="stats">${stats}</ul>` : ''}
          ${links ? `<ul class="links">${links}</ul>` : ''}
+         ${favsHtml ? `<h2>Favourites</h2><ul class="shelf">${favsHtml}</ul>` : ''}
+         ${listsHtml ? `<h2>Lists</h2><ul class="lists">${listsHtml}</ul>` : ''}
          ${shows.total ? `<h2>Shows</h2><ul class="shelf">${shows.html}</ul>${shows.total > SHELF_MAX ? `<p class="more">and ${nf(shows.total - SHELF_MAX)} more</p>` : ''}` : ''}
          ${films.total ? `<h2>Films</h2><ul class="shelf">${films.html}</ul>${films.total > SHELF_MAX ? `<p class="more">and ${nf(films.total - SHELF_MAX)} more</p>` : ''}` : ''}
          <a class="get" href="https://theopentv.com">Get OpenTV</a>
