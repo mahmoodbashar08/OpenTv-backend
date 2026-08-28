@@ -9,6 +9,19 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  /*
+   * `theopentv.com/@handle` — the public profile page, and ONLY that shape.
+   *
+   * A narrow pattern on purpose. The marketing site answers every path on this
+   * domain, including ones that do not exist, so a broad route would quietly
+   * take the whole site over and nobody would notice until a page went missing.
+   * `/@*` can only ever match a profile link.
+   *
+   * The API keeps its own hostname. This route adds a public face to the same
+   * Worker; it does not move anything.
+   */
+  "routes": [{ "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" }],
+
   // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough
   // for a user base concentrated in Europe and the Middle East.
   "triggers": { "crons": ["0 4 * * *"] },
