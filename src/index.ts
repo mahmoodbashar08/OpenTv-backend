@@ -25,6 +25,7 @@ import { reconcile } from '@/routes/reconcile';
 import { reports } from '@/routes/reports';
 import { dev } from '@/routes/dev';
 import { sharedLists } from '@/routes/shared-lists';
+import { movieNames } from '@/routes/movie-names';
 import { links } from '@/routes/links';
 import { translate } from '@/routes/translate';
 
@@ -128,6 +129,7 @@ v1.route('/', published);
 v1.route('/', comments);
 v1.route('/', translate);
 v1.route('/', links);
+v1.route('/', movieNames);
 v1.route('/', dev);
 v1.route('/', sharedLists);
 v1.route('/', reports);
