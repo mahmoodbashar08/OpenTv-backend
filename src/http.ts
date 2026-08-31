@@ -19,6 +19,10 @@ export type ErrorCode =
   | 'not_found'
   | 'invalid_body'
   | 'handle_taken'
+  /** The claim volunteered a TV Time id that already sits on another profile.
+   *  See the note in `POST /v1/me/handle` for what that does and does not
+   *  prove. */
+  | 'tvtime_id_claimed'
   | 'handle_invalid'
   | 'rate_limited'
   | 'target_invalid'

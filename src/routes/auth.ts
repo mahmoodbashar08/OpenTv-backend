@@ -552,6 +552,20 @@ auth.post('/me/handle', async (c) => {
   if ('check_only' in b && typeof b.check_only !== 'boolean') {
     return fail(c, 400, 'invalid_body', 'check_only must be a boolean.');
   }
+  /*
+   * `tvtime_user_id` — OPTIONAL, and it is what an IMPORTED claim asserts.
+   *
+   * A handle claimed straight from somebody's GDPR export carries the numeric
+   * id that export was issued to. Sending it is what lets the rule below apply;
+   * a handle typed by hand carries nothing and is unaffected.
+   */
+  let claimedId: number | null = null;
+  if (b.tvtime_user_id !== undefined && b.tvtime_user_id !== null) {
+    if (typeof b.tvtime_user_id !== 'number' || !Number.isInteger(b.tvtime_user_id) || b.tvtime_user_id <= 0) {
+      return fail(c, 400, 'invalid_body', 'tvtime_user_id must be a positive integer.');
+    }
+    claimedId = b.tvtime_user_id;
+  }
 
   const check = isHandleValid(b.handle);
   if (!check.ok) {
@@ -562,6 +576,41 @@ auth.post('/me/handle', async (c) => {
   // from what everyone sees would be a homograph vector by another name.
   const display = lower;
   const me = c.get('profileId');
+
+  /*
+   * ONE TV TIME ACCOUNT, ONE PROFILE.
+   *
+   * WHAT THIS ACTUALLY DEFENDS AGAINST, stated plainly because it is easy to
+   * oversell: claiming a handle has always been first come, first served, and
+   * nothing checked that the person claiming `@amanda` was the Amanda who wrote
+   * nine years of comments under it. This does not fix that — an id proves you
+   * hold an export, not that you are the person in it, and somebody who imports
+   * a friend's export passes this as easily as its owner.
+   *
+   * WHAT IT DOES FIX is the cheap version of the attack: one export used over
+   * and over to take name after name. A TV Time account belongs to one person,
+   * so its id may sit on one profile. A squatter now needs a distinct real
+   * export per name, which is the difference between a script and a project.
+   *
+   * GRANDFATHERED CLAIMS ARE UNTOUCHED. Every handle taken before this shipped
+   * has a NULL id and stays exactly as valid as it was; this can only refuse a
+   * claim that volunteers an id already spoken for.
+   */
+  if (claimedId != null) {
+    const held = await c.env.DB.prepare(
+      'SELECT id FROM profiles WHERE tvtime_user_id = ? AND id <> ? AND deleted_at IS NULL',
+    )
+      .bind(claimedId, me)
+      .first<{ id: string }>();
+    if (held) {
+      return fail(
+        c,
+        409,
+        'tvtime_id_claimed',
+        'That TV Time account is already linked to another profile.',
+      );
+    }
+  }
 
   if (b.check_only === true) {
     const taken = await c.env.DB.prepare(
@@ -583,6 +632,20 @@ auth.post('/me/handle', async (c) => {
       .run();
     // Zero rows changed → someone else holds it (or the row is gone).
     if (res.meta.changes === 0) return fail(c, 409, 'handle_taken', 'That handle is in use.');
+    /*
+     * WRITE-ONCE, and only after the handle is actually won. `IS NULL` is the
+     * whole guard: the id is a statement about which TV Time account this
+     * profile is, and a profile does not become a different person later.
+     * `reconcile.ts` writes the same column the same way, so whichever arrives
+     * first wins and the second is a no-op rather than an overwrite.
+     */
+    if (claimedId != null) {
+      await c.env.DB.prepare(
+        'UPDATE profiles SET tvtime_user_id = ? WHERE id = ? AND tvtime_user_id IS NULL AND deleted_at IS NULL',
+      )
+        .bind(claimedId, me)
+        .run();
+    }
   } catch {
     // The check above is racy by construction; the UNIQUE index on
     // handle_lower is the real guarantee, so its error means the same thing.
