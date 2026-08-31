@@ -31,9 +31,24 @@
   // Two shapes, both narrow. A list card on a profile links to /list/<id>, and
   // that path was going to the marketing site -- which answers 200 for anything,
   // so the link looked like it worked and served the wrong page.
+  /*
+   * dashboard.theopentv.com — the admin page on a name that can be typed.
+   *
+   * A WHOLE SUBDOMAIN, unlike the two patterns above, and safe to take because
+   * nothing else serves it: the marketing site is the apex, so a route here
+   * cannot swallow a page somebody else owns. `/*` rather than
+   * `/admin/dashboard` so the sign-in POSTs to /v1/admin/... land on the same
+   * origin as the page — the session is an HttpOnly cookie, and a cross-origin
+   * form would need CORS opened to carry it.
+   *
+   * It needs a DNS record to exist for the subdomain (an orange-clouded A or
+   * CNAME to anything — Cloudflare answers it before the origin is reached).
+   * A route without a record resolves nowhere.
+   */
   "routes": [
     { "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" },
-    { "pattern": "theopentv.com/list/*", "zone_name": "theopentv.com" }
+    { "pattern": "theopentv.com/list/*", "zone_name": "theopentv.com" },
+    { "pattern": "dashboard.theopentv.com/*", "zone_name": "theopentv.com" }
   ],
 
   // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough

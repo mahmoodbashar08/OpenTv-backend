@@ -65,6 +65,16 @@ export const ADMIN_PAGE = `<!doctype html>
   .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:999px;
          background:#26262b; color:#a7a7ae; }
   .tag.warn { background:#3a3213; color:#ffd400; }
+  /* PAID and GIVEN look different on purpose. One is revenue and one is a
+     favour, and a single green tick would hide which is which. */
+  .tag.paid { background:#13341c; color:#78be3d; }
+  .tag.gift { background:#1b2540; color:#7ea6ff; }
+  .tag.gone { background:#2a1416; color:#e5484d; }
+  .plusbox { display:flex; gap:5px; align-items:center; }
+  .plusbox select, .plusbox button { font:inherit; font-size:12px; padding:2px 6px;
+      border-radius:6px; border:1px solid #34343a; background:#1c1c1f; color:#e9e9ee; }
+  .plusbox button { cursor:pointer; }
+  .plusbox button:disabled { opacity:.5; cursor:default; }
   .scroll { overflow-x:auto; }
   .note { color:#6b6b72; font-size:12px; margin:0 0 10px; }
   .shots { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
@@ -147,6 +157,91 @@ function baghdad(iso) {
   });
 }
 
+/**
+ * WHAT KIND OF PLUS, and until when.
+ *
+ * is_plus is a subscription the webhook wrote. plus_until in the future is
+ * something given by hand. They are shown differently because they mean
+ * different things: one is revenue and might churn, the other is a favour and
+ * expires on a date nobody is charged on.
+ *
+ * A PAST plus_until is shown too, greyed. "Had a month, it ran out" is the
+ * thing you want to see before deciding whether to give another.
+ */
+function plusCell(u) {
+  const until = u.plus_until ? new Date(u.plus_until) : null;
+  const live = until && !isNaN(until) && until.getTime() > Date.now();
+  if (u.is_plus) {
+    return '<span class="tag paid">paying</span>' +
+      (u.plus_since ? '<div class="name">since ' + baghdad(u.plus_since) + '</div>' : '');
+  }
+  if (live) {
+    const days = Math.ceil((until.getTime() - Date.now()) / 86400000);
+    return '<span class="tag gift">given</span>' +
+      '<div class="name">ends ' + baghdad(u.plus_until) + ' (' + days + 'd)</div>';
+  }
+  if (until && !isNaN(until)) {
+    return '<span class="tag gone">expired</span><div class="name">' + baghdad(u.plus_until) + '</div>';
+  }
+  return '<span class="tag">no</span>';
+}
+
+/** Never "3 hours ago" with no date under it: a relative age answers "are they
+ *  still here", the date answers "when exactly", and both get asked. */
+function seenCell(iso) {
+  if (!iso) return '<span class="name">never</span>';
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return '<span class="name">' + baghdad(iso) + '</span>';
+  const mins = Math.round((Date.now() - t) / 60000);
+  const ago = mins < 60 ? mins + 'm ago'
+    : mins < 1440 ? Math.round(mins / 60) + 'h ago'
+    : Math.round(mins / 1440) + 'd ago';
+  return ago + '<div class="name">' + baghdad(iso) + '</div>';
+}
+
+/** Months, then Give. 0 is in the list because removing a grant is the same
+ *  action as setting one — the whole feature is a single date. */
+function grantCell(handle) {
+  const opts = [1, 2, 3, 4, 5, 6, 12, 0].map((m) =>
+    '<option value="' + m + '">' + (m === 0 ? 'remove' : m === 12 ? '1 year' : m + ' month' + (m > 1 ? 's' : '')) + '</option>',
+  ).join('');
+  return '<div class="plusbox"><select data-h="' + handle + '">' + opts + '</select>' +
+    '<button data-give="' + handle + '">Give</button></div>';
+}
+
+/**
+ * Wired once on the table rather than per button: the rows are rebuilt on every
+ * refresh, and a listener per row would be re-attached each time or lost.
+ */
+function wirePlus() {
+  $('users').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-give]');
+    if (!btn) return;
+    const handle = btn.getAttribute('data-give');
+    const sel = $('users').querySelector('select[data-h="' + CSS.escape(handle) + '"]');
+    const months = Number(sel.value);
+    const label = months === 0 ? 'Remove Plus from @' + handle + '?'
+      : 'Give @' + handle + ' ' + (months === 12 ? '1 year' : months + ' month(s)') + ' of Plus?';
+    if (!confirm(label)) return;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch('/v1/admin/users/' + encodeURIComponent(handle) + '/plus', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ months }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error?.message || 'failed');
+      await load();
+    } catch (err) {
+      alert(String(err.message || err));
+      btn.disabled = false;
+      btn.textContent = 'Give';
+    }
+  });
+}
+
 function cards(el, items) {
   el.innerHTML = items.map(([k, n, cls]) =>
     '<div class="card ' + (cls || '') + '"><div class="n">' + (n ?? 0).toLocaleString() +
@@ -211,7 +306,8 @@ async function load() {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   $('users').innerHTML =
-    '<tr><th>Handle</th><th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
+    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th>' +
+    '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
     '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
     '<th class="num">Followers</th></tr>' +
     (people.items || []).map((u) => {
@@ -221,7 +317,9 @@ async function load() {
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
         (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
-      return '<tr><td>' + who + '</td><td>' + how + '</td><td>' + esc(baghdad(u.created_at)) +
+      return '<tr><td>' + who + '</td><td>' + plusCell(u) + '</td><td>' + grantCell(u.handle) +
+        '</td><td>' + seenCell(u.last_seen_at) + '</td><td>' + how +
+        '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
         '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
         '</td><td class="num">' + u.followers + '</td></tr>';
@@ -357,6 +455,9 @@ $('out').addEventListener('click', async () => {
   show(false);
 });
 
+// Once, before the first render. The rows are replaced on every refresh, so
+// the listener lives on the table rather than on the buttons inside it.
+wirePlus();
 load();
 </script>
 </body>

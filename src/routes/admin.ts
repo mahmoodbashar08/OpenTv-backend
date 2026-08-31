@@ -223,6 +223,19 @@ admin.get('/admin/users', async (c) => {
     `SELECT p.handle,
             p.display_name,
             p.created_at,
+            -- PLUS, BOTH WAYS IT CAN BE TRUE. is_plus is the flag the
+            -- RevenueCat webhook owns; plus_until is the hand-grant escape
+            -- hatch. The dashboard shows which of the two it is, because
+            -- "paying" and "given a month by Mahmood" are different facts and
+            -- a single green tick would hide the difference.
+            p.is_plus,
+            p.plus_until,
+            p.plus_since,
+            -- Stamped by GET /v1/me, which the app calls on every launch. It
+            -- is the closest thing this server has to "still using it", and
+            -- it is a DATE, not a history: nothing records the launch before
+            -- this one.
+            p.last_seen_at,
             -- The address only where the person typed one into this app. A
             -- provider's copy is Apple's or Google's to show, not ours to
             -- collect a list of.
@@ -247,6 +260,69 @@ admin.get('/admin/users', async (c) => {
   ).all<Record<string, unknown>>();
 
   return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * POST /v1/admin/users/:handle/plus — give somebody Plus, or take it back.
+ *
+ * `plus_until` AND NEVER `is_plus`. The flag belongs to the RevenueCat webhook
+ * and means "this person is paying"; writing it by hand would make the server
+ * believe in a subscription that does not exist, and the next webhook would
+ * overwrite it anyway. The date is the hand-grant lane — `plusEntitled()` reads
+ * `is_plus === 1 || isPlus(plus_until, now)`, so a grant is a real entitlement
+ * that expires on its own with nothing to revoke and no card anywhere near it.
+ *
+ * EXTENDING ADDS TO WHAT IS LEFT, rather than replacing it. Somebody with three
+ * weeks remaining who is given a month should end up with seven weeks, not
+ * four: the alternative silently takes time away from the person being given
+ * something, which is the opposite of the intent every time this is used.
+ * An expired or absent grant starts from today instead.
+ *
+ * `months: 0` REMOVES the grant. There is no separate delete route because
+ * there is no separate action — the whole feature is one date.
+ */
+admin.post('/admin/users/:handle/plus', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const months = (body as { months?: unknown })?.months;
+  if (typeof months !== 'number' || !Number.isInteger(months) || months < 0 || months > 12) {
+    return fail(c, 400, 'invalid_body', 'months must be a whole number from 0 to 12.');
+  }
+
+  const handle = c.req.param('handle').toLowerCase();
+  const row = await c.env.DB.prepare(
+    'SELECT id, plus_until FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL',
+  )
+    .bind(handle)
+    .first<{ id: string; plus_until: string | null }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such profile.');
+
+  if (months === 0) {
+    await c.env.DB.prepare('UPDATE profiles SET plus_until = NULL WHERE id = ?').bind(row.id).run();
+    return c.json({ handle, plus_until: null }, 200, { 'Cache-Control': 'no-store' });
+  }
+
+  const now = Date.now();
+  const current = row.plus_until ? Date.parse(row.plus_until) : NaN;
+  const from = new Date(Number.isFinite(current) && current > now ? current : now);
+  /*
+   * setMonth HANDLES THE SHORT ONES. Adding a month to 31 January lands on
+   * 3 March rather than throwing, which is the behaviour anybody granting
+   * "a month" expects and the reason this is not arithmetic on milliseconds.
+   */
+  from.setMonth(from.getMonth() + months);
+  const until = from.toISOString();
+
+  await c.env.DB.prepare('UPDATE profiles SET plus_until = ? WHERE id = ?').bind(until, row.id).run();
+  return c.json({ handle, plus_until: until }, 200, { 'Cache-Control': 'no-store' });
 });
 
 // ── Image review ────────────────────────────────────────────────────────────

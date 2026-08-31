@@ -157,6 +157,22 @@ app.get('/admin/dashboard', (c) =>
 );
 
 /*
+ * THE SAME PAGE AT dashboard.theopentv.com, because /admin/dashboard on the
+ * workers.dev host is a URL nobody can remember or type.
+ *
+ * Only the ROOT of that subdomain, and only for that hostname. The route in
+ * wrangler.jsonc sends every path on it to this Worker, so `/v1/admin/login`
+ * and the rest of the API answer there too — which is the point, since the
+ * session is a same-origin HttpOnly cookie. Anything else on the subdomain
+ * falls through to the API's own 404 rather than serving a page.
+ */
+app.get('/', (c) =>
+  new URL(c.req.url).hostname === 'dashboard.theopentv.com'
+    ? c.html(ADMIN_PAGE, 200, { 'X-Robots-Tag': 'noindex, nofollow', 'Cache-Control': 'no-store' })
+    : c.notFound(),
+);
+
+/*
  * THE PUBLIC WEB PAGE, mounted at the ROOT rather than under /v1 — a profile
  * link is something a person types and shares, and `/v1/` in it would be an
  * API detail leaking into somebody's signature. Read-only and anonymous; see
