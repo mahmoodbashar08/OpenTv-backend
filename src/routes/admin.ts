@@ -154,6 +154,18 @@ admin.get('/admin/stats', async (c) => {
           AND last_seen_at >= ?)                                                     AS active_30d,
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
           AND handle LIKE 'user!_p!_%' ESCAPE '!')                                   AS placeholder_handles,
+       -- PAYING AND GIVEN, COUNTED SEPARATELY, because one is revenue and the
+       -- other is a favour. A single "Plus" number would read as a business
+       -- doing better than it is: three of four Plus profiles being hand-outs
+       -- is the fact worth seeing, and it disappears the moment they are added
+       -- together.
+       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL AND is_plus = 1)      AS plus_paying,
+       -- A live grant on somebody who is NOT paying. Excluding subscribers
+       -- keeps the two columns from double-counting the same person, which
+       -- happens whenever a paying user was also given a month.
+       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+          AND (is_plus IS NULL OR is_plus = 0)
+          AND plus_until IS NOT NULL AND plus_until > ?)                             AS plus_given,
        (SELECT COUNT(*) FROM identities WHERE provider = 'email')                    AS via_email,
        (SELECT COUNT(*) FROM identities WHERE provider = 'google')                   AS via_google,
        (SELECT COUNT(*) FROM identities WHERE provider = 'apple')                    AS via_apple,
@@ -182,6 +194,8 @@ admin.get('/admin/stats', async (c) => {
       `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
       new Date(Date.now() - 7 * 864e5).toISOString(),
       new Date(Date.now() - 30 * 864e5).toISOString(),
+      // `plus_given` compares against now, not a window.
+      new Date().toISOString(),
     )
     .first<Record<string, number>>();
 

@@ -271,6 +271,10 @@ async function load() {
     ['Opened today', t.active_today],
     ['Last 7 days', t.active_7d],
     ['Last 30 days', t.active_30d],
+    // Two cards, never one. See the note on the query: adding a hand-out to a
+    // subscription makes the business look like something it is not.
+    ['Plus paying', t.plus_paying],
+    ['Plus given', t.plus_given],
     ['With Apple', t.via_apple],
     ['With Google', t.via_google],
     ['With email', t.via_email],
