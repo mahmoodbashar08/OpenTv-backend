@@ -22,7 +22,15 @@ export const ADMIN_PAGE = `<!doctype html>
   * { box-sizing: border-box; }
   body { margin:0; background:#0d0d0f; color:#e9e9ee;
          font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
-  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 20px 80px; }
+  /*
+   * 1500, not 900. The people table used to be seven columns and fitted; it is
+   * eleven now, and every one of them is a fact you read across a single row —
+   * who they are, whether they are Plus, when they last opened it. A narrow
+   * column that scrolls sideways turns "read a row" into "read half a row and
+   * drag". Capped rather than full width so the stat cards above do not stretch
+   * into a line of numbers a metre apart on a big screen.
+   */
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 40px 20px 80px; }
   h1 { font-size:20px; margin:0 0 4px; color:#ffd400; letter-spacing:.02em; }
   .sub { color:#8a8a92; font-size:13px; margin:0 0 28px; }
   /* An explicit display beats the hidden attribute's display:none, so the
