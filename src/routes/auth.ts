@@ -288,33 +288,17 @@ auth.get('/me', async (c) => {
   if (!row) return fail(c, 401, 'unauthenticated', 'No such profile.');
 
   /*
-   * LAST SEEN, ON A REQUEST THE APP WAS ALREADY MAKING.
+   * WHEN SOMEBODY LAST OPENED THE APP is stamped in `requireAuth`, not here.
    *
-   * This route is asked on every launch, so recording activity here costs no
-   * round trip. The date comparison means at most ONE write per member per day
-   * however often they reopen the app — a launch that already saw today does
-   * nothing at all, which is what keeps this free at any size.
+   * It was on this route, and the app calls this route from exactly two places:
+   * the EMAIL sign-in path and the cover sync. So every Google and Apple member
+   * read "never" on the dashboard however hard they were using the app — one
+   * with 550 ratings and another with 24 comments both showed as having never
+   * opened it. The figure was quietly measuring which sign-in somebody used.
    *
-   * WHAT THIS CAN AND CANNOT COUNT. Only community members, because only they
-   * talk to this server; somebody who declined never contacts it, by design.
-   * The dashboard names the number "active members" for that reason — the
-   * people missing from it are precisely the ones the app promises not to
-   * touch, and a figure that pretended otherwise would be a lie about the
-   * thing this project is built on.
-   *
-   * Fire and forget: knowing when somebody last opened the app is not worth
-   * failing their launch over.
+   * The middleware carries it now, with the same one-write-per-day guard, and
+   * the note about what it can and cannot count.
    */
-  const today = new Date().toISOString().slice(0, 10);
-  c.executionCtx.waitUntil(
-    c.env.DB.prepare(
-      `UPDATE profiles SET last_seen_at = ?
-        WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
-    )
-      .bind(new Date().toISOString(), c.get('profileId'), today)
-      .run()
-      .catch(() => {}),
-  );
 
   return c.json({
     ...ownProfile(row),

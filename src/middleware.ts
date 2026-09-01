@@ -22,6 +22,40 @@ export const requireAuth = createMiddleware<App>(async (c, next) => {
 
   c.set('profileId', session.profileId);
   c.set('scope', session.scope);
+
+  /*
+   * "LAST OPENED", STAMPED WHEREVER THE APP TALKS TO US.
+   *
+   * This lived on `GET /v1/me`, and the app makes that call in exactly two
+   * places: the EMAIL sign-in path, and the cover sync. So every Google and
+   * Apple member read "never" on the dashboard for ever, however hard they were
+   * using the app -- one member with 550 ratings and another with 24 comments
+   * both showed as having never opened it. The number was quietly measuring
+   * which sign-in somebody used.
+   *
+   * Here instead, because every route that needs a token is a moment the app is
+   * demonstrably in somebody's hands: publishing a shelf, posting a comment,
+   * fetching notifications. No route has to remember to do it, and a new one
+   * cannot forget.
+   *
+   * AT MOST ONE WRITE PER MEMBER PER DAY. The `last_seen_at < today` guard means
+   * a member who opens the app forty times costs one row, which is what makes
+   * this safe to hang off every authenticated request rather than one.
+   *
+   * Fire and forget: knowing when somebody last opened the app is never worth
+   * failing their request over.
+   */
+  const today = new Date().toISOString().slice(0, 10);
+  c.executionCtx.waitUntil(
+    c.env.DB.prepare(
+      `UPDATE profiles SET last_seen_at = ?
+        WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
+    )
+      .bind(new Date().toISOString(), session.profileId, today)
+      .run()
+      .catch(() => {}),
+  );
+
   await next();
   return;
 });
