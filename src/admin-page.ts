@@ -293,6 +293,11 @@ async function load() {
     ['Likes', t.likes],
     ['Follows', t.follows],
     ['Lists', t.lists],
+    // THE LIST REPAIR. Films is the number that matters: a call that resolves
+    // nothing still counts as a call, so calls alone would look like success.
+    ['List fixes asked', t.repair_calls],
+    ['Films restored', t.repair_films],
+    ['Catalogue films', t.catalogue_films],
     ['Photos held', t.images],
     // The only queue on this page a person has to work through by hand: an
     // image is invisible to everybody until somebody here has looked at it.

@@ -65,13 +65,59 @@ movieNames.post('/movie-names/resolve', async (c) => {
   if (!uuids.length) return c.json({ names: {} });
 
   const rows = await c.env.DB.prepare(
-    `SELECT uuid, title FROM movie_uuids WHERE uuid IN (${uuids.map(() => '?').join(',')})`,
+    `SELECT uuid, title, tmdb_id, tvdb_id FROM movie_uuids WHERE uuid IN (${uuids.map(() => '?').join(',')})`,
   )
     .bind(...uuids)
-    .all<{ uuid: string; title: string }>();
+    .all<{ uuid: string; title: string; tmdb_id: number | null; tvdb_id: number | null }>();
 
-  const names: Record<string, string> = {};
-  for (const r of rows.results ?? []) names[r.uuid] = r.title;
+  /*
+   * THE IDS TRAVEL WITH THE TITLE. A name alone makes the phone SEARCH for the
+   * film wherever it opens it -- drawing its first guess, then correcting
+   * itself when a better match lands, which reads as the app malfunctioning. An
+   * id is exact. They are sparse in the catalogue overall but dense among the
+   * films people actually put in lists.
+   *
+   * The shape stays an object keyed by uuid, as it was when the value was a
+   * bare string: an older app reading `names[uuid]` as a string gets an object
+   * and shows nothing, which is the same as not asking -- where a changed KEY
+   * would have made it show nothing while believing it had asked.
+   */
+  const names: Record<string, { title: string; tmdb_id?: number; tvdb_id?: number }> = {};
+  for (const r of rows.results ?? []) {
+    names[r.uuid] = {
+      title: r.title,
+      ...(r.tmdb_id ? { tmdb_id: r.tmdb_id } : {}),
+      ...(r.tvdb_id ? { tvdb_id: r.tvdb_id } : {}),
+    };
+  }
+
+  /*
+   * COUNTED, BECAUSE OTHERWISE NOBODY CAN TELL IF THIS IS USED. The endpoint is
+   * public and bodyless-in-reply; without a counter the only honest answer to
+   * "is the list repair working for anyone?" is a shrug.
+   *
+   * Two numbers and no row per request: how many phones asked, and how many
+   * films were actually named. Nothing here can answer WHO or WHICH films,
+   * because no such column exists -- a public endpoint that logged per-request
+   * would have become a record of who is repairing what.
+   *
+   * `waitUntil` so the count never delays the answer, and a failure to count is
+   * not allowed to fail a repair.
+   */
+  const resolved = Object.keys(names).length;
+  c.executionCtx.waitUntil(
+    c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO counters (key, n, updated_at) VALUES ('list_repair_calls', 1, ?)
+           ON CONFLICT (key) DO UPDATE SET n = n + 1, updated_at = excluded.updated_at`,
+      ).bind(new Date().toISOString()),
+      c.env.DB.prepare(
+        `INSERT INTO counters (key, n, updated_at) VALUES ('list_repair_films', ?, ?)
+           ON CONFLICT (key) DO UPDATE SET n = n + excluded.n, updated_at = excluded.updated_at`,
+      ).bind(resolved, new Date().toISOString()),
+    ]).catch(() => {}),
+  );
+
   return c.json({ names });
 });
 

@@ -175,6 +175,13 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM character_votes)                                        AS character_votes,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
+       -- The list repair. calls is phones that asked, films is entries
+       -- actually named -- the second is the one that says whether the
+       -- catalogue is any good, because a call that resolves nothing still
+       -- counts as a call.
+       (SELECT COALESCE(n, 0) FROM counters WHERE key = 'list_repair_calls')        AS repair_calls,
+       (SELECT COALESCE(n, 0) FROM counters WHERE key = 'list_repair_films')        AS repair_films,
+       (SELECT COUNT(*) FROM movie_uuids)                                           AS catalogue_films,
        -- ACCEPTED ONLY, like every other count of this table: a pending row is
        -- a question nobody has answered, and counting it would inflate the one
        -- number this page has for how connected the community actually is.
