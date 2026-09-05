@@ -3,7 +3,7 @@ import type { Env } from '@/env';
 /**
  * Sending email, when there is somewhere to send it from.
  *
- * WORKS BEFORE THE DOMAIN EXISTS. Without `RESEND_API_KEY` this reports
+ * WORKS BEFORE THE DOMAIN EXISTS. Without the EMAIL binding or a Resend key this reports
  * `false` and sends nothing, and every caller is written to carry on: an
  * account is still created, a reset token is still issued. The alternative —
  * refusing to register anybody until DNS is configured — would make the whole
@@ -20,9 +20,29 @@ import type { Env } from '@/env';
 export type MailResult = { sent: boolean; reason?: 'not_configured' | 'failed' };
 
 async function send(env: Env, to: string, subject: string, text: string, html: string): Promise<MailResult> {
-  const key = env.RESEND_API_KEY;
   const from = env.MAIL_FROM;
-  if (!key || !from) return { sent: false, reason: 'not_configured' };
+  if (!from) return { sent: false, reason: 'not_configured' };
+
+  /*
+   * CLOUDFLARE EMAIL SENDING FIRST. The domain is on this account already and
+   * the Worker gets a binding rather than a key, so there is no third party to
+   * sign up for and no secret to rotate. `MAIL_FROM` is "Name <addr>" for the
+   * humans reading it; the binding wants the two apart.
+   */
+  if (env.EMAIL) {
+    const m = /^(.*?)\s*<([^>]+)>$/.exec(from);
+    const address = m ? m[2]! : from;
+    const name = m && m[1] ? m[1] : undefined;
+    try {
+      await env.EMAIL.send({ to, from: { email: address, name }, subject, text, html });
+      return { sent: true };
+    } catch {
+      return { sent: false, reason: 'failed' };
+    }
+  }
+
+  const key = env.RESEND_API_KEY;
+  if (!key) return { sent: false, reason: 'not_configured' };
 
   try {
     const res = await fetch('https://api.resend.com/emails', {

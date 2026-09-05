@@ -58,8 +58,10 @@ export type Env = {
    * and a token issued whether or not a message can go out. Missing means "no
    * mail configured yet", never a failed signup. See `mail.ts`.
    */
+  /** Cloudflare Email Sending binding (`send_email` in wrangler.jsonc). Preferred over Resend when present. */
+  EMAIL?: { send(msg: { to: string; from: { email: string; name?: string }; subject: string; text: string; html: string }): Promise<unknown> };
   RESEND_API_KEY?: string;
-  /** e.g. `OpenTV <hello@opentv.app>`. Must be a verified Resend domain. */
+  /** e.g. `OpenTV <noreply@theopentv.com>`. The domain must be onboarded for Email Sending (or verified with Resend). */
   MAIL_FROM?: string;
   /**
    * "off" closes email SIGN-UP, and nothing else.

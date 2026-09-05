@@ -55,14 +55,18 @@
   // for a user base concentrated in Europe and the Middle East.
   "triggers": { "crons": ["0 4 * * *"] },
 
+  // Cloudflare Email Sending. A binding, not a key: `mail.ts` sends through it
+  // when it is present and falls back to Resend when only RESEND_API_KEY is.
+  // The from-domain must be onboarded first: `wrangler email sending enable theopentv.com`.
+  "send_email": [{ "name": "EMAIL" }],
+
   // Public identifiers only — they appear in every client binary anyway.
   // Secrets (SESSION_SECRET, RC_WEBHOOK_SECRET) go in with `wrangler secret
   // put` and never live here. Locally they come from .dev.vars.
   "vars": {
     "APPLE_BUNDLE_ID": "com.insightfy.opentv",
-    // The verified Resend domain. Not a secret — it is the address every
-    // recipient reads. The key that lets us send as it IS a secret:
-    //   wrangler secret put RESEND_API_KEY
+    // The sending address. Not a secret — it is what every recipient reads.
+    // Sent through the EMAIL binding above; RESEND_API_KEY is only the fallback.
     "MAIL_FROM": "OpenTV <noreply@theopentv.com>",
     // "off" closes email SIGN-UP while 1.3.1 is in review — see env.ts. Sign-in
     // stays open, and Apple and Google are unaffected. Set back to "on".
