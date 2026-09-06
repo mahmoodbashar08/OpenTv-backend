@@ -130,9 +130,9 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="people"></div>
     <h2>Activity</h2>
     <div class="grid" id="activity"></div>
-    <h2>Activity by window</h2>
+    <h2>Activity by window &mdash; how much</h2>
     <div class="grid" id="windows"></div>
-    <h2>People active</h2>
+    <h2>Activity by window &mdash; how many people</h2>
     <div class="grid" id="active"></div>
     <h2>People, newest first</h2>
     <div class="scroll"><table id="users"></table></div>
@@ -316,6 +316,10 @@ async function load() {
      the same three windows the People section uses, plus the per-day average
      over thirty days — the one number that can be compared with last month. */
   const per = (n, days) => Math.round(((n || 0) / days) * 10) / 10;
+  /* SAME THREE NOUNS, SAME ORDER, IN BOTH SECTIONS. They were "Comments,
+     Ratings, Characters" here and "Rated, Commented, Voted" below — three
+     different words in a different order for the same three things, which
+     reads as two sections disagreeing rather than as rows against people. */
   cards($('windows'), [
     ['Comments today', t.comments_today],
     ['Comments, 7 days', t.comments_7d],
@@ -325,25 +329,25 @@ async function load() {
     ['Ratings, 7 days', t.ratings_7d],
     ['Ratings, 30 days', t.ratings_30d],
     ['Ratings a day', per(t.ratings_30d, 30)],
-    ['Characters today', t.characters_today],
-    ['Characters, 7 days', t.characters_7d],
-    ['Characters, 30 days', t.characters_30d],
-    ['Characters a day', per(t.characters_30d, 30)],
+    ['Character votes today', t.characters_today],
+    ['Character votes, 7 days', t.characters_7d],
+    ['Character votes, 30 days', t.characters_30d],
+    ['Character votes a day', per(t.characters_30d, 30)],
   ]);
 
   /* THE ONLY NUMBERS HERE A SINGLE IMPORT CANNOT MOVE. One member seeding a
      TV Time archive can put three thousand ratings on the board in a day; they
      are still one person, and this is the row that says so. */
   cards($('active'), [
-    ['Rated today', t.raters_today],
-    ['Rated, 7 days', t.raters_7d],
-    ['Rated, 30 days', t.raters_30d],
-    ['Commented today', t.commenters_today],
-    ['Commented, 7 days', t.commenters_7d],
-    ['Commented, 30 days', t.commenters_30d],
-    ['Voted today', t.voters_today],
-    ['Voted, 7 days', t.voters_7d],
-    ['Voted, 30 days', t.voters_30d],
+    ['People commenting today', t.commenters_today],
+    ['People commenting, 7 days', t.commenters_7d],
+    ['People commenting, 30 days', t.commenters_30d],
+    ['People rating today', t.raters_today],
+    ['People rating, 7 days', t.raters_7d],
+    ['People rating, 30 days', t.raters_30d],
+    ['People voting today', t.voters_today],
+    ['People voting, 7 days', t.voters_7d],
+    ['People voting, 30 days', t.voters_30d],
   ]);
 
   const joins = d.joins || [];
