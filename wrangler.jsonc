@@ -1,3 +1,22 @@
+/**
+ * FORKING THIS? Five lines are ours and have to become yours:
+ *
+ *   routes[]            the domain patterns — or delete the block entirely and
+ *                       the Worker answers on its own workers.dev address
+ *   vars.MAIL_FROM      the address your instance sends from
+ *   vars.GOOGLE_CLIENT_IDS  your own OAuth client ids, or "" to turn Google
+ *                       sign-in off (the app hides the button either way)
+ *   d1_databases[0].database_id   from `wrangler d1 create opentv`
+ *   kv_namespaces[0].id           from `wrangler kv namespace create CACHE`
+ *
+ * The ids left here are this deployment's. They are identifiers, not
+ * credentials — nothing reaches them without a Cloudflare API token for this
+ * account — but they are also not yours, so change them or your deploy will
+ * fail against a database you cannot see.
+ *
+ * SECRETS ARE NEVER IN THIS FILE. `wrangler secret put` for production,
+ * `.dev.vars` (gitignored) locally. See README.
+ */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "opentv-api",

@@ -17,8 +17,13 @@ docker compose up -d
 curl http://localhost:8787/v1/links      # {"links":[]}
 ```
 
-That is a running server. Point the app at it: **Settings → Server**, enter your
-URL.
+That is a running server. Point the app at it: **Settings → Your data →
+Community server**, and enter the address along with your own TMDB token and
+TheTVDB key — running everything yourself means running it on your own keys,
+so the app asks for all three together.
+
+**Needs OpenTV 1.6.2 or later.** On Android now; the iOS build is in review as
+of 7 September 2026, and the setting is not in 1.6.1.
 
 ---
 
