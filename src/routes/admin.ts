@@ -177,11 +177,15 @@ admin.get('/admin/stats', async (c) => {
        -- so it cannot answer "is anyone here this week" — which is the question
        -- the totals above look like they answer and never do.
        --
-       -- BY DAY, NOT BY TIMESTAMP. date('now') and substr(created_at, 1, 10)
-       -- are both 'YYYY-MM-DD', so they compare as strings and the windows land
-       -- on calendar days. Comparing against datetime('now', ...) would not:
-       -- it renders 'YYYY-MM-DD HH:MM:SS' against a stored 'YYYY-MM-DDTHH:MM:SSZ',
-       -- and a space sorts before a T, so every row would fall in every window.
+       -- BY DAY, AND WITHOUT WRAPPING THE COLUMN. date('now', ...) is
+       -- 'YYYY-MM-DD' and a stored timestamp is 'YYYY-MM-DDTHH:MM:SS.sssZ', so
+       -- a plain >= compares them correctly as strings AND leaves created_at
+       -- bare, which is the difference between a range scan and reading every
+       -- row of a 72,000-row table three times.
+       --
+       -- NOT datetime('now', ...): that renders 'YYYY-MM-DD HH:MM:SS', a space
+       -- where the stored value has a T, and a space sorts BEFORE a T — so
+       -- every row would fall inside every window.
        --
        -- AN IMPORT IS NOT ACTIVITY. A seeded TV Time comment carries its
        -- ORIGINAL date in created_at (imported_at is when it arrived — see
@@ -189,23 +193,23 @@ admin.get('/admin/stats', async (c) => {
        -- not appear here as nine years of writing done today. That is the
        -- honest reading: they wrote it in 2019.
        (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
-          AND substr(created_at, 1, 10) = date('now'))                                AS comments_today,
+          AND created_at >= date('now'))                                AS comments_today,
        (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
-          AND substr(created_at, 1, 10) >= date('now', '-6 days'))                     AS comments_7d,
+          AND created_at >= date('now', '-6 days'))                     AS comments_7d,
        (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
-          AND substr(created_at, 1, 10) >= date('now', '-29 days'))                    AS comments_30d,
+          AND created_at >= date('now', '-29 days'))                    AS comments_30d,
        (SELECT COUNT(*) FROM ratings
-          WHERE substr(created_at, 1, 10) = date('now'))                              AS ratings_today,
+          WHERE created_at >= date('now'))                              AS ratings_today,
        (SELECT COUNT(*) FROM ratings
-          WHERE substr(created_at, 1, 10) >= date('now', '-6 days'))                   AS ratings_7d,
+          WHERE created_at >= date('now', '-6 days'))                   AS ratings_7d,
        (SELECT COUNT(*) FROM ratings
-          WHERE substr(created_at, 1, 10) >= date('now', '-29 days'))                  AS ratings_30d,
+          WHERE created_at >= date('now', '-29 days'))                  AS ratings_30d,
        (SELECT COUNT(*) FROM character_votes
-          WHERE substr(created_at, 1, 10) = date('now'))                              AS characters_today,
+          WHERE created_at >= date('now'))                              AS characters_today,
        (SELECT COUNT(*) FROM character_votes
-          WHERE substr(created_at, 1, 10) >= date('now', '-6 days'))                   AS characters_7d,
+          WHERE created_at >= date('now', '-6 days'))                   AS characters_7d,
        (SELECT COUNT(*) FROM character_votes
-          WHERE substr(created_at, 1, 10) >= date('now', '-29 days'))                  AS characters_30d,
+          WHERE created_at >= date('now', '-29 days'))                  AS characters_30d,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
        -- The list repair. calls is phones that asked, films is entries
