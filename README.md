@@ -11,6 +11,26 @@ nothing else. There is no watch-history table here, by design.
 
 Users who decline the community never contact this server at all.
 
+## Run your own
+
+One container, one directory, no database server and no reverse proxy — the
+data is a SQLite file because D1 *is* SQLite, and the only bytes stored are
+pictures, so they are a folder.
+
+```bash
+echo "SESSION_SECRET=$(openssl rand -base64 48)" > .env
+docker compose up -d
+curl http://localhost:8787/v1/links      # {"links":[]}
+```
+
+Then point the app at it: **Settings → Your data → Community server**. Changing
+that address signs the device out of the community — a token belongs to the
+server that issued it — and leaves the local library alone.
+
+[`SELF-HOSTING.md`](SELF-HOSTING.md) has the rest: backups, HTTPS, what an
+instance without Workers AI or edge caching does instead (it says so, rather
+than failing), and how to move between instances.
+
 ## Stack
 
 - **Cloudflare Workers** + **Hono** — scales to zero, free until ~67,000 installs
@@ -49,3 +69,13 @@ before Plus existed is never shrunk.
 - [`docs/PLAN.md`](docs/PLAN.md) — decisions, reasoning, build order, blockers
 - [`docs/schema.dbml`](docs/schema.dbml) — the database (open the DBML preview)
 - [`docs/data-layer.md`](docs/data-layer.md) — the same design, in prose
+
+## Licence
+
+[AGPL-3.0](LICENSE). Run it, change it, host it for your friends. If you run a
+modified version as a service, the same licence asks you to publish your
+changes — which is the only condition here, and it is the one that keeps this
+the kind of thing it is.
+
+The app is separate and more permissive:
+[MPL-2.0](https://github.com/mahmoodbashar08/opentv-app).
