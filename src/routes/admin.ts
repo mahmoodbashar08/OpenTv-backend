@@ -210,6 +210,37 @@ admin.get('/admin/stats', async (c) => {
           WHERE created_at >= date('now', '-6 days'))                   AS characters_7d,
        (SELECT COUNT(*) FROM character_votes
           WHERE created_at >= date('now', '-29 days'))                  AS characters_30d,
+       -- HOW MANY PEOPLE, which is the only one of these that cannot be moved
+       -- by a single import. Six members seeding their TV Time archives put
+       -- 8,335 of one week's 8,393 ratings on the board, each of them in a
+       -- single day: a row count answers "how big was somebody's archive", and
+       -- a person count answers "was anybody here". Only the second is a
+       -- measure of the community.
+       --
+       -- Comments are counted BOTH ways above and here because a comment keeps
+       -- its original date, so its rows are already honest; the people number
+       -- is still the more useful one, and the two together say whether a
+       -- week was many people once or one person many times.
+       (SELECT COUNT(DISTINCT author_id) FROM ratings
+          WHERE created_at >= date('now'))                              AS raters_today,
+       (SELECT COUNT(DISTINCT author_id) FROM ratings
+          WHERE created_at >= date('now', '-6 days'))                   AS raters_7d,
+       (SELECT COUNT(DISTINCT author_id) FROM ratings
+          WHERE created_at >= date('now', '-29 days'))                  AS raters_30d,
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+          AND created_at >= date('now'))                                AS commenters_today,
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+          AND created_at >= date('now', '-6 days'))                     AS commenters_7d,
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+          AND created_at >= date('now', '-29 days'))                    AS commenters_30d,
+       -- voter_id, not author_id: this table names the column for what a
+       -- character vote is.
+       (SELECT COUNT(DISTINCT voter_id) FROM character_votes
+          WHERE created_at >= date('now'))                              AS voters_today,
+       (SELECT COUNT(DISTINCT voter_id) FROM character_votes
+          WHERE created_at >= date('now', '-6 days'))                   AS voters_7d,
+       (SELECT COUNT(DISTINCT voter_id) FROM character_votes
+          WHERE created_at >= date('now', '-29 days'))                  AS voters_30d,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
        -- The list repair. calls is phones that asked, films is entries

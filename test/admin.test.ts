@@ -74,6 +74,10 @@ describe('the admin dashboard', () => {
       'comments_today', 'comments_7d', 'comments_30d',
       'ratings_today', 'ratings_7d', 'ratings_30d',
       'characters_today', 'characters_7d', 'characters_30d',
+      // People, which is the half a single bulk import cannot inflate.
+      'raters_today', 'raters_7d', 'raters_30d',
+      'commenters_today', 'commenters_7d', 'commenters_30d',
+      'voters_today', 'voters_7d', 'voters_30d',
     ]) {
       expect(typeof t[k]).toBe('number');
     }

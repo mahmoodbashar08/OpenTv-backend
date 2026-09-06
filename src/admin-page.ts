@@ -132,6 +132,8 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="activity"></div>
     <h2>Activity by window</h2>
     <div class="grid" id="windows"></div>
+    <h2>People active</h2>
+    <div class="grid" id="active"></div>
     <h2>People, newest first</h2>
     <div class="scroll"><table id="users"></table></div>
     <h2>Photos</h2>
@@ -327,6 +329,21 @@ async function load() {
     ['Characters, 7 days', t.characters_7d],
     ['Characters, 30 days', t.characters_30d],
     ['Characters a day', per(t.characters_30d, 30)],
+  ]);
+
+  /* THE ONLY NUMBERS HERE A SINGLE IMPORT CANNOT MOVE. One member seeding a
+     TV Time archive can put three thousand ratings on the board in a day; they
+     are still one person, and this is the row that says so. */
+  cards($('active'), [
+    ['Rated today', t.raters_today],
+    ['Rated, 7 days', t.raters_7d],
+    ['Rated, 30 days', t.raters_30d],
+    ['Commented today', t.commenters_today],
+    ['Commented, 7 days', t.commenters_7d],
+    ['Commented, 30 days', t.commenters_30d],
+    ['Voted today', t.voters_today],
+    ['Voted, 7 days', t.voters_7d],
+    ['Voted, 30 days', t.voters_30d],
   ]);
 
   const joins = d.joins || [];
