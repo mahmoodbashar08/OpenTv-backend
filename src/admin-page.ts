@@ -130,6 +130,8 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="grid" id="people"></div>
     <h2>Activity</h2>
     <div class="grid" id="activity"></div>
+    <h2>Activity by window</h2>
+    <div class="grid" id="windows"></div>
     <h2>People, newest first</h2>
     <div class="scroll"><table id="users"></table></div>
     <h2>Photos</h2>
@@ -305,6 +307,26 @@ async function load() {
     ['Photos shown', t.images_clean],
     // The only number with a clock on it — 24 hours is the moderation promise.
     ['Open reports', t.open_reports, t.open_reports ? 'bad' : ''],
+  ]);
+
+  /* HOW MUCH IS HAPPENING. The Activity totals above only ever grow, so they
+     say what the community HOLDS and never what it DID this week. Each row is
+     the same three windows the People section uses, plus the per-day average
+     over thirty days — the one number that can be compared with last month. */
+  const per = (n, days) => Math.round(((n || 0) / days) * 10) / 10;
+  cards($('windows'), [
+    ['Comments today', t.comments_today],
+    ['Comments, 7 days', t.comments_7d],
+    ['Comments, 30 days', t.comments_30d],
+    ['Comments a day', per(t.comments_30d, 30)],
+    ['Ratings today', t.ratings_today],
+    ['Ratings, 7 days', t.ratings_7d],
+    ['Ratings, 30 days', t.ratings_30d],
+    ['Ratings a day', per(t.ratings_30d, 30)],
+    ['Characters today', t.characters_today],
+    ['Characters, 7 days', t.characters_7d],
+    ['Characters, 30 days', t.characters_30d],
+    ['Characters a day', per(t.characters_30d, 30)],
   ]);
 
   const joins = d.joins || [];

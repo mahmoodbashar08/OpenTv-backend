@@ -173,6 +173,39 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL)                      AS comments,
        (SELECT COUNT(*) FROM ratings)                                                AS ratings,
        (SELECT COUNT(*) FROM character_votes)                                        AS character_votes,
+       -- HOW MUCH IS HAPPENING, not how much exists. A total only ever goes up,
+       -- so it cannot answer "is anyone here this week" — which is the question
+       -- the totals above look like they answer and never do.
+       --
+       -- BY DAY, NOT BY TIMESTAMP. date('now') and substr(created_at, 1, 10)
+       -- are both 'YYYY-MM-DD', so they compare as strings and the windows land
+       -- on calendar days. Comparing against datetime('now', ...) would not:
+       -- it renders 'YYYY-MM-DD HH:MM:SS' against a stored 'YYYY-MM-DDTHH:MM:SSZ',
+       -- and a space sorts before a T, so every row would fall in every window.
+       --
+       -- AN IMPORT IS NOT ACTIVITY. A seeded TV Time comment carries its
+       -- ORIGINAL date in created_at (imported_at is when it arrived — see
+       -- routes/import.ts), so a member uploading nine years of archive does
+       -- not appear here as nine years of writing done today. That is the
+       -- honest reading: they wrote it in 2019.
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+          AND substr(created_at, 1, 10) = date('now'))                                AS comments_today,
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+          AND substr(created_at, 1, 10) >= date('now', '-6 days'))                     AS comments_7d,
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+          AND substr(created_at, 1, 10) >= date('now', '-29 days'))                    AS comments_30d,
+       (SELECT COUNT(*) FROM ratings
+          WHERE substr(created_at, 1, 10) = date('now'))                              AS ratings_today,
+       (SELECT COUNT(*) FROM ratings
+          WHERE substr(created_at, 1, 10) >= date('now', '-6 days'))                   AS ratings_7d,
+       (SELECT COUNT(*) FROM ratings
+          WHERE substr(created_at, 1, 10) >= date('now', '-29 days'))                  AS ratings_30d,
+       (SELECT COUNT(*) FROM character_votes
+          WHERE substr(created_at, 1, 10) = date('now'))                              AS characters_today,
+       (SELECT COUNT(*) FROM character_votes
+          WHERE substr(created_at, 1, 10) >= date('now', '-6 days'))                   AS characters_7d,
+       (SELECT COUNT(*) FROM character_votes
+          WHERE substr(created_at, 1, 10) >= date('now', '-29 days'))                  AS characters_30d,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
        -- The list repair. calls is phones that asked, films is entries

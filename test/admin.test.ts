@@ -64,6 +64,24 @@ describe('the admin dashboard', () => {
     expect(Array.isArray(res.json.joins)).toBe(true);
   });
 
+  it('answers the activity windows, and they are numbers rather than absent', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const res = await call(env, 'GET', '/v1/admin/stats', { headers: { Cookie: cookie } });
+    const t = res.json.totals;
+    // A window that silently vanished from the query would render as an empty
+    // card rather than an error, so the shape is what is worth asserting.
+    for (const k of [
+      'comments_today', 'comments_7d', 'comments_30d',
+      'ratings_today', 'ratings_7d', 'ratings_30d',
+      'characters_today', 'characters_7d', 'characters_30d',
+    ]) {
+      expect(typeof t[k]).toBe('number');
+    }
+    // Windows nest: a day is inside a week is inside a month.
+    expect(t.comments_today).toBeLessThanOrEqual(t.comments_7d);
+    expect(t.comments_7d).toBeLessThanOrEqual(t.comments_30d);
+  });
+
   it('lists people without listing anything they wrote', async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
