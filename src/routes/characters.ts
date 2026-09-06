@@ -330,9 +330,11 @@ characterVotes.post('/character-votes/import', requireAuth, async (c) => {
       statements.push(
         db
           .prepare(
+            // Stamped as an arrival, so the dashboard can tell a seeded
+            // archive from somebody voting on tonight's episode.
             `INSERT INTO character_votes
-               (id, voter_id, target_source, target_key, character_name, character_id, season, episode, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (id, voter_id, target_source, target_key, character_name, character_id, season, episode, created_at, imported_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (voter_id, target_source, target_key) DO NOTHING`,
           )
           .bind(
@@ -345,6 +347,7 @@ characterVotes.post('/character-votes/import', requireAuth, async (c) => {
             p.season,
             p.episode,
             p.createdAt,
+            nowIso,
           ),
       );
     }

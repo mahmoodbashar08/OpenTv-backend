@@ -173,6 +173,10 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL)                      AS comments,
        (SELECT COUNT(*) FROM ratings)                                                AS ratings,
        (SELECT COUNT(*) FROM character_votes)                                        AS character_votes,
+       -- WRITTEN HERE, NOT ARRIVED HERE. Every window excludes rows carrying
+       -- an imported_at (0029), because a member seeding a TV Time archive
+       -- is one decision, not three thousand.
+       --
        -- HOW MUCH IS HAPPENING, not how much exists. A total only ever goes up,
        -- so it cannot answer "is anyone here this week" — which is the question
        -- the totals above look like they answer and never do.
@@ -192,24 +196,24 @@ admin.get('/admin/stats', async (c) => {
        -- routes/import.ts), so a member uploading nine years of archive does
        -- not appear here as nine years of writing done today. That is the
        -- honest reading: they wrote it in 2019.
-       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now'))                                AS comments_today,
-       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now', '-6 days'))                     AS comments_7d,
-       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now', '-29 days'))                    AS comments_30d,
        (SELECT COUNT(*) FROM ratings
-          WHERE created_at >= date('now'))                              AS ratings_today,
+          WHERE imported_at IS NULL AND created_at >= date('now'))                              AS ratings_today,
        (SELECT COUNT(*) FROM ratings
-          WHERE created_at >= date('now', '-6 days'))                   AS ratings_7d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-6 days'))                   AS ratings_7d,
        (SELECT COUNT(*) FROM ratings
-          WHERE created_at >= date('now', '-29 days'))                  AS ratings_30d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-29 days'))                  AS ratings_30d,
        (SELECT COUNT(*) FROM character_votes
-          WHERE created_at >= date('now'))                              AS characters_today,
+          WHERE imported_at IS NULL AND created_at >= date('now'))                              AS characters_today,
        (SELECT COUNT(*) FROM character_votes
-          WHERE created_at >= date('now', '-6 days'))                   AS characters_7d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-6 days'))                   AS characters_7d,
        (SELECT COUNT(*) FROM character_votes
-          WHERE created_at >= date('now', '-29 days'))                  AS characters_30d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-29 days'))                  AS characters_30d,
        -- HOW MANY PEOPLE, which is the only one of these that cannot be moved
        -- by a single import. Six members seeding their TV Time archives put
        -- 8,335 of one week's 8,393 ratings on the board, each of them in a
@@ -222,25 +226,25 @@ admin.get('/admin/stats', async (c) => {
        -- is still the more useful one, and the two together say whether a
        -- week was many people once or one person many times.
        (SELECT COUNT(DISTINCT author_id) FROM ratings
-          WHERE created_at >= date('now'))                              AS raters_today,
+          WHERE imported_at IS NULL AND created_at >= date('now'))                              AS raters_today,
        (SELECT COUNT(DISTINCT author_id) FROM ratings
-          WHERE created_at >= date('now', '-6 days'))                   AS raters_7d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-6 days'))                   AS raters_7d,
        (SELECT COUNT(DISTINCT author_id) FROM ratings
-          WHERE created_at >= date('now', '-29 days'))                  AS raters_30d,
-       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+          WHERE imported_at IS NULL AND created_at >= date('now', '-29 days'))                  AS raters_30d,
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now'))                                AS commenters_today,
-       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now', '-6 days'))                     AS commenters_7d,
-       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL
+       (SELECT COUNT(DISTINCT author_id) FROM comments WHERE deleted_at IS NULL AND imported_at IS NULL
           AND created_at >= date('now', '-29 days'))                    AS commenters_30d,
        -- voter_id, not author_id: this table names the column for what a
        -- character vote is.
        (SELECT COUNT(DISTINCT voter_id) FROM character_votes
-          WHERE created_at >= date('now'))                              AS voters_today,
+          WHERE imported_at IS NULL AND created_at >= date('now'))                              AS voters_today,
        (SELECT COUNT(DISTINCT voter_id) FROM character_votes
-          WHERE created_at >= date('now', '-6 days'))                   AS voters_7d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-6 days'))                   AS voters_7d,
        (SELECT COUNT(DISTINCT voter_id) FROM character_votes
-          WHERE created_at >= date('now', '-29 days'))                  AS voters_30d,
+          WHERE imported_at IS NULL AND created_at >= date('now', '-29 days'))                  AS voters_30d,
        (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
        (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
        -- The list repair. calls is phones that asked, films is entries

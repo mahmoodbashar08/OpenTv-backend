@@ -407,10 +407,10 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
           db
             .prepare(
               `INSERT OR IGNORE INTO emotion_votes
-                 (author_id, target_source, target_key, season, episode, emotion, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                 (author_id, target_source, target_key, season, episode, emotion, created_at, imported_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             )
-            .bind(me, p.source, p.key, s, e, emotion, p.createdAt),
+            .bind(me, p.source, p.key, s, e, emotion, p.createdAt, nowIso),
         );
       }
 
@@ -419,13 +419,17 @@ seeding.post('/ratings/import', requireAuth, async (c) => {
         db
           .prepare(
             // `emotion` is not written: the column is stranded NULL by 0005.
+            // `imported_at` is what makes a bulk arrival distinguishable from
+            // somebody rating an episode tonight. `created_at` stays as it was
+            // — for a rating that is the upload moment, because TV Time's
+            // export carries no rating date and the phone stores none.
             `INSERT INTO ratings
-               (id, author_id, target_source, target_key, season, episode, score, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               (id, author_id, target_source, target_key, season, episode, score, created_at, imported_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (author_id, target_source, target_key,
                           COALESCE(season, -1), COALESCE(episode, -1)) DO NOTHING`,
           )
-          .bind(p.id, me, p.source, p.key, p.season, p.episode, p.score, p.createdAt),
+          .bind(p.id, me, p.source, p.key, p.season, p.episode, p.score, p.createdAt, nowIso),
       );
     }
 

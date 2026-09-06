@@ -9,9 +9,13 @@ import { call, freshDatabase, makeEnv } from './harness';
  */
 describe('the admin dashboard', () => {
   let env: Env;
+  /** The same database the env holds, for arranging rows a route cannot make. */
+  let raw: ReturnType<typeof freshDatabase>['raw'];
 
   beforeEach(() => {
-    env = { ...makeEnv(freshDatabase().db), ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = { ...makeEnv(fresh.db), ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
   });
 
   const login = (over: Record<string, string> = {}) =>
@@ -84,6 +88,27 @@ describe('the admin dashboard', () => {
     // Windows nest: a day is inside a week is inside a month.
     expect(t.comments_today).toBeLessThanOrEqual(t.comments_7d);
     expect(t.comments_7d).toBeLessThanOrEqual(t.comments_30d);
+  });
+
+  it('counts what was written here, never what arrived in bulk', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const now = new Date().toISOString();
+    // One rating written tonight, one seeded from an archive an hour ago. Both
+    // are real rows with today's created_at; only the first is activity.
+    raw
+      .prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'someone', 'someone', ?)`)
+      .run(now);
+    raw
+      .prepare(
+        `INSERT INTO ratings (id, author_id, target_source, target_key, score, created_at, imported_at)
+         VALUES ('r1', 'p1', 'tvdb', 'tvdb:1', 5, ?, NULL), ('r2', 'p1', 'tvdb', 'tvdb:2', 4, ?, ?)`,
+      )
+      .run(now, now, now);
+
+    const res = await call(env, 'GET', '/v1/admin/stats', { headers: { Cookie: cookie } });
+    expect(res.json.totals.ratings).toBe(2);
+    expect(res.json.totals.ratings_today).toBe(1);
+    expect(res.json.totals.raters_today).toBe(1);
   });
 
   it('lists people without listing anything they wrote', async () => {
