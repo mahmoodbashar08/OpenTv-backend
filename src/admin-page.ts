@@ -78,6 +78,7 @@ export const ADMIN_PAGE = `<!doctype html>
   .tag.paid { background:#13341c; color:#78be3d; }
   .tag.gift { background:#1b2540; color:#7ea6ff; }
   .tag.gone { background:#2a1416; color:#e5484d; }
+  .tag.act { background:#3a3213; color:#ffd400; }
   .plusbox { display:flex; gap:5px; align-items:center; }
   .plusbox select, .plusbox button { font:inherit; font-size:12px; padding:2px 6px;
       border-radius:6px; border:1px solid #34343a; background:#1c1c1f; color:#e9e9ee; }
@@ -101,6 +102,8 @@ export const ADMIN_PAGE = `<!doctype html>
   .tab { background:#16161a; color:#8a8a92; font-weight:600; font-size:13px;
          padding:7px 14px; border-radius:999px; }
   .tab.on { background:#26262b; color:#e9e9ee; }
+  /* Doing is the accent; opening is not. */
+  .did { color:#FFD400; font-weight:600; }
   .bulkbar { margin-top:14px; }
   .bulkbar button { width:auto; }
 </style>
@@ -135,6 +138,14 @@ export const ADMIN_PAGE = `<!doctype html>
     <h2>Activity by window &mdash; how many people</h2>
     <div class="grid" id="active"></div>
     <h2>People, newest first</h2>
+    <!-- OPENED IS NOT USED. The list answered "who exists" and never "who is
+         still here". Two buttons, not three: whether somebody DID anything is a
+         tag on their name, so it reads down the column without hiding the rest
+         of the list behind a filter. -->
+    <div class="tabs" id="whotabs">
+      <button class="tab on" data-who="all">Everyone</button>
+      <button class="tab" data-who="opened">Opened today</button>
+    </div>
     <div class="scroll"><table id="users"></table></div>
     <h2>Photos</h2>
     <div class="tabs" id="tabs">
@@ -200,6 +211,45 @@ function plusCell(u) {
 
 /** Never "3 hours ago" with no date under it: a relative age answers "are they
  *  still here", the date answers "when exactly", and both get asked. */
+/**
+ * WHAT TODAY PRODUCED, beside when they last opened it.
+ *
+ * "3h ago" says the app launched. It does not say whether the person rated an
+ * episode, voted a character or wrote a sentence, and those are the only events
+ * that make this a community rather than a list of installs. Opening and doing
+ * are drawn differently on purpose: a launch with nothing after it is dim, and
+ * anything at all is the accent.
+ *
+ * Imports are already excluded upstream, so a seeded archive never appears here
+ * as a busy afternoon.
+ */
+function todayCell(u) {
+  const bits = [];
+  if (u.today_comments) bits.push(u.today_comments + (u.today_comments === 1 ? ' comment' : ' comments'));
+  if (u.today_ratings) bits.push(u.today_ratings + (u.today_ratings === 1 ? ' rating' : ' ratings'));
+  if (u.today_characters) bits.push(u.today_characters + (u.today_characters === 1 ? ' character' : ' characters'));
+  if (u.today_emotions) bits.push(u.today_emotions + (u.today_emotions === 1 ? ' emotion' : ' emotions'));
+  if (bits.length) return '<span class="did">' + bits.join(' &middot; ') + '</span>';
+  return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
+}
+
+/**
+ * Did the app speak to the server today — the SERVER'S today.
+ *
+ * This used to work out midnight from the browser's clock, which is three hours
+ * away from UTC here, so for three hours every night the cards above counted one
+ * day and this table filtered another. The route decides now and sends the
+ * answer; the page only reads it.
+ */
+function openedToday(u) {
+  return !!u.opened_today;
+}
+
+/** Anything at all today, whatever kind. */
+function didToday(u) {
+  return !!(u.today_comments || u.today_ratings || u.today_characters || u.today_emotions);
+}
+
 function seenCell(iso) {
   if (!iso) return '<span class="name">never</span>';
   const t = Date.parse(iso);
@@ -363,32 +413,49 @@ async function load() {
     day + ': ' + n + '"><span>' + day.slice(8) + '</span></div>').join('');
 
   const people = await (await fetch('/v1/admin/users', { credentials: 'same-origin' })).json();
-  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-  $('users').innerHTML =
-    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th>' +
-    '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
-    '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
-    '<th class="num">Followers</th></tr>' +
-    (people.items || []).map((u) => {
-      const placeholder = String(u.handle).startsWith('user_p_');
-      const who = '<span class="who">@' + esc(u.handle) + '</span>' +
-        (placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
-        (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
-      const how = esc((u.providers || '').split(',').join(', ')) +
-        (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
-      return '<tr><td>' + who + '</td><td>' + plusCell(u) + '</td><td>' + grantCell(u.handle) +
-        '</td><td>' + seenCell(u.last_seen_at) + '</td><td>' + how +
-        '</td><td>' + esc(baghdad(u.created_at)) +
-        '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
-        '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
-        '</td><td class="num">' + u.followers + '</td></tr>';
-    }).join('');
+  allPeople = people.items || [];
+  drawPeople();
 
   await loadReview();
 
   $('foot').textContent = 'This page can see how many, and who — never what anybody wrote. Read ' +
     new Date().toLocaleTimeString();
+}
+
+/** The rows as fetched. The tabs filter this in the browser rather than asking
+ *  the server again: 200 rows is nothing, and a refetch per tap would make the
+ *  three buttons feel like page loads. */
+let allPeople = [];
+let whoFilter = 'all';
+
+function drawPeople() {
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
+  $('users').innerHTML =
+    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Today</th>' +
+    '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
+    '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
+    '<th class="num">Followers</th></tr>' +
+    rows.map((u) => {
+      const placeholder = String(u.handle).startsWith('user_p_');
+      // THE SAME SHAPE AS THE PLUS TAG, deliberately: both answer "what kind of
+      // person is this row" and the eye should find them in one pass down the
+      // names rather than two passes across the table.
+      const who = '<span class="who">@' + esc(u.handle) + '</span>' +
+        (didToday(u) ? ' <span class="tag act">active today</span>' : '') +
+        (placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
+        (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
+      const how = esc((u.providers || '').split(',').join(', ')) +
+        (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
+      return '<tr><td>' + who + '</td><td>' + plusCell(u) + '</td><td>' + grantCell(u.handle) +
+        '</td><td>' + seenCell(u.last_seen_at) + '</td><td>' + todayCell(u) + '</td><td>' + how +
+        '</td><td>' + esc(baghdad(u.created_at)) +
+        '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
+        '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
+        '</td><td class="num">' + u.followers + '</td></tr>';
+    }).join('') ||
+    '<tr><td colspan="12" class="name">Nobody yet today.</td></tr>';
 }
 
 /**
@@ -431,6 +498,15 @@ async function loadReview() {
       '</div></div>';
   }).join('');
 }
+
+/* The people filter. Redraws from what is already loaded — see drawPeople. */
+$('whotabs').addEventListener('click', (ev) => {
+  const tab = ev.target.closest('.tab');
+  if (!tab) return;
+  whoFilter = tab.dataset.who;
+  [...$('whotabs').children].forEach((b) => b.classList.toggle('on', b === tab));
+  drawPeople();
+});
 
 $('tabs').addEventListener('click', (ev) => {
   const tab = ev.target.closest('.tab');

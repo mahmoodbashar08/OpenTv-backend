@@ -313,7 +313,8 @@ admin.get('/admin/users', async (c) => {
   }
 
   const res = await c.env.DB.prepare(
-    `SELECT p.handle,
+    `SELECT p.id,
+            p.handle,
             p.display_name,
             p.created_at,
             -- PLUS, BOTH WAYS IT CAN BE TRUE. is_plus is the flag the
@@ -352,7 +353,73 @@ admin.get('/admin/users', async (c) => {
       LIMIT 200`,
   ).all<Record<string, unknown>>();
 
-  return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
+  /*
+   * WHAT THEY DID TODAY, as its own query rather than four more correlated
+   * subqueries on the one above.
+   *
+   * WHY IT IS SEPARATE. The columns beside each person are lifetime counts, so
+   * they scan a whole table per row — acceptable once. Repeating that shape
+   * four times with a date filter would multiply a 200-row page by four scans
+   * of a 76,000-row table for an answer that concerns a handful of rows. This
+   * reads TODAY first, which is small by definition, and the route joins it in
+   * memory.
+   *
+   * IMPORTS EXCLUDED, the same rule the activity windows use: somebody seeding
+   * a TV Time archive is one decision, not three thousand, and a dashboard that
+   * cannot tell them apart says the community is busy on the day one person
+   * signed up.
+   *
+   * OPENING IS NOT DOING. `last_seen_at` already says they launched the app;
+   * this says whether anything came of it, which is the difference between a
+   * number that flatters and a number that informs.
+   */
+  const acted = await c.env.DB.prepare(
+    `SELECT who, SUM(comments) AS comments, SUM(ratings) AS ratings,
+            SUM(characters) AS characters, SUM(emotions) AS emotions
+       FROM (
+         SELECT author_id AS who, COUNT(*) AS comments, 0 AS ratings, 0 AS characters, 0 AS emotions
+           FROM comments
+          WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= date('now')
+          GROUP BY author_id
+         UNION ALL
+         SELECT author_id, 0, COUNT(*), 0, 0 FROM ratings
+          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY author_id
+         UNION ALL
+         SELECT voter_id, 0, 0, COUNT(*), 0 FROM character_votes
+          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY voter_id
+         UNION ALL
+         SELECT author_id, 0, 0, 0, COUNT(*) FROM emotion_votes
+          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY author_id
+       )
+      GROUP BY who`,
+  ).all<{ who: string; comments: number; ratings: number; characters: number; emotions: number }>();
+
+  /*
+   * TODAY IS DECIDED HERE, NOT IN THE BROWSER.
+   *
+   * The stats cards count a UTC day; the page was deciding "opened today" from
+   * the reader's own midnight. Three hours east of UTC those are different days
+   * for three hours every night, and the dashboard read "10 opened today" above
+   * a table filtered to nobody — both numbers true, about different days.
+   *
+   * One boundary, sent with the row.
+   */
+  const midnightUtc = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+
+  const byId = new Map((acted.results ?? []).map((r) => [r.who, r]));
+  const items = (res.results ?? []).map((u) => {
+    const t = byId.get(String(u.id));
+    return {
+      ...u,
+      opened_today: typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc,
+      today_comments: t?.comments ?? 0,
+      today_ratings: t?.ratings ?? 0,
+      today_characters: t?.characters ?? 0,
+      today_emotions: t?.emotions ?? 0,
+    };
+  });
+
+  return c.json({ items }, 200, { 'Cache-Control': 'no-store' });
 });
 
 /**
