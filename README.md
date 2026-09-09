@@ -79,3 +79,11 @@ the kind of thing it is.
 
 The app is separate and more permissive:
 [MPL-2.0](https://github.com/mahmoodbashar08/opentv-app).
+
+Copyright (C) 2026 Mahmood Bashar. See [NOTICE](NOTICE).
+
+## Helping
+
+If you run this and it is useful, [here is what actually helps](https://theopentv.com/sponsor).
+There is no donation channel yet — the honest reasons are on that page — so the
+list is a star, a store review, and a bug report.
