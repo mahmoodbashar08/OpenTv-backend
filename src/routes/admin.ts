@@ -330,6 +330,7 @@ admin.get('/admin/users', async (c) => {
             -- it is a DATE, not a history: nothing records the launch before
             -- this one.
             p.last_seen_at,
+            p.app_version,
             -- The address only where the person typed one into this app. A
             -- provider's copy is Apple's or Google's to show, not ours to
             -- collect a list of.
@@ -373,51 +374,86 @@ admin.get('/admin/users', async (c) => {
    * this says whether anything came of it, which is the difference between a
    * number that flatters and a number that informs.
    */
-  const acted = await c.env.DB.prepare(
-    `SELECT who, SUM(comments) AS comments, SUM(ratings) AS ratings,
-            SUM(characters) AS characters, SUM(emotions) AS emotions
-       FROM (
-         SELECT author_id AS who, COUNT(*) AS comments, 0 AS ratings, 0 AS characters, 0 AS emotions
-           FROM comments
-          WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= date('now')
-          GROUP BY author_id
-         UNION ALL
-         SELECT author_id, 0, COUNT(*), 0, 0 FROM ratings
-          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY author_id
-         UNION ALL
-         SELECT voter_id, 0, 0, COUNT(*), 0 FROM character_votes
-          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY voter_id
-         UNION ALL
-         SELECT author_id, 0, 0, 0, COUNT(*) FROM emotion_votes
-          WHERE imported_at IS NULL AND created_at >= date('now') GROUP BY author_id
-       )
-      GROUP BY who`,
-  ).all<{ who: string; comments: number; ratings: number; characters: number; emotions: number }>();
-
   /*
-   * TODAY IS DECIDED HERE, NOT IN THE BROWSER.
-   *
-   * The stats cards count a UTC day; the page was deciding "opened today" from
-   * the reader's own midnight. Three hours east of UTC those are different days
-   * for three hours every night, and the dashboard read "10 opened today" above
-   * a table filtered to nobody — both numbers true, about different days.
-   *
-   * One boundary, sent with the row.
+   * TODAY IS DECIDED HERE, NOT IN THE BROWSER. The stats cards count a UTC day;
+   * the page was working midnight out from the reader's own clock, and three
+   * hours east of UTC those are different days for three hours every night.
    */
   const midnightUtc = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
 
-  const byId = new Map((acted.results ?? []).map((r) => [r.who, r]));
-  const items = (res.results ?? []).map((u) => {
-    const t = byId.get(String(u.id));
-    return {
-      ...u,
-      opened_today: typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc,
-      today_comments: t?.comments ?? 0,
-      today_ratings: t?.ratings ?? 0,
-      today_characters: t?.characters ?? 0,
-      today_emotions: t?.emotions ?? 0,
-    };
-  });
+  const acted = await c.env.DB.prepare(
+    `SELECT kind, who, target_key, season, episode, detail
+       FROM (
+         SELECT 'comment' AS kind, author_id AS who, target_key, season, episode, NULL AS detail,
+                created_at
+           FROM comments
+          WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= date('now')
+         UNION ALL
+         SELECT 'rating', author_id, target_key, season, episode, CAST(score AS TEXT), created_at
+           FROM ratings WHERE imported_at IS NULL AND created_at >= date('now')
+         UNION ALL
+         SELECT 'character', voter_id, target_key, season, episode, character_name, created_at
+           FROM character_votes WHERE imported_at IS NULL AND created_at >= date('now')
+         UNION ALL
+         SELECT 'emotion', author_id, target_key, season, episode, emotion, created_at
+           FROM emotion_votes WHERE imported_at IS NULL AND created_at >= date('now')
+       )
+      ORDER BY created_at DESC
+      LIMIT 400`,
+  ).all<{
+    kind: string;
+    who: string;
+    target_key: string;
+    season: number | null;
+    episode: number | null;
+    detail: string | null;
+  }>();
+
+  /*
+   * NAMES, FROM WHAT MEMBERS ALREADY PUBLISH. `profile_titles` is the shelf a
+   * member chose to show on their profile, so it holds a name against a tvdb
+   * key. Any row for that key gives the same title — "289590 is Severance" is a
+   * fact about the catalogue, not about the person who happened to publish it —
+   * so one lookup names everybody's rows.
+   *
+   * Only the keys in today's rows are asked for. A join across the whole table
+   * would read tens of thousands of shelf rows to label a dozen events.
+   */
+  const keys = [...new Set((acted.results ?? []).map((r) => r.target_key))];
+  const names = new Map<string, string>();
+  if (keys.length) {
+    const found = await c.env.DB.prepare(
+      `SELECT target_key, MIN(name) AS name FROM profile_titles
+        WHERE name IS NOT NULL AND target_key IN (${keys.map(() => '?').join(',')})
+        GROUP BY target_key`,
+    )
+      .bind(...keys)
+      .all<{ target_key: string; name: string }>();
+    for (const row of found.results ?? []) names.set(row.target_key, row.name);
+  }
+
+  const byId = new Map<string, { kind: string; title: string; where: string; detail: string | null }[]>();
+  for (const r of acted.results ?? []) {
+    const list = byId.get(r.who) ?? [];
+    // A season of -1 is this schema's "the whole title", not season minus one.
+    const where =
+      r.season != null && r.season >= 0 && r.episode != null && r.episode >= 0
+        ? `S${r.season}E${r.episode}`
+        : '';
+    list.push({
+      kind: r.kind,
+      title: names.get(r.target_key) ?? r.target_key,
+      where,
+      detail: r.detail,
+    });
+    byId.set(r.who, list);
+  }
+
+  const items = (res.results ?? []).map((u) => ({
+    ...u,
+    opened_today: typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc,
+    today: byId.get(String(u.id)) ?? [],
+  }));
 
   return c.json({ items }, 200, { 'Cache-Control': 'no-store' });
 });

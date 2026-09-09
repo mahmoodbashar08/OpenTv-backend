@@ -46,12 +46,27 @@ export const requireAuth = createMiddleware<App>(async (c, next) => {
    * failing their request over.
    */
   const today = new Date().toISOString().slice(0, 10);
+  /*
+   * THE VERSION RIDES ALONG, on the same one-write-a-day guard.
+   *
+   * `api.ts` puts it on every request, so this needs no route of its own and no
+   * second write. Validated rather than trusted: a header is whatever the
+   * caller typed, and this one goes in a dashboard, so anything that is not a
+   * short dotted number is dropped instead of stored.
+   *
+   * Kept out of the WHERE clause deliberately. Guarding on the version too
+   * would write a row every time somebody updated, which is right, but it would
+   * also mean a member who never updates is never stamped again — and the
+   * once-a-day rule is what keeps this free.
+   */
+  const raw = c.req.header('X-OpenTV-Version') ?? '';
+  const version = /^[0-9]{1,3}(\.[0-9]{1,3}){0,3}$/.test(raw) ? raw : null;
   c.executionCtx.waitUntil(
     c.env.DB.prepare(
-      `UPDATE profiles SET last_seen_at = ?
+      `UPDATE profiles SET last_seen_at = ?, app_version = COALESCE(?, app_version)
         WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
     )
-      .bind(new Date().toISOString(), session.profileId, today)
+      .bind(new Date().toISOString(), version, session.profileId, today)
       .run()
       .catch(() => {}),
   );

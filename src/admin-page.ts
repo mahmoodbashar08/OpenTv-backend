@@ -79,6 +79,8 @@ export const ADMIN_PAGE = `<!doctype html>
   .tag.gift { background:#1b2540; color:#7ea6ff; }
   .tag.gone { background:#2a1416; color:#e5484d; }
   .tag.act { background:#3a3213; color:#ffd400; }
+  .ev { white-space:nowrap; line-height:1.5; }
+  .vb { color:#6b6b72; }
   .plusbox { display:flex; gap:5px; align-items:center; }
   .plusbox select, .plusbox button { font:inherit; font-size:12px; padding:2px 6px;
       border-radius:6px; border:1px solid #34343a; background:#1c1c1f; color:#e9e9ee; }
@@ -224,13 +226,23 @@ function plusCell(u) {
  * as a busy afternoon.
  */
 function todayCell(u) {
-  const bits = [];
-  if (u.today_comments) bits.push(u.today_comments + (u.today_comments === 1 ? ' comment' : ' comments'));
-  if (u.today_ratings) bits.push(u.today_ratings + (u.today_ratings === 1 ? ' rating' : ' ratings'));
-  if (u.today_characters) bits.push(u.today_characters + (u.today_characters === 1 ? ' character' : ' characters'));
-  if (u.today_emotions) bits.push(u.today_emotions + (u.today_emotions === 1 ? ' emotion' : ' emotions'));
-  if (bits.length) return '<span class="did">' + bits.join(' &middot; ') + '</span>';
-  return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const rows = u.today || [];
+  if (!rows.length) {
+    return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
+  }
+  // The verb first, because the kind of thing they did is what is being scanned
+  // for; the title carries the accent because it is what the eye stops on.
+  const verb = { comment: 'wrote on', rating: 'rated', character: 'voted', emotion: 'felt' };
+  return rows.slice(0, 4).map((r) => {
+    const detail = r.kind === 'rating' ? ' ' + esc(r.detail) + '/10'
+      : r.kind === 'character' || r.kind === 'emotion' ? ' &middot; ' + esc(r.detail)
+      : '';
+    return '<div class="ev"><span class="vb">' + (verb[r.kind] || r.kind) + '</span> ' +
+      '<span class="did">' + esc(r.title) + (r.where ? ' ' + esc(r.where) : '') + '</span>' +
+      '<span class="name">' + detail + '</span></div>';
+  }).join('') + (rows.length > 4 ? '<div class="name">+' + (rows.length - 4) + ' more</div>' : '');
 }
 
 /**
@@ -247,7 +259,7 @@ function openedToday(u) {
 
 /** Anything at all today, whatever kind. */
 function didToday(u) {
-  return !!(u.today_comments || u.today_ratings || u.today_characters || u.today_emotions);
+  return !!(u.today && u.today.length);
 }
 
 function seenCell(iso) {
@@ -418,8 +430,11 @@ async function load() {
 
   await loadReview();
 
-  $('foot').textContent = 'This page can see how many, and who — never what anybody wrote. Read ' +
-    new Date().toLocaleTimeString();
+  // WAS "never what anybody wrote", and the Today column made that untrue: it
+  // names the title somebody rated or voted on. Comment TEXT is still never
+  // read here, and that is the line the sentence now draws.
+  $('foot').textContent = 'This page reads counts, and the titles today was spent on — never the ' +
+    'text of a comment. Read ' + new Date().toLocaleTimeString();
 }
 
 /** The rows as fetched. The tabs filter this in the browser rather than asking
@@ -449,7 +464,9 @@ function drawPeople() {
       const how = esc((u.providers || '').split(',').join(', ')) +
         (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
       return '<tr><td>' + who + '</td><td>' + plusCell(u) + '</td><td>' + grantCell(u.handle) +
-        '</td><td>' + seenCell(u.last_seen_at) + '</td><td>' + todayCell(u) + '</td><td>' + how +
+        '</td><td>' + seenCell(u.last_seen_at) +
+          (u.app_version ? '<div class="name">v' + esc(u.app_version) + '</div>' : '') +
+        '</td><td>' + todayCell(u) + '</td><td>' + how +
         '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
         '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +

@@ -1,0 +1,18 @@
+-- WHICH BUILD A MEMBER IS ACTUALLY RUNNING.
+--
+-- A Plus grant was written for somebody and never appeared on their phone, and
+-- there was no way to tell which of two very different things had happened:
+-- they had not reopened the app, or they were on a version older than 1.5.0,
+-- which is where reading a server grant shipped. The database recorded WHEN
+-- somebody last called and never WHAT was calling.
+--
+-- The choice being made without it is worse than the missing column: forcing an
+-- update on everybody below some floor, with no idea whether that is three
+-- people or thirty, and a forced-update screen locks somebody out of a library
+-- that lives on their own phone.
+--
+-- A VERSION STRING AND NOTHING ELSE. No device model, no OS build, no
+-- identifier, no history — the column is overwritten, so it says what they run
+-- now and never where they have been. It answers "is this install too old for
+-- the feature we are discussing" and it cannot answer anything about a person.
+ALTER TABLE profiles ADD COLUMN app_version TEXT;
