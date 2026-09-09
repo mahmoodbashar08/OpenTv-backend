@@ -1,0 +1,19 @@
+OpenTV backend — the community layer
+Copyright (C) 2026 Mahmood Bashar — https://itsnoddy.dev
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE beside this file.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+WHY THIS FILE EXISTS, AND WHY IT MATTERS MORE HERE THAN ON THE APP. The AGPL was
+chosen so that anyone who runs a modified copy of this server as a service has
+to publish their changes. That obligation is only worth anything if there is an
+identified holder who could enforce it, and the licence text itself carries an
+unfilled template line rather than a name. This file is the name.
+
+Contact: hello@theopentv.com
