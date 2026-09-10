@@ -23,6 +23,15 @@ export type Env = {
   AVATARS?: R2Bucket;
 
   /**
+   * Library backups — one opaque ZIP per profile. See `routes/backup.ts`.
+   *
+   * Optional like every other capability: a deployment without it answers 503
+   * on upload and "no backup" on the info route, so the app simply never
+   * offers the row. Nothing else on the server reads this bucket.
+   */
+  BACKUPS?: R2Bucket;
+
+  /**
    * The development Plus switch — see `routes/dev.ts`.
    *
    * UNSET IN PRODUCTION, and that is the whole guard: without it the route

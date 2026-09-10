@@ -127,6 +127,9 @@
   // header of src/routes/avatars.ts, and the scanning caveat in it.
   "r2_buckets": [
     { "binding": "COMMENT_IMAGES", "bucket_name": "opentv-comment-images" },
-    { "binding": "AVATARS", "bucket_name": "opentv-avatars" }
+    { "binding": "AVATARS", "bucket_name": "opentv-avatars" },
+    // Opt-in library backups for Plus. One opaque ZIP per profile, never read
+    // by this server — see the header of src/routes/backup.ts.
+    { "binding": "BACKUPS", "bucket_name": "opentv-backups" }
   ]
 }

@@ -96,13 +96,23 @@ const noCache = {
  * cannot compare what came back to what went in is only testing the status
  * code.
  */
-export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; type?: string }> } {
-  const stored = new Map<string, { size: number; type?: string }>();
+type Stored = { size: number; type?: string; custom?: Record<string, string> };
+
+export function fakeBucket(): R2Bucket & { stored: Map<string, Stored> } {
+  const stored = new Map<string, Stored>();
   const bytes = new Map<string, Uint8Array>();
   return {
     stored,
-    async put(key: string, value: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }) {
-      stored.set(key, { size: value.byteLength, type: opts?.httpMetadata?.contentType });
+    async put(
+      key: string,
+      value: ArrayBuffer,
+      opts?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
+    ) {
+      stored.set(key, {
+        size: value.byteLength,
+        type: opts?.httpMetadata?.contentType,
+        custom: opts?.customMetadata,
+      });
       bytes.set(key, new Uint8Array(value));
       return {} as never;
     },
@@ -113,7 +123,23 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, { size: number; t
       if (!body) return null;
       return { body, httpMetadata: { contentType: stored.get(key)?.type } } as never;
     },
-  } as unknown as R2Bucket & { stored: Map<string, { size: number; type?: string }> };
+    // `head` and `delete` exist because the backup routes use them: an info
+    // route that never downloads the ZIP, and a delete that must stay
+    // idempotent. A stub missing either turns a real branch into a TypeError.
+    async head(key: string) {
+      const meta = stored.get(key);
+      if (!meta) return null;
+      return {
+        size: meta.size,
+        uploaded: new Date('2026-09-10T00:00:00.000Z'),
+        customMetadata: meta.custom ?? {},
+      } as never;
+    },
+    async delete(key: string) {
+      stored.delete(key);
+      bytes.delete(key);
+    },
+  } as unknown as R2Bucket & { stored: Map<string, Stored> };
 }
 
 /** The smallest KV that behaves: get/put/delete over a Map, per environment. */
@@ -142,7 +168,7 @@ export function kv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-export function makeEnv(db: D1Database, bucket?: R2Bucket): Env {
+export function makeEnv(db: D1Database, bucket?: R2Bucket, backups?: R2Bucket): Env {
   return {
     DB: db,
     // A real little KV, because the auth path now reads it: the session epoch
@@ -156,7 +182,40 @@ export function makeEnv(db: D1Database, bucket?: R2Bucket): Env {
     // Absent unless a suite asks for it, so every other suite keeps proving the
     // guard: no binding must mean "off", never a crash.
     COMMENT_IMAGES: bucket,
+    BACKUPS: backups,
   };
+}
+
+/**
+ * A request whose body is BYTES, not JSON — what a phone uploading a backup
+ * ZIP actually sends. `call` stringifies its body, which turns a Uint8Array
+ * into `{"0":80,"1":75,...}` and a size test into nonsense.
+ */
+export async function callBytes(
+  env: Env,
+  method: string,
+  path: string,
+  body: Uint8Array | undefined,
+  opts: { token?: string; headers?: Record<string, string> } = {},
+): Promise<{ status: number; json: any; bytes: Uint8Array }> {
+  const headers = new Headers(opts.headers ?? {});
+  if (opts.token) headers.set('Authorization', `Bearer ${opts.token}`);
+  if (body) headers.set('Content-Type', 'application/zip');
+  const res = await worker.fetch(
+    // A GET may not carry one at all — `new Request` throws rather than
+    // ignoring it, which is how this helper first failed on its own read tests.
+    new Request(`https://api.opentv.test${path}`, { method, headers, body }),
+    env,
+    { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+  );
+  const raw = new Uint8Array(await res.arrayBuffer());
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    json = null;
+  }
+  return { status: res.status, json, bytes: raw };
 }
 
 /** A multipart request — the shape `POST /v1/comments/image` takes. */
