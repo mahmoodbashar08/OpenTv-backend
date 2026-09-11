@@ -281,20 +281,76 @@ describe('POST /v1/character-votes', () => {
     expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":1}', total: 1 });
   });
 
-  it('is one vote per person per show: a re-vote REPLACES and never duplicates', async () => {
+  /**
+   * ONE VOTE PER EPISODE IN THE TABLE, ONE PER PERSON IN THE ROLLUP.
+   *
+   * These are two different rules and 0032 separated them. TV Time asked the
+   * question per episode and every archive answers it that way, so the rows
+   * have to keep all of it; but a bar reading "62% chose Jinx" must mean 62% of
+   * PEOPLE, so the aggregate still counts each voter once — at their most
+   * recent favourite for the show.
+   */
+  it('keeps a favourite per EPISODE rather than one per show', async () => {
     await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
     await call(env, 'POST', '/v1/character-votes', {
       token,
       body: charVote({ character: 'Arya Stark', season: 4, episode: 1 }),
     });
 
-    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 1 });
-    expect(raw.prepare('SELECT character_name, season FROM character_votes').get()).toEqual({
-      character_name: 'Arya Stark',
-      season: 4,
-    });
-    // The count MOVED. `total` counts people, so it stays at one.
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 2 });
+    // The count MOVED to their latest; `total` counts people, so it stays at one.
     expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":0,"Arya Stark":1}', total: 1 });
+  });
+
+  it('still replaces when the SAME episode is voted on twice', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote() });
+    await call(env, 'POST', '/v1/character-votes', {
+      token,
+      body: charVote({ character: 'Arya Stark' }),
+    });
+
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 1 });
+    expect(raw.prepare('SELECT character_name FROM character_votes').get()).toEqual({
+      character_name: 'Arya Stark',
+    });
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":0,"Arya Stark":1}', total: 1 });
+  });
+
+  /**
+   * DELETING ONE EPISODE'S VOTE MUST NOT CLEAR THE SHOW.
+   *
+   * Before 0032 a person had one row per show and delete meant "remove it".
+   * Now they can hold forty, and taking them all because somebody cleared one
+   * episode would silently erase thirty-nine answers they never touched.
+   */
+  it('removes one episode’s vote and leaves the others alone', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote({ episode: 1 }) });
+    await call(env, 'POST', '/v1/character-votes', {
+      token,
+      body: charVote({ episode: 2, character: 'Arya Stark' }),
+    });
+
+    const res = await call(env, 'DELETE', '/v1/character-votes', {
+      token,
+      body: { target_source: 'tvdb', target_key: '121361', season: 1, episode: 2 },
+    });
+    expect(res.json).toEqual({ ok: true, removed: true });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 1 });
+    // Their rollup contribution MOVES BACK to the favourite that remains —
+    // they still have one, so `total` does not drop.
+    expect(charAggregate()).toEqual({
+      counts: '{"Tyrion Lannister":1,"Arya Stark":0}',
+      total: 1,
+    });
+  });
+
+  it('drops the person from the rollup only when their last vote goes', async () => {
+    await call(env, 'POST', '/v1/character-votes', { token, body: charVote({ episode: 1 }) });
+    await call(env, 'DELETE', '/v1/character-votes', {
+      token,
+      body: { target_source: 'tvdb', target_key: '121361', season: 1, episode: 1 },
+    });
+    expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":0}', total: 0 });
   });
 
   it('counts two people separately', async () => {
@@ -400,9 +456,16 @@ describe('DELETE /v1/character-votes', () => {
 });
 
 describe('POST /v1/character-votes/import', () => {
-  it('imports one vote per show and skips the rest of that show’s episodes', async () => {
-    // The archive holds a favourite per EPISODE; the community holds one per
-    // show. Forty per-episode rows collapse to one, honestly counted.
+  /**
+   * THE ARCHIVE IS KEPT WHOLE. This used to collapse a show to one row and
+   * count the rest as `skipped` — honest about a real loss. Measured on one
+   * genuine archive: five shows with more than one favourite, eight of
+   * seventeen votes thrown away.
+   *
+   * The ROLLUP is unchanged: three rows for one show still means one person,
+   * counted once, at the first favourite the import saw.
+   */
+  it('keeps every episode’s favourite, and still counts the person once', async () => {
     const items = [
       charVote({ episode: 1 }),
       charVote({ episode: 2, character: 'Arya Stark' }),
@@ -410,7 +473,8 @@ describe('POST /v1/character-votes/import', () => {
       charVote({ target_key: '73739', character: 'Sawyer' }),
     ];
     const res = await call(env, 'POST', '/v1/character-votes/import', { token, body: { items } });
-    expect(res.json).toEqual({ imported: 2, skipped: 2 });
+    expect(res.json).toEqual({ imported: 4, skipped: 0 });
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM character_votes').get()).toEqual({ n: 4 });
     expect(charAggregate()).toEqual({ counts: '{"Tyrion Lannister":1}', total: 1 });
     expect(charAggregate('73739')).toEqual({ counts: '{"Sawyer":1}', total: 1 });
   });

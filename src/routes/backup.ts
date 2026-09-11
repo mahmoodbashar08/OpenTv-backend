@@ -127,7 +127,7 @@ async function isPlus(c: Context<App>): Promise<boolean> {
 
 // ── write ────────────────────────────────────────────────────────────────────
 
-backup.put('/backup', requireAuth, async (c) => {
+backup.post('/backup', requireAuth, async (c) => {
   const bucket = c.env.BACKUPS;
   if (!bucket) return fail(c, 503, 'unavailable', 'Cloud backup is not configured.');
   if (!(await isPlus(c)))

@@ -979,8 +979,27 @@ export async function stableCharacterVoteId(input: {
   voterId: string;
   targetSource: string;
   targetKey: string;
+  /**
+   * THE EPISODE IS PART OF THE IDENTITY, and leaving it out is what collapsed
+   * an archive. Every episode of one show hashed to the same id, so the second
+   * and every later favourite hit the same row and were skipped — reported
+   * honestly as `skipped`, and still thrown away. Measured on a real archive:
+   * five shows with more than one, eight of seventeen votes lost.
+   *
+   * Null is folded to -1 rather than to the empty string, exactly as the
+   * uniqueness index does, so an unnumbered episode has one identity here and
+   * one there.
+   */
+  season?: number | null;
+  episode?: number | null;
 }): Promise<string> {
-  return `imc_${await hash32([input.voterId, input.targetSource, input.targetKey])}`;
+  return `imc_${await hash32([
+    input.voterId,
+    input.targetSource,
+    input.targetKey,
+    String(input.season ?? -1),
+    String(input.episode ?? -1),
+  ])}`;
 }
 
 // ── character votes ──────────────────────────────────────────────────────────

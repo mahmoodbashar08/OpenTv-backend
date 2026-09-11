@@ -48,6 +48,18 @@ const DECREMENT = (inner: string) => `json_set(${inner},
                     '$."' || ? || '"',
                     MAX(0, COALESCE(json_extract(character_vote_aggregates.counts, '$."' || ? || '"'), 0) - 1))`;
 
+/**
+ * Add one to a character on top of an expression that already changed the blob.
+ *
+ * `INCREMENT` starts from the STORED counts, so it cannot be nested — the outer
+ * call would read the row's original value and throw away the decrement
+ * underneath it. This one takes the modified blob as its base, which is what a
+ * move needs: one character down and another up, in a single write.
+ */
+const INCREMENT_ON = (inner: string) => `json_set(${inner},
+                    '$."' || ? || '"',
+                    COALESCE(json_extract(${inner === '' ? 'character_vote_aggregates.counts' : 'character_vote_aggregates.counts'}, '$."' || ? || '"'), 0) + 1)`;
+
 function newCharacterVoteId(): string {
   return `cv_${crypto.randomUUID().replace(/-/g, '')}`;
 }
@@ -85,15 +97,26 @@ characterVotes.post('/character-votes', requireAuth, async (c) => {
   const key = b.target_key;
   const now = new Date().toISOString();
 
-  // The previous favourite, alone: a batch cannot branch on a result. Changing
-  // your mind moves one count to another and leaves `total` alone — a re-vote
-  // is not a new person.
+  /*
+   * THE VOTER'S SHOW-LEVEL FAVOURITE, which is now a different thing from
+   * "their row".
+   *
+   * Votes are stored per EPISODE since 0032, so one person can hold forty rows
+   * for one show — but the rollup still counts each person once, because a bar
+   * saying "62% chose Jinx" must mean 62% of PEOPLE. Their contribution is
+   * their most recent favourite for the show, so voting again anywhere in the
+   * series moves their one count rather than adding another.
+   *
+   * A batch cannot branch on a result, hence the read first.
+   */
   const prev = await db
     .prepare(
-      'SELECT id, character_name FROM character_votes WHERE voter_id = ? AND target_source = ? AND target_key = ?',
+      `SELECT character_name FROM character_votes
+        WHERE voter_id = ? AND target_source = ? AND target_key = ?
+        ORDER BY created_at DESC LIMIT 1`,
     )
     .bind(me, src, key)
-    .first<{ id: string; character_name: string }>();
+    .first<{ character_name: string }>();
 
   const moved = prev !== null && prev.character_name !== name.name;
   const binds: (string | number)[] = [];
@@ -125,14 +148,18 @@ characterVotes.post('/character-votes', requireAuth, async (c) => {
         `INSERT INTO character_votes
            (id, voter_id, target_source, target_key, character_name, character_id, season, episode, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (voter_id, target_source, target_key) DO UPDATE SET
-           character_name = excluded.character_name,
-           character_id   = excluded.character_id,
-           season         = excluded.season,
-           episode        = excluded.episode`,
+         ON CONFLICT (voter_id, target_source, target_key, COALESCE(season, -1), COALESCE(episode, -1))
+           DO UPDATE SET
+             character_name = excluded.character_name,
+             character_id   = excluded.character_id,
+             created_at     = excluded.created_at`,
       )
       .bind(
-        prev?.id ?? newCharacterVoteId(),
+        // A fresh id every time: the conflict target is the EPISODE now, so an
+        // existing row keeps its own id and this one is never used. Reusing
+        // `prev.id` would have written this episode's vote over another
+        // episode's row.
+        newCharacterVoteId(),
         me,
         src,
         key,
@@ -185,26 +212,84 @@ characterVotes.delete('/character-votes', requireAuth, async (c) => {
   const src = b.target_source;
   const key = b.target_key;
 
-  const prev = await db
-    .prepare('SELECT character_name FROM character_votes WHERE voter_id = ? AND target_source = ? AND target_key = ?')
+  /*
+   * ONE EPISODE'S VOTE, NOT THE WHOLE SHOW'S.
+   *
+   * Before 0032 a person had one row per show and this deleted it. Now they can
+   * hold one per episode, and deleting them all because somebody cleared a
+   * single episode would take away thirty-nine answers they never touched. The
+   * season and episode are optional in the body only so the pre-0032 app keeps
+   * working; without them this still means "my vote for this show", which is
+   * what that app thought it was sending.
+   */
+  const season = numberOrNull(b.season);
+  const episode = numberOrNull(b.episode);
+  const scoped = season !== undefined && episode !== undefined && (season !== null || episode !== null);
+
+  const where = scoped
+    ? 'voter_id = ? AND target_source = ? AND target_key = ? AND COALESCE(season, -1) = ? AND COALESCE(episode, -1) = ?'
+    : 'voter_id = ? AND target_source = ? AND target_key = ?';
+  const args: (string | number)[] = scoped
+    ? [me, src, key, season ?? -1, episode ?? -1]
+    : [me, src, key];
+
+  /*
+   * WHAT THEIR ROLLUP CONTRIBUTION IS NOW, AND WHAT IT BECOMES.
+   *
+   * The aggregate counts each person once, at their most recent favourite for
+   * the show. Removing one episode's vote only moves that count if the removed
+   * row WAS the most recent — and if another vote remains, the count moves to
+   * it rather than disappearing, because the person still has a favourite.
+   */
+  const before = await db
+    .prepare(
+      `SELECT character_name FROM character_votes
+        WHERE voter_id = ? AND target_source = ? AND target_key = ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
     .bind(me, src, key)
     .first<{ character_name: string }>();
-  if (!prev) return c.json({ ok: true, removed: false });
+  if (!before) return c.json({ ok: true, removed: false });
 
-  await db.batch([
-    db
+  const gone = await db.prepare(`SELECT 1 AS one FROM character_votes WHERE ${where} LIMIT 1`).bind(...args).first();
+  if (!gone) return c.json({ ok: true, removed: false });
+
+  await db.prepare(`DELETE FROM character_votes WHERE ${where}`).bind(...args).run();
+
+  const after = await db
+    .prepare(
+      `SELECT character_name FROM character_votes
+        WHERE voter_id = ? AND target_source = ? AND target_key = ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(me, src, key)
+    .first<{ character_name: string }>();
+
+  const now = new Date().toISOString();
+  if (!after) {
+    // They have no favourite for this show any more: one fewer person.
+    await db
       .prepare(
         `UPDATE character_vote_aggregates
-            SET counts = ${DECREMENT('COALESCE(character_vote_aggregates.counts, \'{}\')')},
+            SET counts = ${DECREMENT("COALESCE(character_vote_aggregates.counts, '{}')")},
                 total = MAX(0, character_vote_aggregates.total - 1),
                 updated_at = ?
           WHERE target_source = ? AND target_key = ?`,
       )
-      .bind(prev.character_name, prev.character_name, new Date().toISOString(), src, key),
-    db
-      .prepare('DELETE FROM character_votes WHERE voter_id = ? AND target_source = ? AND target_key = ?')
-      .bind(me, src, key),
-  ]);
+      .bind(before.character_name, before.character_name, now, src, key)
+      .run();
+  } else if (after.character_name !== before.character_name) {
+    // Still one person, now counted against a different character.
+    await db
+      .prepare(
+        `UPDATE character_vote_aggregates
+            SET counts = ${INCREMENT_ON(DECREMENT("COALESCE(character_vote_aggregates.counts, '{}')"))},
+                updated_at = ?
+          WHERE target_source = ? AND target_key = ?`,
+      )
+      .bind(before.character_name, before.character_name, after.character_name, after.character_name, now, src, key)
+      .run();
+  }
 
   return c.json({ ok: true, removed: true });
 });
@@ -256,10 +341,15 @@ characterVotes.post('/character-votes/import', requireAuth, async (c) => {
     .first();
   if (!alive) return fail(c, 401, 'unauthenticated', 'No such profile.');
 
-  // The archive holds one vote per EPISODE and the server holds one per SHOW,
-  // so a show with forty per-episode favourites collapses to one row here. The
-  // first item wins and the other thirty-nine are `skipped`, which is the
-  // honest number: they were not brought over.
+  /*
+   * EVERY EPISODE'S FAVOURITE IS KEPT since 0032. This used to collapse a show
+   * to one row — the first item won and the rest were counted as `skipped`,
+   * which was an honest number for a real loss.
+   *
+   * The ROLLUP still counts each person once per show: the aggregate insert
+   * below is guarded on the voter having no vote for that show yet, so the
+   * second episode of the same series adds a row and no percentage.
+   */
   const prepared: PreparedCharacterVote[] = [];
   for (const raw of items) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -283,6 +373,8 @@ characterVotes.post('/character-votes/import', requireAuth, async (c) => {
         voterId: me,
         targetSource: it.target_source,
         targetKey: it.target_key,
+        season,
+        episode,
       }),
       source: it.target_source,
       key: it.target_key,
@@ -335,7 +427,8 @@ characterVotes.post('/character-votes/import', requireAuth, async (c) => {
             `INSERT INTO character_votes
                (id, voter_id, target_source, target_key, character_name, character_id, season, episode, created_at, imported_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (voter_id, target_source, target_key) DO NOTHING`,
+             ON CONFLICT (voter_id, target_source, target_key, COALESCE(season, -1), COALESCE(episode, -1))
+               DO NOTHING`,
           )
           .bind(
             p.id,

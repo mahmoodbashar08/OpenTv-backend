@@ -41,7 +41,7 @@ beforeEach(async () => {
 
 describe('uploading', () => {
   it('refuses without Plus, and says so in a code the app can answer with the paywall', async () => {
-    const res = await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    const res = await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
     expect(res.status).toBe(402);
     expect(res.json.error.code).toBe('plus_required');
     expect(bucket.stored.size).toBe(0);
@@ -49,7 +49,7 @@ describe('uploading', () => {
 
   it('stores one object, keyed to the profile, once Plus is on', async () => {
     makePlus('p1');
-    const res = await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    const res = await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
     expect(res.status).toBe(200);
     expect(res.json.size).toBe(ZIP.length);
     expect([...bucket.stored.keys()]).toEqual(['backups/p1.zip']);
@@ -57,22 +57,22 @@ describe('uploading', () => {
 
   it('overwrites in place, so pressing backup twice cannot fill a bucket', async () => {
     makePlus('p1');
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
-    await callBytes(env, 'PUT', '/v1/backup', new Uint8Array(20), { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(20), { token });
     expect(bucket.stored.size).toBe(1);
     expect(bucket.stored.get('backups/p1.zip')?.size).toBe(20);
   });
 
   it('refuses an empty body and one over the cap', async () => {
     makePlus('p1');
-    expect((await callBytes(env, 'PUT', '/v1/backup', new Uint8Array(0), { token })).status).toBe(400);
+    expect((await callBytes(env, 'POST', '/v1/backup', new Uint8Array(0), { token })).status).toBe(400);
     const huge = new Uint8Array(MAX_BACKUP_BYTES + 1);
-    expect((await callBytes(env, 'PUT', '/v1/backup', huge, { token })).status).toBe(413);
+    expect((await callBytes(env, 'POST', '/v1/backup', huge, { token })).status).toBe(413);
     expect(bucket.stored.size).toBe(0);
   });
 
   it('needs a token at all', async () => {
-    expect((await callBytes(env, 'PUT', '/v1/backup', ZIP)).status).toBe(401);
+    expect((await callBytes(env, 'POST', '/v1/backup', ZIP)).status).toBe(401);
   });
 });
 
@@ -84,7 +84,7 @@ describe('the label beside the ZIP', () => {
     const payload = JSON.stringify({ username: 'محمود', shows: 12, episodes: 340, movies: 88 });
     const utf8 = new TextEncoder().encode(payload);
     const info = btoa(String.fromCharCode(...utf8));
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, {
+    await callBytes(env, 'POST', '/v1/backup', ZIP, {
       token,
       headers: { 'X-OpenTV-Backup-Info': info },
     });
@@ -103,7 +103,7 @@ describe('the label beside the ZIP', () => {
 
   it('a mangled header does not fail an upload that is otherwise fine', async () => {
     makePlus('p1');
-    const res = await callBytes(env, 'PUT', '/v1/backup', ZIP, {
+    const res = await callBytes(env, 'POST', '/v1/backup', ZIP, {
       token,
       headers: { 'X-OpenTV-Backup-Info': 'not base64 at all !!' },
     });
@@ -120,7 +120,7 @@ describe('the label beside the ZIP', () => {
 describe('getting it back', () => {
   it('returns the exact bytes that went up', async () => {
     makePlus('p1');
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
     const res = await callBytes(env, 'GET', '/v1/backup', undefined, { token });
     expect(res.status).toBe(200);
     expect([...res.bytes]).toEqual([...ZIP]);
@@ -129,7 +129,7 @@ describe('getting it back', () => {
   /** The whole point of the gate being one-directional. */
   it('still returns it after Plus lapses', async () => {
     makePlus('p1');
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
     raw.prepare('UPDATE profiles SET is_plus = 0, plus_until = NULL WHERE id = ?').run('p1');
 
     const res = await callBytes(env, 'GET', '/v1/backup', undefined, { token });
@@ -144,7 +144,7 @@ describe('getting it back', () => {
   /** The worst bug this server could have. */
   it('never hands one profile another profile’s library', async () => {
     makePlus('p1');
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
 
     const other = await tokenFor(env, 'p2');
     const res = await callBytes(env, 'GET', '/v1/backup', undefined, { token: other });
@@ -156,7 +156,7 @@ describe('getting it back', () => {
 describe('deleting it', () => {
   it('removes it without needing Plus, and is idempotent', async () => {
     makePlus('p1');
-    await callBytes(env, 'PUT', '/v1/backup', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
     raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
 
     expect((await call(env, 'DELETE', '/v1/backup', { token })).status).toBe(200);
@@ -173,7 +173,7 @@ describe('a deployment without the bucket', () => {
 
   it('is off rather than broken', async () => {
     makePlus('p1');
-    expect((await callBytes(env, 'PUT', '/v1/backup', ZIP, { token })).status).toBe(503);
+    expect((await callBytes(env, 'POST', '/v1/backup', ZIP, { token })).status).toBe(503);
     expect((await call(env, 'GET', '/v1/backup/info', { token })).json).toEqual({ exists: false });
     expect((await callBytes(env, 'GET', '/v1/backup', undefined, { token })).status).toBe(503);
     expect((await call(env, 'DELETE', '/v1/backup', { token })).status).toBe(200);
