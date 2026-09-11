@@ -6,6 +6,7 @@ import { verifyScoped } from '@/session';
 import { auth } from '@/routes/auth';
 import { avatars } from '@/routes/avatars';
 import { backup } from '@/routes/backup';
+import { sync } from '@/routes/sync';
 import { blocks } from '@/routes/blocks';
 import { characterVotes } from '@/routes/characters';
 import { images } from '@/routes/images';
@@ -115,6 +116,7 @@ v1.use('*', async (c, next) => {
 // has no handler for means.
 v1.route('/', avatars);
 v1.route('/', backup);
+v1.route('/', sync);
 // Before `auth` for the same reason avatars is: that router claims `/auth/*`
 // shapes and `/me/*`, and should not be the one deciding what a path it has no
 // handler for means.

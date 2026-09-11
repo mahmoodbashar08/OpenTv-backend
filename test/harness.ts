@@ -49,6 +49,7 @@ const MIGRATION_FILES = [
   '../migrations/0030_imported_at_by_burst.sql',
   '../migrations/0031_app_version.sql',
   '../migrations/0032_character_votes_per_episode.sql',
+  '../migrations/0033_sync_ops.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
