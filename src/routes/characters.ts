@@ -476,15 +476,58 @@ characterVotes.get('/character-votes', async (c) => {
     return fail(c, 400, 'target_invalid', 'source and key are required.');
   }
 
-  const row = await c.env.DB.prepare(
-    'SELECT counts, total FROM character_vote_aggregates WHERE target_source = ? AND target_key = ?',
-  )
-    .bind(source, key)
-    .first<{ counts: string | null; total: number }>();
+  /*
+   * ONE EPISODE'S VOTES, WHEN AN EPISODE IS ASKED FOR.
+   *
+   * The app asks "who was your favourite?" under a specific episode, and
+   * answering with the whole show's rollup meant the same two faces and the
+   * same two percentages on every episode of a series — reported twice as
+   * looking broken, and it does.
+   *
+   * COUNTED ON READ, unlike the show rollup, and that is affordable for
+   * exactly this shape of question: one show, one episode, straight down
+   * `idx_character_votes_target` with the season and episode narrowing it to a
+   * handful of rows. The show-wide count is the one that would scan, which is
+   * why it is a table.
+   *
+   * NO EPISODE ASKED FOR, NO CHANGE: the show rollup still answers, for the
+   * film screen and for anything cached from before this existed.
+   */
+  const season = url.searchParams.get('season');
+  const episode = url.searchParams.get('episode');
+  const perEpisode = season !== null && episode !== null;
+
+  let counts: string | null = null;
+  let total = 0;
+  if (perEpisode) {
+    const rows = await c.env.DB.prepare(
+      `SELECT character_name AS name, COUNT(*) AS votes
+         FROM character_votes
+        WHERE target_source = ? AND target_key = ?
+          AND COALESCE(season, -1) = ? AND COALESCE(episode, -1) = ?
+        GROUP BY character_name`,
+    )
+      .bind(source, key, Number(season), Number(episode))
+      .all<{ name: string; votes: number }>();
+    const obj: Record<string, number> = {};
+    for (const r of rows.results ?? []) {
+      obj[r.name] = r.votes;
+      total += r.votes;
+    }
+    counts = JSON.stringify(obj);
+  } else {
+    const row = await c.env.DB.prepare(
+      'SELECT counts, total FROM character_vote_aggregates WHERE target_source = ? AND target_key = ?',
+    )
+      .bind(source, key)
+      .first<{ counts: string | null; total: number }>();
+    counts = row?.counts ?? null;
+    total = row?.total ?? 0;
+  }
 
   // A show nobody has voted on is an empty rollup, not a 404: the client
   // renders "no favourite yet", and a 404 would make it render an error.
-  const res = c.json({ items: shapeCharacterCounts(row?.counts ?? null), total: row?.total ?? 0 });
+  const res = c.json({ items: shapeCharacterCounts(counts), total });
   res.headers.set('Cache-Control', CACHE_CONTROL);
   res.headers.set('X-Cache', 'MISS');
 
