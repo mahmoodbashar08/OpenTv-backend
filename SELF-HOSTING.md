@@ -77,6 +77,29 @@ It is the same TV Time-format ZIP the exporter builds, and this server never
 opens it. Plus gates uploading and nothing else; downloading and deleting need
 only a session, so a copy of your own history can never become unreachable.
 
+## Pick one way to sign in, and stay with it
+
+**On an instance with no mail configured, email and Google are two different
+accounts even with the same address**, and the reason is a deliberate one worth
+understanding before you tell your users which button to press.
+
+A provider sign-in only JOINS an existing email account when BOTH sides have
+proved the address: the provider vouches for it, and the local account
+confirmed it. Without that second half the classic takeover works — register
+`victim@example.com` with a password you know, wait for them to sign in with
+Google, and you are inside their account. An unconfirmed registration reserves
+nothing.
+
+Your instance has no mail, so no address can ever be confirmed, so the link
+never happens. Register by email, back a library up, then sign in with Google
+on a new phone, and you land in a second empty profile with no backup in it.
+The server is not wrong; it is refusing to hand one person's account to
+another.
+
+**Email and password is the simplest choice** and needs nothing configured.
+Apple works out of the box on iOS. Google needs `GOOGLE_CLIENT_IDS`. Whichever
+you pick, tell the people on your instance to use that one.
+
 ## What a self-hosted instance does not have
 
 - **Comment translation.** It runs on Workers AI, which is Cloudflare's. The app
