@@ -130,6 +130,22 @@ const env: Env = {
   GOOGLE_CLIENT_IDS: process.env.GOOGLE_CLIENT_IDS ?? '',
   AVATARS: fsBucket(join(DATA, 'avatars')),
   COMMENT_IMAGES: fsBucket(join(DATA, 'comment-images')),
+  /*
+   * THE WHOLE REASON MOST PEOPLE WOULD RUN THIS.
+   *
+   * Left out until now, which quietly made the best argument for self-hosting
+   * false: an instance could hold your profile and your comments but not the
+   * one thing you would actually be afraid to lose. `POST /v1/backup` found no
+   * bucket and answered "this instance does not do that", so a person who had
+   * gone to the trouble of running their own server still had nowhere of their
+   * own to put their library — and would only discover it on the day they
+   * replaced their phone.
+   *
+   * It is one line because it was always one line: R2 is an object store and
+   * so is a directory. The backup is a single ZIP per profile, overwritten in
+   * place, so this grows by one file per person and no more.
+   */
+  BACKUPS: fsBucket(join(DATA, 'backups')),
   // Left undefined on purpose where a feature has no local equivalent — the
   // routes already treat a missing binding as "this instance does not do that".
   ...(process.env.ADMIN_EMAIL ? { ADMIN_EMAIL: process.env.ADMIN_EMAIL } : {}),

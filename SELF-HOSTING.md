@@ -30,7 +30,7 @@ of 7 September 2026, and the setting is not in 1.6.1.
 ## What you are responsible for
 
 **`./data` is everything.** The SQLite file, every comment picture, every
-avatar. Back that directory up and you have backed up the server; lose it and
+avatar, and every library backup. Back that directory up and you have backed up the server; lose it and
 nothing else will bring it back.
 
 ```bash
@@ -64,6 +64,18 @@ the same path the hosted Worker takes when a binding is missing.
 `SESSION_SECRET` signs every session token. Anybody holding it can mint a token
 for any account on your instance. Generate it, never reuse one from elsewhere,
 never commit it.
+
+## Your library, on your own server
+
+The strongest reason to run this. With the app pointed at your instance,
+**Settings → Your data → Cloud backup** puts a copy of your library in
+`./data/backups` — one ZIP per profile, overwritten in place, so it grows by one
+file per person and no more. Lose the phone, install the app on a new one, sign
+in against your own server, and it comes back.
+
+It is the same TV Time-format ZIP the exporter builds, and this server never
+opens it. Plus gates uploading and nothing else; downloading and deleting need
+only a session, so a copy of your own history can never become unreachable.
 
 ## What a self-hosted instance does not have
 
