@@ -18,6 +18,14 @@ COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
 FROM node:22-bookworm-slim
+# `sqlite3` IS PART OF THE DOCUMENTED INTERFACE, not a convenience. SELF-HOSTING.md
+# tells an operator to grant the paid tier with
+# `docker compose exec opentv sqlite3 /data/opentv.db "UPDATE profiles ..."`,
+# and without this that instruction fails on a clean install — found by running
+# the documented setup from a fresh clone rather than by reading it. It is also
+# the only way in to a database whose whole selling point is that it is a file.
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
