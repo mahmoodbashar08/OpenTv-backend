@@ -54,7 +54,7 @@ the same path the hosted Worker takes when a binding is missing.
 | Variable | Required | Missing means |
 |---|---|---|
 | `SESSION_SECRET` | **yes** | refuses to start |
-| `GOOGLE_CLIENT_IDS` | **on Android, effectively yes** | Google sign-in button hidden — and Apple sign-in is only offered on iOS, so an Android user has no way to sign in to your instance at all, and therefore no backup and no restore |
+| `GOOGLE_CLIENT_IDS` | no | Google sign-in button hidden. Apple is offered on iOS only, so on **Android** this leaves email and password as the only way in — which works: `/v1/backup` sits behind `requireAuth`, never `requireVerified`, so an account whose address was never confirmed still backs up and restores. Set it if you want the button. |
 | `APPLE_BUNDLE_ID` | no | defaults to `com.insightfy.opentv` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | no | moderation dashboard unreachable — pictures stay stored and unserved |
 | `RC_WEBHOOK_SECRET` | no | no subscription webhook; grant Plus by hand (below) |
