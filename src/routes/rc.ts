@@ -195,5 +195,14 @@ rc.post('/rc/webhook', async (c) => {
   if (!profileId) return c.json({ ok: true, matched: false });
 
   const matched = await setPlus(c.env, profileId, grant, nowIso);
+  /*
+   * SAY SO WHEN AN EVENT WE ACTED ON CHANGED NOTHING. A grant naming a profile
+   * this server has never heard of is either a purchase made under an id that
+   * was never aliased, or a deleted account — and it is the shape that cost a
+   * real subscriber seventeen days of Plus while every dashboard read "Sent"
+   * and every response read 200. The id stays out of the log, like the price
+   * and the country do; the count is what makes it findable.
+   */
+  if (!matched) console.log(`[rc] ${type} unmatched`);
   return c.json({ ok: true, matched });
 });
