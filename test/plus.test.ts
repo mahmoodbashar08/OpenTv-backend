@@ -144,9 +144,36 @@ describe('POST /v1/rc/webhook — the entitlement', () => {
     expect(isPlusRow('p2').is_plus).toBe(1);
   });
 
-  it('transfers nothing when the source never had it', async () => {
-    await rcEvent({ type: 'TRANSFER', transferred_from: ['$RCAnonymousID:zz'], transferred_to: ['p2'] });
+  it('grants when the buyer was anonymous — they bought before signing in', async () => {
+    // The bug this replaces cost a real subscriber their entitlement: bought
+    // signed out, so INITIAL_PURCHASE named an id with no profile; signed in
+    // later, and this TRANSFER was read as "the source never had Plus".
+    const res = await rcEvent({
+      type: 'TRANSFER',
+      transferred_from: ['$RCAnonymousID:zz'],
+      transferred_to: ['p2'],
+    });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true, matched: true });
+    expect(isPlusRow('p2').is_plus).toBe(1);
+  });
+
+  it('still transfers nothing from a real account that had lapsed', async () => {
+    // p1 exists and is_plus is 0 — a row we can read, so believe it. Only an
+    // id that cannot have a row gets the benefit of the doubt.
+    await rcEvent({ type: 'TRANSFER', transferred_from: ['p1'], transferred_to: ['p2'] });
     expect(isPlusRow('p2').is_plus).toBe(0);
+  });
+
+  it('believes the real source when a transfer names both kinds', async () => {
+    await grant('INITIAL_PURCHASE');
+    await rcEvent({
+      type: 'TRANSFER',
+      transferred_from: ['p1', '$RCAnonymousID:zz'],
+      transferred_to: ['p2'],
+    });
+    expect(isPlusRow('p1').is_plus).toBe(0);
+    expect(isPlusRow('p2').is_plus).toBe(1);
   });
 });
 

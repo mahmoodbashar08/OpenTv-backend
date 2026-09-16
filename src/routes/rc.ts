@@ -78,6 +78,12 @@ function namesPlus(ev: RcEvent): boolean {
   return ev.entitlement_id === PLUS_ENTITLEMENT;
 }
 
+/** True when the value names at least one anonymous RevenueCat id. */
+function hasAnonymous(value: unknown): boolean {
+  const raw = Array.isArray(value) ? value : [value];
+  return raw.some((v) => typeof v === 'string' && v.startsWith(ANON_PREFIX));
+}
+
 /** Profile ids only: an anonymous RC id, or anything that is not a string, is not one. */
 function profileIds(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : [value];
@@ -148,6 +154,30 @@ rc.post('/rc/webhook', async (c) => {
       if (row?.is_plus === 1) had = true;
       await setPlus(c.env, id, false, nowIso);
     }
+    /*
+     * A PURCHASE MADE BEFORE SIGNING IN, which is the one this route used to
+     * lose for ever.
+     *
+     * Buy while signed out and RevenueCat books it against an anonymous id.
+     * INITIAL_PURCHASE then names a buyer with no profile, so it is ignored —
+     * correctly, there is nothing to attach it to. Signing in later aliases
+     * that id onto the profile and RC sends this TRANSFER. Reading "the source
+     * never had Plus" off a row that CANNOT exist meant the destination got
+     * nothing, and the person stayed unpaid-for on the server no matter how
+     * long they kept paying the store. Found in production: one subscriber,
+     * seventeen days of renewals, `is_plus = 0`, and every Plus account on the
+     * server a hand-grant.
+     *
+     * Only when NO source resolved to a profile. A transfer away from a real
+     * account that had lapsed still grants nothing — that source is a row we
+     * can read, and the answer it gives is the truth.
+     *
+     * The risk is the mirror of the bug: an anonymous subscription that had
+     * already expired would grant a month it should not. RevenueCat sends
+     * EXPIRATION for that, and this route revokes on it — so the wrong answer
+     * corrects itself, while the old wrong answer never did.
+     */
+    if (!had && from.length === 0 && hasAnonymous(ev.transferred_from)) had = true;
     let matched = false;
     for (const id of to) if (await setPlus(c.env, id, had, nowIso)) matched = true;
     return c.json({ ok: true, matched });
