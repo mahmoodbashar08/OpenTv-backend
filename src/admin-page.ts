@@ -52,6 +52,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .card.bad .n { color:#e5484d; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
        color:#8a8a92; margin:30px 0 10px; font-weight:700; }
+  /* A heading that needs a sentence gets one, rather than leaving the reader to
+     work out why two sections counting "comments" disagree. */
+  .note { color:#6b6b72; font-size:12px; margin:-4px 0 10px; line-height:1.5; }
   .bars { display:flex; align-items:flex-end; gap:6px; height:110px;
           background:#16161a; border-radius:12px; padding:14px; }
   .bar { flex:1; background:#26262b; border-radius:4px 4px 0 0; position:relative;
@@ -134,10 +137,16 @@ export const ADMIN_PAGE = `<!doctype html>
     <h2>People</h2>
     <div class="grid" id="people"></div>
     <h2>Activity</h2>
+    <p class="note">Everything the community holds, imports included. These only grow.</p>
     <div class="grid" id="activity"></div>
     <h2>Activity by window &mdash; how much</h2>
+    <p class="note">Written in the app, in the window shown. A seeded TV&nbsp;Time archive
+       keeps its original dates and is never counted here &mdash; which is why these can read
+       zero while the totals above are in the thousands.</p>
     <div class="grid" id="windows"></div>
     <h2>Activity by window &mdash; how many people</h2>
+    <p class="note">The same windows, counted as people rather than rows. One member
+       seeding an archive cannot move these.</p>
     <div class="grid" id="active"></div>
     <h2>People, newest first</h2>
     <!-- OPENED IS NOT USED. The list answered "who exists" and never "who is
