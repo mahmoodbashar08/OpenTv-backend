@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { requireAuth } from '@/middleware';
+import { hasPlus, requireAuth } from '@/middleware';
 import { plusOn } from '@/pure';
 
 /**
@@ -88,13 +88,8 @@ export function validateOps(raw: unknown): IncomingOp[] | string {
   return out;
 }
 
-/** Both ways Plus can be true — the webhook's flag, or a hand-granted date. */
-async function isPlus(c: Context<App>): Promise<boolean> {
-  const row = await c.env.DB.prepare('SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL')
-    .bind(c.get('profileId'))
-    .first<{ is_plus: number | null; plus_until: string | null }>();
-  return row ? plusOn(row, new Date().toISOString()) : false;
-}
+/** Plus, including the self-hosted case — see `hasPlus` in `middleware.ts`. */
+const isPlus = hasPlus;
 
 sync.post('/sync', requireAuth, async (c) => {
   const profileId = c.get('profileId');

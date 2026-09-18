@@ -148,6 +148,19 @@ const env: Env = {
   BACKUPS: fsBucket(join(DATA, 'backups')),
   // Left undefined on purpose where a feature has no local equivalent — the
   // routes already treat a missing binding as "this instance does not do that".
+  /**
+   * THIS IS SOMEBODY'S OWN INSTANCE, so the paid gates do not apply to it.
+   *
+   * `is_plus` is written by a RevenueCat webhook that a self-hosted box never
+   * receives, so without this the backup and sync routes answered a person's
+   * own server with "needs OpenTV Plus" — asking them to pay us for the use of
+   * their own disk. Plus keeps the HOSTED side free for everyone else; a
+   * self-hoster is already paying for theirs.
+   *
+   * It hands nothing to a stranger: the app still refuses to let any custom
+   * server claim Plus for the features it gates client-side.
+   */
+  SELF_HOSTED: '1',
   ...(process.env.ADMIN_EMAIL ? { ADMIN_EMAIL: process.env.ADMIN_EMAIL } : {}),
   ...(process.env.ADMIN_PASSWORD ? { ADMIN_PASSWORD: process.env.ADMIN_PASSWORD } : {}),
   ...(process.env.RC_WEBHOOK_SECRET ? { RC_WEBHOOK_SECRET: process.env.RC_WEBHOOK_SECRET } : {}),

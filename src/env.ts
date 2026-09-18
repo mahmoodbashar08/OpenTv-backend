@@ -121,6 +121,21 @@ export type Env = {
    * grant themselves Plus. A deployment that has not opted in has no webhook.
    */
   RC_WEBHOOK_SECRET?: string;
+
+  /**
+   * SET ONLY BY `selfhost/server.ts`. Never on the hosted Worker.
+   *
+   * On somebody's own instance there is no RevenueCat and never will be, so
+   * every profile reads `is_plus = 0` — and the routes that ask turned a
+   * person's own server into one that told them to buy Plus from us to use
+   * their own disk. Plus pays for the hosted side; a self-hoster is already
+   * paying for theirs.
+   *
+   * It grants nothing on the client: `applyEntitlement` still refuses to let a
+   * custom server claim Plus (see `plus.ts`), so this cannot be used to hand
+   * strangers a paid tier — it only stops a server refusing its own owner.
+   */
+  SELF_HOSTED?: string;
 };
 
 /** What `requireAuth` puts on the context. */

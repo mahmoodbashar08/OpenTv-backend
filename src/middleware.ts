@@ -1,5 +1,7 @@
 import { createMiddleware } from 'hono/factory';
+import type { Context } from 'hono';
 import type { App } from '@/env';
+import { plusOn } from '@/pure';
 import { fail } from '@/http';
 import { verifyScoped } from '@/session';
 
@@ -100,3 +102,24 @@ export const requireVerified = createMiddleware<App>(async (c, next) => {
   await next();
   return;
 });
+
+
+/**
+ * Both ways Plus can be true — the webhook's flag, or a hand-granted date —
+ * and a third that is not about payment at all.
+ *
+ * This lived twice, identically, in `backup.ts` and `sync.ts`. It is one
+ * function now because the self-hosting rule below has to hold in both: a
+ * person running their own instance is refused by their own server otherwise,
+ * since `is_plus` is written by a RevenueCat webhook that a self-hosted box
+ * never receives.
+ */
+export async function hasPlus(c: Context<App>): Promise<boolean> {
+  if (c.env.SELF_HOSTED) return true;
+  const row = await c.env.DB.prepare(
+    'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+  )
+    .bind(c.get('profileId'))
+    .first<{ is_plus: number | null; plus_until: string | null }>();
+  return row ? plusOn(row, new Date().toISOString()) : false;
+}
