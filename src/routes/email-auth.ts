@@ -267,7 +267,27 @@ emailAuth.post('/auth/email/register', async (c) => {
       .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, codeHash, expires, nowIso, nowIso),
   ]);
 
-  c.executionCtx.waitUntil(sendVerificationEmail(c.env, email, token, code).then(() => undefined));
+  /**
+   * A SELF-HOSTED INSTANCE WITH NO MAIL IS A DEAD END WITHOUT THIS.
+   *
+   * Verification is not optional: an unverified token is refused by every route
+   * but the handful in `UNVERIFIED_ALLOWED`, so an account that cannot confirm
+   * cannot do anything, ever. On a box with no `MAIL_FROM` the message is never
+   * sent, the code never arrives, and the app loops between "check your inbox"
+   * and a community that refuses it — with nothing anywhere saying why.
+   *
+   * So when mail is not configured, the code goes to the operator's console
+   * instead. They own the server and already read its logs; this tells them the
+   * one thing they need to finish setting up an account, and it costs nothing
+   * on the hosted Worker, where `MAIL_FROM` is always set and this never runs.
+   */
+  c.executionCtx.waitUntil(
+    sendVerificationEmail(c.env, email, token, code).then((r) => {
+      if (r.reason === 'not_configured') {
+        console.log(`[opentv] no mail configured — verification code for ${email} is ${code}`);
+      }
+    }),
+  );
 
   // SIGNED IN IMMEDIATELY, BUT ON A LEASH. The token carries `unverified`, so
   // the app has a session to draw its own state with and to confirm from — and
