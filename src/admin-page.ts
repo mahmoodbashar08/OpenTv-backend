@@ -83,6 +83,17 @@ export const ADMIN_PAGE = `<!doctype html>
   .tag.gone { background:#2a1416; color:#e5484d; }
   .tag.act { background:#3a3213; color:#ffd400; }
   .ev { white-space:nowrap; line-height:1.5; }
+  /* A link, not a button: it reveals what is already on the row rather than
+     doing anything, and the row is dense enough without another control. */
+  .more { background:none; border:0; padding:0; font:inherit; color:#2e65f2; cursor:pointer; }
+  .more:hover { text-decoration:underline; }
+  dialog#evdlg { background:#141416; color:#fff; border:1px solid #26262b; border-radius:12px;
+    padding:18px 20px; max-width:min(560px,92vw); max-height:80vh; overflow:auto; font:inherit; }
+  dialog#evdlg::backdrop { background:rgba(0,0,0,.6); }
+  dialog#evdlg h3 { margin:0 0 12px; font-size:15px; }
+  dialog#evdlg .ev { white-space:normal; }
+  dialog#evdlg .close { margin-top:14px; font:inherit; font-size:12px; padding:5px 12px;
+    background:#1c1c1e; color:#fff; border:1px solid #2e2e34; border-radius:7px; cursor:pointer; }
   .vb { color:#6b6b72; }
   .plusbox { display:flex; gap:5px; align-items:center; }
   .plusbox select, .plusbox button { font:inherit; font-size:12px; padding:2px 6px;
@@ -158,6 +169,10 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="tab" data-who="opened">Opened today</button>
     </div>
     <div class="scroll"><table id="users"></table></div>
+    <!-- One dialog for the whole table: the rows are rebuilt on every refresh,
+         so a dialog per row would be thrown away with them. -->
+    <dialog id="evdlg"><h3 id="evdlgt"></h3><div id="evdlgb"></div>
+      <button class="close" onclick="document.getElementById('evdlg').close()">Close</button></dialog>
     <h2>Photos</h2>
     <div class="tabs" id="tabs">
       <button class="tab on" data-status="pending">Waiting</button>
@@ -244,14 +259,42 @@ function todayCell(u) {
   // The verb first, because the kind of thing they did is what is being scanned
   // for; the title carries the accent because it is what the eye stops on.
   const verb = { comment: 'wrote on', rating: 'rated', character: 'voted', emotion: 'felt' };
-  return rows.slice(0, 4).map((r) => {
+  const one = (r) => {
     const detail = r.kind === 'rating' ? ' ' + esc(r.detail) + '/10'
       : r.kind === 'character' || r.kind === 'emotion' ? ' &middot; ' + esc(r.detail)
       : '';
     return '<div class="ev"><span class="vb">' + (verb[r.kind] || r.kind) + '</span> ' +
       '<span class="did">' + esc(r.title) + (r.where ? ' ' + esc(r.where) : '') + '</span>' +
       '<span class="name">' + detail + '</span></div>';
-  }).join('') + (rows.length > 4 ? '<div class="name">+' + (rows.length - 4) + ' more</div>' : '');
+  };
+  const all = rows.map(one).join('');
+  if (rows.length <= 4) return all;
+  // The full list travels with the row rather than being fetched again: it is
+  // already here, and the dashboard refreshes often enough that a second
+  // request would race the rebuild.
+  return rows.slice(0, 4).map(one).join('') +
+    '<button class="more" data-more="' + esc(u.handle || '') + '">+' + (rows.length - 4) + ' more</button>' +
+    '<div class="allev" hidden>' + all + '</div>';
+}
+
+/**
+ * "+12 more" opens the rest, rather than being a fact nobody can act on.
+ *
+ * Delegated on the table for the same reason wirePlus is: these rows are
+ * replaced wholesale on every refresh, so a listener bound per button would be
+ * re-attached each time or lost with the row it was on.
+ */
+function wireMore() {
+  $('users').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-more]');
+    if (!btn) return;
+    const cell = btn.closest('td');
+    const all = cell && cell.querySelector('.allev');
+    if (!all) return;
+    $('evdlgt').textContent = 'Today — @' + btn.getAttribute('data-more');
+    $('evdlgb').innerHTML = all.innerHTML;
+    $('evdlg').showModal();
+  });
 }
 
 /**
@@ -620,6 +663,7 @@ $('out').addEventListener('click', async () => {
 // Once, before the first render. The rows are replaced on every refresh, so
 // the listener lives on the table rather than on the buttons inside it.
 wirePlus();
+wireMore();
 load();
 </script>
 </body>
