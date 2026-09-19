@@ -71,7 +71,7 @@ function verifyLink(env: Env, token: string): string {
   return `${base}?token=${encodeURIComponent(token)}`;
 }
 
-function resetLink(env: Env, token: string): string {
+export function resetLink(env: Env, token: string): string {
   const base = env.APP_RESET_LINK_BASE ?? 'opentv://reset-password';
   return `${base}?token=${encodeURIComponent(token)}`;
 }

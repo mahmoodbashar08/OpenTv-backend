@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { sendResetEmail, sendVerificationEmail } from '@/mail';
+import { resetLink, sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
 import {
   hashPassword,
@@ -716,7 +716,19 @@ emailAuth.post('/auth/email/forgot', async (c) => {
       )
         .bind(await hashToken(token), new Date(nowMs + RESET_TTL_MS).toISOString(), new Date(nowMs).toISOString(), row.profile_id)
         .run();
-      c.executionCtx.waitUntil(sendResetEmail(c.env, row.email, token).then(() => undefined));
+      /**
+       * SAME REASON AS THE VERIFICATION CODE ABOVE: with no mail configured the
+       * message never leaves, and "Set a password" — which is how a provider-
+       * only account gets its first one — silently goes nowhere. The reset
+       * carries a LINK and no code, so the link is what the operator needs.
+       */
+      c.executionCtx.waitUntil(
+        sendResetEmail(c.env, row.email, token).then((r) => {
+          if (r.reason === 'not_configured') {
+            console.log(`[opentv] no mail configured — password reset link for ${row.email}: ${resetLink(c.env, token)}`);
+          }
+        }),
+      );
     }
   }
   return c.json({ ok: true }, 202);
