@@ -1,0 +1,17 @@
+-- A SERVER WITH NO MAIL COULD NOT LET ANYBODY FINISH SIGNING UP.
+--
+-- Verification is not ceremony: `linkTarget` joins a provider sign-in to an
+-- email account only when the address was confirmed, and without that the
+-- classic takeover works -- register victim@example.com with a password you
+-- know, wait for them to sign in with Google, and you are inside their account.
+--
+-- But a self-hosted instance with no MAIL_FROM can never deliver a code, so on
+-- one of those the rule stopped being a gate and became a wall: the operator
+-- could read the code out of the log, and nobody else could get in at all.
+--
+-- So those accounts are confirmed on creation and MARKED as confirmed without
+-- proof. They work everywhere a normal account works -- and `linkTarget`
+-- refuses them, so the takeover stays closed. Email and provider remain two
+-- separate accounts on a mail-less instance, which is what SELF-HOSTING.md
+-- already told people to expect.
+ALTER TABLE email_credentials ADD COLUMN auto_verified INTEGER NOT NULL DEFAULT 0;

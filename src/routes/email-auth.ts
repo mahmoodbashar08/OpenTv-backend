@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { resetLink, sendResetEmail, sendVerificationEmail } from '@/mail';
+import { mailConfigured, resetLink, sendResetEmail, sendVerificationEmail } from '@/mail';
 import { requireAuth } from '@/middleware';
 import {
   hashPassword,
@@ -243,6 +243,8 @@ emailAuth.post('/auth/email/register', async (c) => {
   const token = newToken();
   const tokenHash = await hashToken(token);
   // The same expiry covers both: they are two ways to answer one question.
+  // Decided before anything is written: it changes what the row means.
+  const canMail = mailConfigured(c.env);
   const code = newCode();
   const codeHash = await hashToken(code);
   const expires = new Date(nowMs + VERIFY_TTL_MS).toISOString();
@@ -261,10 +263,30 @@ emailAuth.post('/auth/email/register', async (c) => {
       .prepare(
         `INSERT INTO email_credentials
            (profile_id, email, email_lower, password_hash, verify_hash, verify_code_hash,
-            verify_code_tries, verify_expires, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+            verify_code_tries, verify_expires, created_at, updated_at, verified_at, auto_verified)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
       )
-      .bind(profileId, (b.email as string).trim(), email, hash, tokenHash, codeHash, expires, nowIso, nowIso),
+      .bind(
+        profileId,
+        (b.email as string).trim(),
+        email,
+        hash,
+        tokenHash,
+        codeHash,
+        expires,
+        nowIso,
+        nowIso,
+        // CONFIRMED ON CREATION WHEN NOTHING CAN EVER CONFIRM IT. An instance
+        // with no mail cannot deliver a code, and an unverified token is
+        // refused by every route but the few that let you enter one — so
+        // demanding it there is not a gate, it is a wall with nobody on the
+        // other side of it.
+        canMail ? null : nowIso,
+        // ...and marked as never actually proved, so `linkTarget` refuses to
+        // let a provider sign-in land in it. That is the takeover the
+        // verification rule exists to stop, and it stays stopped.
+        canMail ? 0 : 1,
+      ),
   ]);
 
   /**
@@ -292,7 +314,10 @@ emailAuth.post('/auth/email/register', async (c) => {
   // SIGNED IN IMMEDIATELY, BUT ON A LEASH. The token carries `unverified`, so
   // the app has a session to draw its own state with and to confirm from — and
   // every other route in the API refuses it until the link is clicked.
-  const s = await session(c.env, profileId, nowMs, false);
+  // Verified from the start when nothing could ever verify it — see the insert
+  // above. A restricted token here would refuse every route on an instance that
+  // has no way to lift the restriction.
+  const s = await session(c.env, profileId, nowMs, !canMail);
   return c.json({ ...s, needs_handle: true }, 201);
 });
 

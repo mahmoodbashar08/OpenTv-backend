@@ -90,8 +90,12 @@ confirmed it. Without that second half the classic takeover works — register
 Google, and you are inside their account. An unconfirmed registration reserves
 nothing.
 
-Your instance has no mail, so no address can ever be confirmed, so the link
-never happens. Register by email, back a library up, then sign in with Google
+Your instance has no mail, so an address can never be confirmed BY ITS OWNER.
+Registrations there are confirmed on creation — otherwise nobody could finish
+signing up at all, since an unverified token is refused by every route but the
+handful that let you enter a code that is never coming — and they are marked as
+confirmed without proof. A provider sign-in refuses to land in one of those, so
+the link never happens. Register by email, back a library up, then sign in with Google
 on a new phone, and you land in a second empty profile with no backup in it.
 The server is not wrong; it is refusing to hand one person's account to
 another.

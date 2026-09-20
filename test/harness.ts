@@ -50,6 +50,7 @@ const MIGRATION_FILES = [
   '../migrations/0031_app_version.sql',
   '../migrations/0032_character_votes_per_episode.sql',
   '../migrations/0033_sync_ops.sql',
+  '../migrations/0034_auto_verified.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
@@ -179,6 +180,12 @@ export function makeEnv(db: D1Database, bucket?: R2Bucket, backups?: R2Bucket): 
     // revocation exists to do.
     CACHE: kv(),
     SESSION_SECRET: 'test-secret-not-a-real-one',
+    /* A CONFIGURED INSTANCE IS THE DEFAULT THESE TESTS DESCRIBE. Without this
+       the suite would silently become a self-hosted box with no mail, where
+       registrations confirm themselves -- a real path, tested on its own, but
+       not the one every other assertion here is about. */
+    MAIL_FROM: 'OpenTV <test@example.com>',
+    RESEND_API_KEY: 'test-key-never-called',
     APPLE_BUNDLE_ID: 'com.insightfy.opentv',
     GOOGLE_CLIENT_IDS: '',
     // Absent unless a suite asks for it, so every other suite keeps proving the

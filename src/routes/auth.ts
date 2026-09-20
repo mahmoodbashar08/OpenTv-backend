@@ -103,13 +103,20 @@ function newProfileId(): string {
  * Exported for its tests. This is the whole of the rule that decides whether
  * one person's sign-in can land in another person's account, so it is pinned
  * directly rather than through a route that needs a signed provider token.
+ *
+ * `auto_verified = 0` IS PART OF THE CONDITION. An instance with no mail marks
+ * its accounts confirmed so people can finish signing up at all — nothing there
+ * can deliver a code — but nothing PROVED the address, so such an account must
+ * never be the thing a provider sign-in lands in. That is the takeover this
+ * function exists to refuse.
  */
 export async function linkTarget(db: D1Database, email: string): Promise<string | null> {
   const row = await db
     .prepare(
       `SELECT c.profile_id FROM email_credentials c
          JOIN profiles p ON p.id = c.profile_id
-        WHERE c.email_lower = ? AND c.verified_at IS NOT NULL AND p.deleted_at IS NULL`,
+        WHERE c.email_lower = ? AND c.verified_at IS NOT NULL AND c.auto_verified = 0
+              AND p.deleted_at IS NULL`,
     )
     .bind(email.trim().toLowerCase())
     .first<{ profile_id: string }>();

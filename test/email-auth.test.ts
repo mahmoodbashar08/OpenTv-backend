@@ -118,6 +118,40 @@ describe('email sign-in over HTTP', () => {
   const register = (email: string, password = 'correct horse battery') =>
     call(env, 'POST', '/v1/auth/email/register', { body: { email, password } });
 
+  /**
+   * AN INSTANCE THAT CANNOT SEND MAIL — a self-hosted box with no MAIL_FROM.
+   *
+   * Two things have to be true at once there, and they pull against each
+   * other: people must be able to finish signing up (an unverified token is
+   * refused by every route but the few that let you enter a code, and no code
+   * can ever arrive), and a provider sign-in must still never land in an
+   * account whose address nobody proved.
+   */
+  describe('when the instance cannot send email', () => {
+    let offline: Env;
+
+    beforeEach(() => {
+      offline = { ...env, MAIL_FROM: undefined, RESEND_API_KEY: undefined } as Env;
+    });
+
+    it('confirms the account on creation, because nothing else ever could', async () => {
+      const res = await call(offline, 'POST', '/v1/auth/email/register', {
+        body: { email: 'alone@example.com', password: 'correct horse battery' },
+      });
+      expect(res.status).toBe(201);
+      expect(res.json.email_verified).toBe(true);
+    });
+
+    it('still refuses to let a provider sign-in land in that account', async () => {
+      await call(offline, 'POST', '/v1/auth/email/register', {
+        body: { email: 'victim@example.com', password: 'correct horse battery' },
+      });
+      // Confirmed enough to USE, never enough to be claimed: the takeover is
+      // registering somebody else's address and waiting for them to arrive.
+      expect(await linkTarget(offline.DB, 'victim@example.com')).toBeNull();
+    });
+  });
+
   it('creates an account and signs it in immediately, unverified', async () => {
     const res = await register('me@example.com');
     expect(res.status).toBe(201);

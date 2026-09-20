@@ -19,6 +19,17 @@ import type { Env } from '@/env';
  */
 export type MailResult = { sent: boolean; reason?: 'not_configured' | 'failed' };
 
+/**
+ * CAN THIS INSTANCE SEND AT ALL — asked before anything is written, not after.
+ *
+ * `send` discovers this too, but only once a message is already on its way to
+ * nowhere. Registration needs to know BEFORE it decides whether a code can ever
+ * arrive, because on a server that cannot send one, demanding it is a wall.
+ */
+export function mailConfigured(env: Env): boolean {
+  return Boolean(env.MAIL_FROM) && Boolean(env.EMAIL || env.RESEND_API_KEY);
+}
+
 async function send(env: Env, to: string, subject: string, text: string, html: string): Promise<MailResult> {
   const from = env.MAIL_FROM;
   if (!from) return { sent: false, reason: 'not_configured' };
