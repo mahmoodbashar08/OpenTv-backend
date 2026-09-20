@@ -116,6 +116,34 @@ sync.post('/sync', requireAuth, async (c) => {
     await c.env.DB.batch(ops.map((o) => stmt.bind(profileId, o.id, device, o.ts, o.kind, o.payload)));
   }
 
+  const top = await c.env.DB.prepare('SELECT MAX(seq) AS m FROM sync_ops WHERE profile_id = ?')
+    .bind(profileId)
+    .first<{ m: number | null }>();
+
+  /*
+   * A CURSOR AHEAD OF THE RELAY BELONGS TO A DIFFERENT ONE.
+   *
+   * `seq` is this relay's own counter, and a device that is fully caught up
+   * holds exactly the highest one. Holding a HIGHER number is impossible unless
+   * the relay it came from is gone: a self-hosted instance reset, a database
+   * restored from a backup, a profile deleted and remade.
+   *
+   * The old code compared only the other way — a cursor too OLD to catch up —
+   * so this case slipped through as an ordinary request and the device asked
+   * for everything after a number the new relay had not reached yet. It was
+   * handed nothing, moved its cursor to the top, and lost that window for good.
+   *
+   * Seen exactly once and only because two devices were being watched at the
+   * time: a phone skipped the first 24 ops of a fresh relay, which were a film
+   * being un-watched and twenty-three episodes being ticked. Nothing failed.
+   * The two libraries simply disagreed, quietly, for ever.
+   *
+   * Starting again from nothing is right rather than generous: the relay is the
+   * whole of what this generation holds, so there is nothing older to miss.
+   */
+  const ahead = cursor > 0 && (top?.m == null || cursor > top.m);
+  const from = ahead ? 0 : cursor;
+
   /*
    * EVERY DEVICE BUT THIS ONE. A phone applying its own ops back would double
    * every rewatch it recorded — those are the ops that are NOT idempotent,
@@ -126,7 +154,7 @@ sync.post('/sync', requireAuth, async (c) => {
        WHERE profile_id = ? AND seq > ? AND device_id != ?
        ORDER BY seq LIMIT 1000`,
   )
-    .bind(profileId, cursor, device)
+    .bind(profileId, from, device)
     .all<{ seq: number; device_id: string; ts: number; kind: string; payload: string }>();
 
   const got = rows.results ?? [];
@@ -137,10 +165,7 @@ sync.post('/sync', requireAuth, async (c) => {
    * row returned is what stops a device that does all the talking from asking
    * for the same empty window for ever.
    */
-  const top = await c.env.DB.prepare('SELECT MAX(seq) AS m FROM sync_ops WHERE profile_id = ?')
-    .bind(profileId)
-    .first<{ m: number | null }>();
-  const head = got.length > 0 ? got[got.length - 1]!.seq : (top?.m ?? cursor);
+  const head = got.length > 0 ? got[got.length - 1]!.seq : (top?.m ?? from);
 
   /*
    * "I CANNOT CATCH YOU UP." A device whose cursor predates the oldest row we
@@ -154,7 +179,7 @@ sync.post('/sync', requireAuth, async (c) => {
   const oldest = await c.env.DB.prepare('SELECT MIN(seq) AS m FROM sync_ops WHERE profile_id = ?')
     .bind(profileId)
     .first<{ m: number | null }>();
-  const reset = cursor > 0 && oldest?.m != null && cursor < oldest.m - 1;
+  const reset = from > 0 && oldest?.m != null && from < oldest.m - 1;
 
   // Pruning rides on writes rather than a cron: it is cheap, and a profile
   // that never syncs has nothing to prune.

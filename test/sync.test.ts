@@ -53,6 +53,32 @@ describe('the relay', () => {
     expect(res.json.ops[0].payload).toBe('{"show":1,"s":2,"e":3}');
   });
 
+  /**
+   * A RELAY THAT STARTED AGAIN — a self-hosted instance reset, a database
+   * restored from a backup, a profile deleted and remade.
+   *
+   * `seq` counts within one relay, so a cursor higher than anything this one
+   * has reached came from a different one. Treating it as an ordinary request
+   * hands the device nothing, moves its cursor to the top, and loses that whole
+   * window silently: seen once as a phone skipping a film being un-watched and
+   * twenty-three episodes being ticked, with nothing failing anywhere.
+   */
+  it('serves a device whose cursor is ahead of the relay from the start', async () => {
+    await push(tokenP1, 'phone', [op('phone:1'), op('phone:2')]);
+    // 24 is where this device got to on the relay that no longer exists.
+    const res = await push(tokenP1, 'tablet', [], 24);
+    expect(res.status).toBe(200);
+    expect(res.json.ops).toHaveLength(2);
+  });
+
+  it('leaves a cursor that is merely up to date alone', async () => {
+    await push(tokenP1, 'phone', [op('phone:1')]);
+    const caught = await push(tokenP1, 'tablet');
+    // Caught up means cursor === top, which must not be mistaken for ahead.
+    const again = await push(tokenP1, 'tablet', [], caught.json.cursor);
+    expect(again.json.ops).toHaveLength(0);
+  });
+
   it('never hands a device back its own ops', async () => {
     await push(tokenP1, 'phone', [op('phone:1'), op('phone:2')]);
     const res = await push(tokenP1, 'phone');
