@@ -251,7 +251,9 @@ emailAuth.post('/auth/email/register', async (c) => {
 
   await db.batch([
     db
-      .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+      .prepare(// Private on creation, the same as the OAuth path -- see the note there.
+      // An account is what a backup needs; being findable is a separate choice.
+      'INSERT INTO profiles (id, handle, handle_lower, created_at, is_private) VALUES (?, ?, ?, ?, 1)')
       .bind(profileId, handle, handle.toLowerCase(), nowIso),
     // The identity row keeps every other part of the system — account deletion,
     // `resolveProfile`, "one profile, several sign-ins" — working without

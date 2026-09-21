@@ -161,7 +161,25 @@ async function resolveProfile(
     const id = newProfileId();
     await db.batch([
       db
-        .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+        .prepare(/*
+           * PRIVATE ON CREATION, and set here rather than as a column default.
+           *
+           * `is_private` has defaulted to 0 since the first migration, from a
+           * time when the only way to get a profile was to ask for one on the
+           * community screen. That stopped being true: an account is what
+           * cloud backup and device sync need, and somebody who signs in only
+           * so their library has somewhere to go has not asked to be browsable.
+           *
+           * NOT a schema change. Rewriting the table to alter a default would
+           * mean recreating it, and `profiles` has gained ten columns since
+           * 0001 -- is_plus, plus_since, cover_url, session_epoch,
+           * hidden_sections, theme_color, theme_layout, widgets, last_seen_at,
+           * app_version. A rewrite that forgot one would quietly delete every
+           * subscriber's Plus flag. Existing rows are untouched for the same
+           * reason they should be: everyone who has a profile today chose to
+           * be visible on a screen that said so.
+           */
+          'INSERT INTO profiles (id, handle, handle_lower, created_at, is_private) VALUES (?, ?, ?, ?, 1)')
         .bind(id, placeholderHandle(id), placeholderHandle(id), nowIso),
       db
         .prepare(
@@ -201,7 +219,25 @@ async function resolveProfile(
     try {
       await db.batch([
         db
-          .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)')
+          .prepare(/*
+           * PRIVATE ON CREATION, and set here rather than as a column default.
+           *
+           * `is_private` has defaulted to 0 since the first migration, from a
+           * time when the only way to get a profile was to ask for one on the
+           * community screen. That stopped being true: an account is what
+           * cloud backup and device sync need, and somebody who signs in only
+           * so their library has somewhere to go has not asked to be browsable.
+           *
+           * NOT a schema change. Rewriting the table to alter a default would
+           * mean recreating it, and `profiles` has gained ten columns since
+           * 0001 -- is_plus, plus_since, cover_url, session_epoch,
+           * hidden_sections, theme_color, theme_layout, widgets, last_seen_at,
+           * app_version. A rewrite that forgot one would quietly delete every
+           * subscriber's Plus flag. Existing rows are untouched for the same
+           * reason they should be: everyone who has a profile today chose to
+           * be visible on a screen that said so.
+           */
+          'INSERT INTO profiles (id, handle, handle_lower, created_at, is_private) VALUES (?, ?, ?, ?, 1)')
           .bind(id, handle, handle, nowIso),
         db
           .prepare(
