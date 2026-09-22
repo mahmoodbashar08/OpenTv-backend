@@ -353,3 +353,119 @@ describe('POST /v1/comments/:id/image — a picture on a comment written now', (
     });
   });
 });
+
+/**
+ * Approve the GIF, not the person.
+ *
+ * Moderating every user's picture rises with the user count: somebody stares
+ * at a blank space until a human reaches them, and a popular reaction GIF is
+ * forty identical rows to click through. GIPHY ids repeat heavily — a GIF is
+ * popular precisely because many people pick it — so a decision about the
+ * ASSET covers everyone who chooses it, before and after.
+ */
+describe('asset-level moderation', () => {
+  const gif = (assetId: string) =>
+    form({ asset_id: assetId }, imageFile('image/gif', 32, 'a.gif'));
+
+  const rowFor = (commentId: string) =>
+    raw.prepare('SELECT scan_status, asset_id FROM comment_images WHERE comment_id = ?').get(commentId) as
+      | { scan_status: string; asset_id: string | null }
+      | undefined;
+
+  const allRows = () =>
+    raw.prepare('SELECT comment_id, scan_status, asset_id FROM comment_images').all() as {
+      comment_id: string;
+      scan_status: string;
+      asset_id: string | null;
+    }[];
+
+  const decide = (commentId: string, status: 'clean' | 'blocked') =>
+    raw.prepare('UPDATE comment_images SET scan_status = ? WHERE comment_id = ?').run(status, commentId);
+
+  it('still starts pending for an asset nobody has ruled on', async () => {
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', gif('abc123'), token);
+    expect(storedRow()?.scan_status).toBe('pending');
+  });
+
+  it('inherits a clean decision, so the second person does not wait', async () => {
+    // THE WHOLE POINT. The first person to use a new GIF waits for a human;
+    // everybody after them gets it the moment they press send.
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', gif('abc123'), token);
+    const first = allRows()[0]!.comment_id;
+    decide(first, 'clean');
+
+    // a different person, the same GIF
+    const other = await tokenFor(env, 'p2');
+    await call(env, 'POST', '/v1/comments/import', {
+      token: other,
+      body: { items: [{ ...COMMENT, body: 'same gif, different person' }] },
+    });
+    const fd = gif('abc123');
+    fd.set('body', 'same gif, different person');
+    await callForm(env, '/v1/comments/image', fd, other);
+
+    const second = allRows().find((r) => r.comment_id !== first);
+    expect(second?.scan_status).toBe('clean');
+  });
+
+  it('inherits a block, and a block beats a clean when they disagree', async () => {
+    // A disagreement about a picture can only come from a moderator changing
+    // their mind on one row and not another. The safe reading is the stricter
+    // one.
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', gif('bad1'), token);
+    const first = allRows()[0]!.comment_id;
+    decide(first, 'blocked');
+
+    const other = await tokenFor(env, 'p2');
+    await call(env, 'POST', '/v1/comments/import', {
+      token: other,
+      body: { items: [{ ...COMMENT, body: 'again' }] },
+    });
+    const fd = gif('bad1');
+    fd.set('body', 'again');
+    await callForm(env, '/v1/comments/image', fd, other);
+
+    const second = allRows().find((r) => r.comment_id !== first);
+    expect(second?.scan_status).toBe('blocked');
+  });
+
+  it('does not let one asset inherit another asset-s decision', async () => {
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', gif('approved'), token);
+    decide(allRows()[0]!.comment_id, 'clean');
+
+    const other = await tokenFor(env, 'p2');
+    await call(env, 'POST', '/v1/comments/import', {
+      token: other,
+      body: { items: [{ ...COMMENT, body: 'different gif' }] },
+    });
+    const fd = gif('somethingelse');
+    fd.set('body', 'different gif');
+    await callForm(env, '/v1/comments/image', fd, other);
+
+    const second = allRows().find((r) => r.asset_id === 'somethingelse');
+    expect(second?.scan_status).toBe('pending');
+  });
+
+  it('a photo from the camera roll carries no asset and is judged alone', async () => {
+    // Somebody's own picture is nobody else's, so it must never inherit and
+    // must never lend its decision to anything.
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', form(), token);
+    const row = allRows()[0]!;
+    expect(row.asset_id).toBe(null);
+    expect(row.scan_status).toBe('pending');
+  });
+
+  it('refuses an asset id that is not a plain identifier', async () => {
+    // It is compared against stored rows, so a client choosing what it is
+    // compared against is a client choosing its own moderation outcome.
+    await importTheComment();
+    await callForm(env, '/v1/comments/image', gif("' OR 1=1 --"), token);
+    expect(storedRow()?.scan_status).toBe('pending');
+    expect(rowFor(allRows()[0]!.comment_id)?.asset_id).toBe(null);
+  });
+});

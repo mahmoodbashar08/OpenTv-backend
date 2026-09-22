@@ -51,6 +51,7 @@ const MIGRATION_FILES = [
   '../migrations/0032_character_votes_per_episode.sql',
   '../migrations/0033_sync_ops.sql',
   '../migrations/0034_auto_verified.sql',
+  '../migrations/0035_image_asset_id.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

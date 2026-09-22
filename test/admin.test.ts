@@ -132,4 +132,90 @@ describe('the admin dashboard', () => {
     expect(res.text).toContain('OpenTV');
     expect(res.headers.get('x-robots-tag')).toContain('noindex');
   });
+
+  /**
+   * One decision, every copy of that GIF.
+   *
+   * The inheriting half (in images.test.ts) covers everybody who picks a GIF
+   * AFTER a moderator rules on it. This is the people who picked it BEFORE and
+   * are sitting in the queue behind the row just decided — without which
+   * approving a popular reaction GIF clears one comment and leaves forty
+   * identical ones to click through, which is exactly the per-person
+   * moderation this is meant to end.
+   */
+  describe('deciding about an asset', () => {
+    const cookie = async () => (await login()).headers.get('set-cookie')!.split(';')[0]!;
+
+    const seed = (commentId: string, assetId: string | null, status = 'pending') => {
+      raw
+        .prepare(
+          `INSERT INTO comments (id, author_id, target_source, target_key, body, created_at)
+           VALUES (?, 'p1', 'tvdb', 'show:1', 'x', '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(commentId);
+      raw
+        .prepare(
+          `INSERT INTO comment_images (comment_id, r2_key, is_gif, scan_status, asset_id, created_at)
+           VALUES (?, ?, 1, ?, ?, '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(commentId, `comments/${commentId}.gif`, status, assetId);
+    };
+
+    const statusOf = (id: string) =>
+      (raw.prepare('SELECT scan_status FROM comment_images WHERE comment_id = ?').get(id) as { scan_status: string })
+        .scan_status;
+
+    beforeEach(() => {
+      raw.prepare("INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1','m','m','2026-01-01')").run();
+    });
+
+    it('clears everybody else waiting behind the same GIF', async () => {
+      seed('c1', 'popular');
+      seed('c2', 'popular');
+      seed('c3', 'popular');
+      const res = await call(env, 'POST', '/v1/admin/images/c1', {
+        headers: { Cookie: await cookie() },
+        body: { status: 'clean' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.json.also_decided).toBe(2);
+      expect(statusOf('c2')).toBe('clean');
+      expect(statusOf('c3')).toBe('clean');
+    });
+
+    it('blocks them all just as widely', async () => {
+      seed('c1', 'nasty');
+      seed('c2', 'nasty');
+      await call(env, 'POST', '/v1/admin/images/c1', {
+        headers: { Cookie: await cookie() },
+        body: { status: 'blocked' },
+      });
+      expect(statusOf('c2')).toBe('blocked');
+    });
+
+    it('leaves a row somebody already ruled on individually alone', async () => {
+      // A considered decision about one comment is not overwritten by a later
+      // general ruling about the asset.
+      seed('c1', 'popular');
+      seed('c2', 'popular', 'blocked');
+      await call(env, 'POST', '/v1/admin/images/c1', {
+        headers: { Cookie: await cookie() },
+        body: { status: 'clean' },
+      });
+      expect(statusOf('c2')).toBe('blocked');
+    });
+
+    it('does not touch anything when the picture has no asset', async () => {
+      // Somebody's own photograph is nobody else's, so a decision about it
+      // must not reach past the comment it belongs to.
+      seed('c1', null);
+      seed('c2', null);
+      const res = await call(env, 'POST', '/v1/admin/images/c1', {
+        headers: { Cookie: await cookie() },
+        body: { status: 'clean' },
+      });
+      expect(res.json.also_decided).toBe(0);
+      expect(statusOf('c2')).toBe('pending');
+    });
+  });
 });

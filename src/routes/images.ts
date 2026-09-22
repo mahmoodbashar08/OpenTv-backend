@@ -35,6 +35,49 @@ import { imageExtension, MAX_COMMENT_IMAGE_BYTES, numberOrNull, plusOn, stableIm
 
 export const images = new Hono<App>();
 
+/**
+ * What a human has already decided about this exact asset.
+ *
+ * APPROVE THE GIF, NOT THE PERSON. Moderating every user's picture rises with
+ * the user count; deciding about an ASSET covers everyone who picks it
+ * afterwards. GIPHY ids repeat heavily -- a reaction GIF is popular precisely
+ * because many people choose it -- so the first person to use a new one waits
+ * and everybody after them does not. The queue shrinks as the app grows.
+ *
+ * Reads the queue rather than a separate approvals table: the queue already
+ * records every decision a human has made, and a second copy of that answer
+ * could disagree with the first.
+ *
+ * BLOCKED BEATS CLEAN when both exist, which can only happen if a moderator
+ * changed their mind on one row and not another. The safe reading of a
+ * disagreement about a picture is the stricter one.
+ */
+async function decidedFor(db: D1Database, assetId: string | null): Promise<'clean' | 'blocked' | null> {
+  if (!assetId) return null;
+  const row = await db
+    .prepare(
+      `SELECT scan_status FROM comment_images
+        WHERE asset_id = ? AND scan_status IN ('clean','blocked')
+        ORDER BY CASE scan_status WHEN 'blocked' THEN 0 ELSE 1 END
+        LIMIT 1`,
+    )
+    .bind(assetId)
+    .first<{ scan_status: 'clean' | 'blocked' }>();
+  return row?.scan_status ?? null;
+}
+
+/** The GIPHY id the phone says this picture came from. A path segment's worth
+ *  of characters and nothing else: it is compared against stored rows, and a
+ *  client choosing what it is compared against is a client choosing its own
+ *  moderation outcome. */
+function readAssetId(form: FormData): string | null {
+  const raw = form.get('asset_id');
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : null;
+}
+
+
 /** What R2 will be told, and the only types accepted. Anything else is a 415. */
 const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
@@ -117,10 +160,13 @@ images.post('/comments/image', requireAuth, async (c) => {
     httpMetadata: { contentType: file.type },
   });
 
+  const assetId = readAssetId(form);
+  const inherited = await decidedFor(db, assetId);
+
   await db
     .prepare(
-      `INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      `INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, asset_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -128,6 +174,8 @@ images.post('/comments/image', requireAuth, async (c) => {
       numberOrNull(form.get('width') === null ? null : Number(form.get('width'))) ?? null,
       numberOrNull(form.get('height') === null ? null : Number(form.get('height'))) ?? null,
       file.type === 'image/gif' ? 1 : 0,
+      inherited ?? 'pending',
+      assetId,
       new Date().toISOString(),
     )
     .run();
@@ -275,13 +323,17 @@ images.post('/comments/:id/image', requireAuth, async (c) => {
   const key = `comments/${id}.${imageExtension(file.type)}`;
   await bucket.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
 
+  const assetId = readAssetId(form);
+  const inherited = await decidedFor(db, assetId);
+
   await db
     .prepare(
-      `INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+      `INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, asset_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (comment_id) DO UPDATE SET
             r2_key = excluded.r2_key, width = excluded.width, height = excluded.height,
-            is_gif = excluded.is_gif, scan_status = 'pending', scanned_at = NULL`,
+            is_gif = excluded.is_gif, asset_id = excluded.asset_id,
+            scan_status = excluded.scan_status, scanned_at = NULL`,
     )
     .bind(
       id,
@@ -289,9 +341,16 @@ images.post('/comments/:id/image', requireAuth, async (c) => {
       numberOrNull(form.get('width') === null ? null : Number(form.get('width'))) ?? null,
       numberOrNull(form.get('height') === null ? null : Number(form.get('height'))) ?? null,
       file.type === 'image/gif' ? 1 : 0,
+      // A REPLACEMENT STILL RESETS TO PENDING unless the new picture is an
+      // asset somebody has already ruled on. The note below this insert is
+      // still the rule: an overwritten picture keeping a 'clean' stamp would
+      // be an approved image nobody approved. Inheriting is different -- that
+      // stamp belongs to the asset now being used, not to the one it replaced.
+      inherited ?? 'pending',
+      assetId,
       nowIso,
     )
     .run();
 
-  return c.json({ ok: true, comment_id: id, scan_status: 'pending' });
+  return c.json({ ok: true, comment_id: id, scan_status: inherited ?? 'pending' });
 });

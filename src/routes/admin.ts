@@ -591,14 +591,47 @@ admin.post('/admin/images/:id', async (c) => {
     return fail(c, 400, 'invalid_body', 'status must be clean or blocked.');
   }
 
+  const now = new Date().toISOString();
+  const id = c.req.param('id');
   const res = await c.env.DB.prepare(
     'UPDATE comment_images SET scan_status = ?, scanned_at = ? WHERE comment_id = ?',
   )
-    .bind(status, new Date().toISOString(), c.req.param('id'))
+    .bind(status, now, id)
     .run();
 
   if (!res.meta.changes) return fail(c, 404, 'not_found', 'No such image.');
-  return c.json({ ok: true, status });
+
+  /**
+   * THE DECISION IS ABOUT THE GIF, NOT THIS COPY OF IT.
+   *
+   * Uploads inherit a decision already made about their asset, which handles
+   * everybody who picks a GIF AFTER a moderator has ruled on it. This is the
+   * other direction: the people who picked it BEFORE, and are sitting in the
+   * queue behind the row just decided. Without this, approving a popular
+   * reaction GIF clears one comment and leaves forty identical ones to be
+   * clicked through one at a time -- which is the per-person moderation this
+   * whole change exists to stop.
+   *
+   * Only rows still waiting. A row a moderator has already ruled on
+   * individually is a considered decision, and a later ruling about the asset
+   * in general should not quietly overwrite it.
+   */
+  let alsoDecided = 0;
+  const asset = await c.env.DB.prepare('SELECT asset_id FROM comment_images WHERE comment_id = ?')
+    .bind(id)
+    .first<{ asset_id: string | null }>();
+  if (asset?.asset_id) {
+    const spread = await c.env.DB.prepare(
+      `UPDATE comment_images SET scan_status = ?, scanned_at = ?
+        WHERE asset_id = ? AND scan_status = 'pending'`,
+    )
+      .bind(status, now, asset.asset_id)
+      .run();
+    alsoDecided = spread.meta.changes ?? 0;
+  }
+  // Reported so the moderation screen can say "and 12 others" rather than
+  // leaving somebody to wonder why the queue jumped.
+  return c.json({ ok: true, status, also_decided: alsoDecided });
 });
 
 /**
