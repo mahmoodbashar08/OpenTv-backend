@@ -179,3 +179,117 @@ describe('a deployment without the bucket', () => {
     expect((await call(env, 'DELETE', '/v1/backup', { token })).status).toBe(200);
   });
 });
+
+/**
+ * Two devices, two keys.
+ *
+ * The bug these exist for: `backups/<profileId>.zip` was one object per
+ * PROFILE, overwritten in place, so a reader's two phones raced each other.
+ * On 21 Sep the cloud copy went from a 1,260-episode library to a 1,042-episode
+ * one and back again, twice, in an afternoon. Survivable only because each
+ * phone still had its own copy locally — and not survivable at all for the
+ * case the feature exists for, a third device restoring.
+ */
+describe('one backup per device', () => {
+  const withDevice = (device: string) => ({ token, headers: { 'X-OpenTV-Device': device } });
+  const info = (n: { shows?: number; episodes?: number; movies?: number }) => ({
+    'X-OpenTV-Backup-Info': Buffer.from(JSON.stringify(n), 'utf8').toString('base64'),
+  });
+
+  it('does not let one phone overwrite the other', async () => {
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('phone'));
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(20), withDevice('tablet'));
+    expect([...bucket.stored.keys()].sort()).toEqual(['backups/p1/phone.zip', 'backups/p1/tablet.zip']);
+  });
+
+  it('still overwrites in place PER DEVICE, so one phone cannot fill a bucket', async () => {
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('phone'));
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(20), withDevice('phone'));
+    expect(bucket.stored.size).toBe(1);
+    expect(bucket.stored.get('backups/p1/phone.zip')?.size).toBe(20);
+  });
+
+  it('restores the FULLEST library, not the most recently uploaded', async () => {
+    // The whole point. The 1,042-episode copy was the NEWER one that day, and
+    // handing somebody the smaller library because it arrived four minutes
+    // later is exactly the failure this route was changed for.
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(1260), {
+      ...withDevice('full'),
+      headers: { 'X-OpenTV-Device': 'full', ...info({ episodes: 1260 }) },
+    });
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(1042), {
+      ...withDevice('behind'),
+      headers: { 'X-OpenTV-Device': 'behind', ...info({ episodes: 1042 }) },
+    });
+
+    const meta = await call(env, 'GET', '/v1/backup/info', { token });
+    expect(meta.json.episodes).toBe(1260);
+    expect(meta.json.device).toBe('full');
+    expect(meta.json.devices).toHaveLength(2);
+
+    // and the bytes must be the same object the info just described, or the
+    // welcome screen promises a library it does not hand over
+    const zip = await call(env, 'GET', '/v1/backup', { token });
+    expect(zip.status).toBe(200);
+  });
+
+  it('hands over a named device when the reader picks one', async () => {
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(8), withDevice('phone'));
+    await callBytes(env, 'POST', '/v1/backup', new Uint8Array(20), withDevice('tablet'));
+    const res = await call(env, 'GET', '/v1/backup?device=tablet', { token });
+    expect(res.status).toBe(200);
+    expect((await call(env, 'GET', '/v1/backup?device=nosuch', { token })).status).toBe(404);
+  });
+
+  it('keeps reading a backup written before per-device keys existed', async () => {
+    // A phone that has not updated still writes the old single key, and its
+    // owner must not be told their backup vanished.
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token });
+    expect([...bucket.stored.keys()]).toEqual(['backups/p1.zip']);
+    const meta = await call(env, 'GET', '/v1/backup/info', { token });
+    expect(meta.json.exists).toBe(true);
+    expect(meta.json.device).toBe(null);
+    expect((await call(env, 'GET', '/v1/backup', { token })).status).toBe(200);
+  });
+
+  it('refuses a device id that is a path rather than a name', async () => {
+    // It comes from input and it goes into a key. A client that could put
+    // `../` in it could write outside its own prefix — and into another
+    // profile's.
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, {
+      token,
+      headers: { 'X-OpenTV-Device': '../p2/stolen' },
+    });
+    // falls back to this profile's own legacy key, never p2's
+    expect([...bucket.stored.keys()]).toEqual(['backups/p1.zip']);
+  });
+
+  it('deletes every device by default, and only one when asked', async () => {
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('phone'));
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('tablet'));
+
+    await call(env, 'DELETE', '/v1/backup?device=phone', { token });
+    expect([...bucket.stored.keys()]).toEqual(['backups/p1/tablet.zip']);
+
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('phone'));
+    // "take my library off your server" means all of it, not this handset's
+    await call(env, 'DELETE', '/v1/backup', { token });
+    expect(bucket.stored.size).toBe(0);
+  });
+
+  it('never lets one profile see another profile-s devices', async () => {
+    makePlus('p1');
+    makePlus('p2');
+    const other = await tokenFor(env, 'p2');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, withDevice('phone'));
+    const meta = await call(env, 'GET', '/v1/backup/info', { token: other });
+    expect(meta.json.exists).toBe(false);
+  });
+});

@@ -142,6 +142,21 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, Stored> } {
       stored.delete(key);
       bytes.delete(key);
     },
+    // `list` arrived with per-device backup keys. Before that the routes only
+    // ever addressed one known key per profile; now they have to ask what is
+    // there, and a harness without this turns that question into a TypeError.
+    async list(opts?: { prefix?: string }) {
+      const prefix = opts?.prefix ?? '';
+      const objects = [...stored.entries()]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([key, meta]) => ({
+          key,
+          size: meta.size,
+          uploaded: new Date('2026-09-10T00:00:00.000Z'),
+          customMetadata: meta.custom ?? {},
+        }));
+      return { objects, truncated: false } as never;
+    },
   } as unknown as R2Bucket & { stored: Map<string, Stored> };
 }
 

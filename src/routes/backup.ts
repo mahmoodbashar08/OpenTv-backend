@@ -37,9 +37,41 @@ import { plusOn } from '@/pure';
 
 export const backup = new Hono<App>();
 
-/** One object per profile, overwritten in place, so nobody can fill a bucket
- *  by pressing backup twice. Derived from the session, never from input. */
-const keyFor = (profileId: string): string => `backups/${profileId}.zip`;
+/**
+ * ONE OBJECT PER DEVICE, not per profile.
+ *
+ * It was per profile — `backups/<profileId>.zip`, overwritten in place — and
+ * that is a last-writer-wins race between a reader's own phones. Watched on
+ * 21 Sep: the cloud copy went from a 1,260-episode library to a 1,042-episode
+ * one and back again, twice, in an afternoon, because two devices at slightly
+ * different sync states each believed they were backing up "the" library.
+ *
+ * It was survivable only because each device still had its own copy locally.
+ * The case it was never survivable for is the one the feature exists for: a
+ * THIRD device, restoring, taking whatever happened to be up there at that
+ * second.
+ *
+ * So each device writes its own key and nothing overwrites anybody. Choosing
+ * between them becomes a question with an answer instead of a coin toss — see
+ * `pickBest`.
+ *
+ * The profile id still comes from the session and never from input. The device
+ * id does come from input, so it is pattern-checked before it goes anywhere
+ * near a key: it is a path segment, and a client that could put `../` in it
+ * could write outside the prefix.
+ */
+const prefixFor = (profileId: string): string => `backups/${profileId}/`;
+const keyFor = (profileId: string, device: string): string => `${prefixFor(profileId)}${device}.zip`;
+
+/** Where single-key backups written before this change still live. Read, never
+ *  written, and never deleted on somebody else's behalf: it may be the only
+ *  copy a not-yet-updated device has. */
+const legacyKeyFor = (profileId: string): string => `backups/${profileId}.zip`;
+
+/** A device id is a path segment and is treated like one. */
+const DEVICE_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const readDevice = (raw: string | undefined): string | null =>
+  raw && DEVICE_RE.test(raw) ? raw : null;
 
 /**
  * Generous next to what a real library measures. The heaviest genuine export
@@ -115,6 +147,65 @@ const fromMetadata = (m: Record<string, string> | undefined): BackupInfo => {
   };
 };
 
+/** One stored backup, as the phone sees it. `device` is null for the single
+ *  pre-per-device object. */
+type StoredBackup = BackupInfo & { device: string | null; size: number; updatedAt: string | null };
+
+/**
+ * Every backup this profile has, newest first.
+ *
+ * One page is deliberate. This lists a reader's own devices — two, sometimes
+ * three — and a profile with more than a thousand of them has a problem that
+ * paginating here would hide rather than solve.
+ */
+async function listBackups(bucket: R2Bucket, profileId: string): Promise<StoredBackup[]> {
+  const out: StoredBackup[] = [];
+  const prefix = prefixFor(profileId);
+  const listed = await bucket.list({ prefix, include: ['customMetadata'] });
+  for (const o of listed.objects ?? []) {
+    if (!o.key.endsWith('.zip')) continue;
+    out.push({
+      device: o.key.slice(prefix.length, -'.zip'.length),
+      size: o.size,
+      updatedAt: o.uploaded?.toISOString?.() ?? null,
+      ...fromMetadata(o.customMetadata),
+    });
+  }
+  const legacy = await bucket.head(legacyKeyFor(profileId));
+  if (legacy) {
+    out.push({
+      device: null,
+      size: legacy.size,
+      updatedAt: legacy.uploaded?.toISOString?.() ?? null,
+      ...fromMetadata(legacy.customMetadata),
+    });
+  }
+  return out.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+}
+
+/**
+ * Which one a restore gets when the caller does not say.
+ *
+ * THE FULLEST, NOT THE NEWEST, and that is a deliberate answer to the bug this
+ * route was changed for. Two devices at different sync states produce two
+ * honest backups, and the later one is not the better one — on 21 Sep the
+ * newer copy was the 1,042-episode one. Somebody restoring is trying not to
+ * lose a decade; handing them the smaller library because it was uploaded four
+ * minutes more recently is precisely the failure.
+ *
+ * Newest only breaks ties, and the import is a merge anyway: restoring the
+ * fuller copy can never delete anything the other one had.
+ */
+function pickBest(all: StoredBackup[]): StoredBackup | null {
+  if (all.length === 0) return null;
+  return all.reduce((best, b) => {
+    const be = b.episodes ?? -1;
+    const bestEp = best.episodes ?? -1;
+    if (be !== bestEp) return be > bestEp ? b : best;
+    return (b.updatedAt ?? '') > (best.updatedAt ?? '') ? b : best;
+  });
+}
+
 /** Plus, including the self-hosted case — see `hasPlus` in `middleware.ts`. */
 const isPlus = hasPlus;
 
@@ -132,12 +223,18 @@ backup.post('/backup', requireAuth, async (c) => {
     return fail(c, 413, 'too_large', 'That backup is larger than this server accepts.');
 
   const info = readInfoHeader(c.req.header('X-OpenTV-Backup-Info'));
-  await bucket.put(keyFor(c.get('profileId')), body, {
+  // A client that sends no device id keeps the old single key. That is not
+  // politeness towards old builds — it is the only safe thing to do: writing
+  // an unidentified upload under a made-up device id would put a second,
+  // permanent, unattributable copy in the list every time it ran.
+  const device = readDevice(c.req.header('X-OpenTV-Device'));
+  const profileId = c.get('profileId');
+  await bucket.put(device ? keyFor(profileId, device) : legacyKeyFor(profileId), body, {
     httpMetadata: { contentType: 'application/zip' },
     customMetadata: toMetadata(info),
   });
 
-  return c.json({ ok: true, size: body.byteLength, updatedAt: new Date().toISOString() });
+  return c.json({ ok: true, size: body.byteLength, updatedAt: new Date().toISOString(), device });
 });
 
 // ── read ─────────────────────────────────────────────────────────────────────
@@ -151,14 +248,25 @@ backup.get('/backup/info', requireAuth, async (c) => {
   const bucket = c.env.BACKUPS;
   if (!bucket) return c.json({ exists: false });
 
-  const head = await bucket.head(keyFor(c.get('profileId')));
-  if (!head) return c.json({ exists: false });
+  const all = await listBackups(bucket, c.get('profileId'));
+  const best = pickBest(all);
+  if (!best) return c.json({ exists: false });
 
+  // THE TOP LEVEL DESCRIBES WHAT `GET /backup` WITHOUT A DEVICE WOULD RETURN,
+  // and it has to keep doing so: a build that predates `devices` reads these
+  // fields and then downloads, and the two must be the same object or the
+  // welcome screen promises a library it does not hand over.
   return c.json({
     exists: true,
-    size: head.size,
-    updatedAt: head.uploaded?.toISOString?.() ?? null,
-    ...fromMetadata(head.customMetadata),
+    size: best.size,
+    updatedAt: best.updatedAt,
+    username: best.username ?? null,
+    shows: best.shows ?? null,
+    episodes: best.episodes ?? null,
+    movies: best.movies ?? null,
+    device: best.device,
+    // Everything, so a phone can offer the choice rather than be handed one.
+    devices: all,
   });
 });
 
@@ -167,7 +275,21 @@ backup.get('/backup', requireAuth, async (c) => {
   const bucket = c.env.BACKUPS;
   if (!bucket) return fail(c, 503, 'unavailable', 'Cloud backup is not configured.');
 
-  const object = await bucket.get(keyFor(c.get('profileId')));
+  const profileId = c.get('profileId');
+  // `?device=` when the reader has chosen one; otherwise the fullest, which is
+  // the same object `/backup/info` just described.
+  const asked = readDevice(c.req.query('device') ?? undefined);
+  let key: string | null = null;
+  if (asked) {
+    key = keyFor(profileId, asked);
+  } else if (c.req.query('device') === 'legacy') {
+    key = legacyKeyFor(profileId);
+  } else {
+    const best = pickBest(await listBackups(bucket, profileId));
+    if (best) key = best.device ? keyFor(profileId, best.device) : legacyKeyFor(profileId);
+  }
+
+  const object = key ? await bucket.get(key) : null;
   if (!object) return fail(c, 404, 'not_found', 'There is no backup for this account.');
 
   return new Response(object.body, {
@@ -190,6 +312,19 @@ backup.get('/backup', requireAuth, async (c) => {
 backup.delete('/backup', requireAuth, async (c) => {
   const bucket = c.env.BACKUPS;
   if (!bucket) return c.json({ ok: true });
-  await bucket.delete(keyFor(c.get('profileId')));
+  const profileId = c.get('profileId');
+
+  // ALL OF THEM, unless one is named. "Take my library off your server" is the
+  // request being made, and leaving the other phone's copy up there would be
+  // answering a different one. `?device=` exists for a reader who wants to
+  // drop a phone they no longer own without touching the rest.
+  const asked = readDevice(c.req.query('device') ?? undefined);
+  if (asked) {
+    await bucket.delete(keyFor(profileId, asked));
+    return c.json({ ok: true });
+  }
+  for (const b of await listBackups(bucket, profileId)) {
+    await bucket.delete(b.device ? keyFor(profileId, b.device) : legacyKeyFor(profileId));
+  }
   return c.json({ ok: true });
 });
