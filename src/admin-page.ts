@@ -120,6 +120,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .tab.on { background:#26262b; color:#e9e9ee; }
   /* Doing is the accent; opening is not. */
   .did { color:#FFD400; font-weight:600; }
+  /* The linked variant, where nobody has sent a name — underlined so it is
+     visibly clickable, same colour so the row still reads as one thing. */
+  a.did { text-decoration:underline; text-underline-offset:2px; }
   .bulkbar { margin-top:14px; }
   .bulkbar button { width:auto; }
 </style>
@@ -263,8 +266,14 @@ function todayCell(u) {
     const detail = r.kind === 'rating' ? ' ' + esc(r.detail) + '/10'
       : r.kind === 'character' || r.kind === 'emotion' ? ' &middot; ' + esc(r.detail)
       : '';
-    return '<div class="ev"><span class="vb">' + (verb[r.kind] || r.kind) + '</span> ' +
-      '<span class="did">' + esc(r.title) + (r.where ? ' ' + esc(r.where) : '') + '</span>' +
+    // An unnamed TheTVDB id is a link rather than a dead number: nobody has
+    // sent this server a name for it, and one click beats copying it out.
+    const what = esc(r.title) + (r.where ? ' ' + esc(r.where) : '');
+    const did = r.tvdbId
+      ? '<a class="did" target="_blank" rel="noopener" href="https://thetvdb.com/dereferrer/series/' +
+        esc(r.tvdbId) + '">' + what + '</a>'
+      : '<span class="did">' + what + '</span>';
+    return '<div class="ev"><span class="vb">' + (verb[r.kind] || r.kind) + '</span> ' + did +
       '<span class="name">' + detail + '</span></div>';
   };
   const all = rows.map(one).join('');

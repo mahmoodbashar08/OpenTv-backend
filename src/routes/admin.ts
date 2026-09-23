@@ -382,20 +382,20 @@ admin.get('/admin/users', async (c) => {
   const midnightUtc = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
 
   const acted = await c.env.DB.prepare(
-    `SELECT kind, who, target_key, season, episode, detail
+    `SELECT kind, who, target_source, target_key, season, episode, detail
        FROM (
-         SELECT 'comment' AS kind, author_id AS who, target_key, season, episode, NULL AS detail,
+         SELECT 'comment' AS kind, author_id AS who, target_source, target_key, season, episode, NULL AS detail,
                 created_at
            FROM comments
           WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= date('now')
          UNION ALL
-         SELECT 'rating', author_id, target_key, season, episode, CAST(score AS TEXT), created_at
+         SELECT 'rating', author_id, target_source, target_key, season, episode, CAST(score AS TEXT), created_at
            FROM ratings WHERE imported_at IS NULL AND created_at >= date('now')
          UNION ALL
-         SELECT 'character', voter_id, target_key, season, episode, character_name, created_at
+         SELECT 'character', voter_id, target_source, target_key, season, episode, character_name, created_at
            FROM character_votes WHERE imported_at IS NULL AND created_at >= date('now')
          UNION ALL
-         SELECT 'emotion', author_id, target_key, season, episode, emotion, created_at
+         SELECT 'emotion', author_id, target_source, target_key, season, episode, emotion, created_at
            FROM emotion_votes WHERE imported_at IS NULL AND created_at >= date('now')
        )
       ORDER BY created_at DESC
@@ -403,6 +403,7 @@ admin.get('/admin/users', async (c) => {
   ).all<{
     kind: string;
     who: string;
+    target_source: string;
     target_key: string;
     season: number | null;
     episode: number | null;
@@ -447,7 +448,10 @@ admin.get('/admin/users', async (c) => {
     for (const row of found.results ?? []) names.set(row.target_key, row.name);
   }
 
-  const byId = new Map<string, { kind: string; title: string; where: string; detail: string | null }[]>();
+  const byId = new Map<
+    string,
+    { kind: string; title: string; where: string; detail: string | null; tvdbId: string | null }[]
+  >();
   for (const r of acted.results ?? []) {
     const list = byId.get(r.who) ?? [];
     // A season of -1 is this schema's "the whole title", not season minus one.
@@ -455,11 +459,26 @@ admin.get('/admin/users', async (c) => {
       r.season != null && r.season >= 0 && r.episode != null && r.episode >= 0
         ? `S${r.season}E${r.episode}`
         : '';
+    const named = names.get(r.target_key);
     list.push({
       kind: r.kind,
-      title: names.get(r.target_key) ?? r.target_key,
+      title: named ?? r.target_key,
       where,
       detail: r.detail,
+      /*
+       * A WAY OUT WHEN NOBODY HAS SENT A NAME.
+       *
+       * The three tables above hold a name only if some phone put this title
+       * on a shelf or in a list. Rating an episode of a show you have done
+       * neither with is ordinary, and then there is nothing on this server
+       * that knows what 319947 is -- so the dashboard prints the key.
+       *
+       * It can still be one click instead of a copy-paste: a bare TheTVDB id
+       * has a canonical page. Only when the key is unnamed and actually looks
+       * like a TheTVDB series id; a `title` key is a slug and a TMDB one is a
+       * different catalogue.
+       */
+      tvdbId: !named && r.target_source === 'tvdb' && /^\d+$/.test(r.target_key) ? r.target_key : null,
     });
     byId.set(r.who, list);
   }
