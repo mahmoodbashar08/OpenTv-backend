@@ -53,6 +53,7 @@ const MIGRATION_FILES = [
   '../migrations/0034_auto_verified.sql',
   '../migrations/0035_image_asset_id.sql',
   '../migrations/0036_commsuni_consent.sql',
+  '../migrations/0037_title_names.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

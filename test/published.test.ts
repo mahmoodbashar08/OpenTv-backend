@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '@/env';
-import { PUBLISH_MAX_TITLES } from '@/routes/published';
+import { PLUS_MAX_TITLES, PUBLISH_MAX_TITLES } from '@/routes/published';
 import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness';
 
 /**
@@ -253,5 +253,73 @@ describe('GET /v1/profiles/:handle/published', () => {
     // ON DELETE CASCADE, so no orphaned shelf survives its owner.
     expect(raw.prepare('SELECT COUNT(*) AS n FROM profile_titles').get()).toEqual({ n: 0 });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM profile_stats').get()).toEqual({ n: 0 });
+  });
+});
+
+/**
+ * A SHELF LONGER THAN ONE REQUEST.
+ *
+ * 250 was never a decision about how much a profile may show — it is the
+ * largest number of titles that fits in one D1 statement, and it became the
+ * cap because one request was the whole protocol. These are the rules that
+ * make a second request safe.
+ */
+describe('a shelf sent in chunks', () => {
+  const plus = () =>
+    raw.prepare(`UPDATE profiles SET is_plus = 1 WHERE id = 'p1'`).run();
+
+  it('refuses to append for an account that is not Plus', async () => {
+    const res = await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', append: true, titles: [title(1)] },
+    });
+    expect(res.status).toBe(403);
+    expect(res.json.error.code).toBe('plus_required');
+  });
+
+  it('keeps the first chunk when the second appends', async () => {
+    plus();
+    await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [title(1), title(2)] } });
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', append: true, titles: [title(3)] },
+    });
+
+    const n = raw.prepare(`SELECT COUNT(*) AS n FROM profile_titles WHERE profile_id = 'p1'`).get() as { n: number };
+    expect(n.n).toBe(3);
+  });
+
+  /* The first chunk still REPLACES, or an old shelf would never shrink. */
+  it('clears the shelf on the chunk that does not append', async () => {
+    plus();
+    await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [title(1), title(2)] } });
+    await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [title(9)] } });
+
+    const rows = raw
+      .prepare(`SELECT target_key FROM profile_titles WHERE profile_id = 'p1'`)
+      .all() as { target_key: string }[];
+    expect(rows.map((r) => r.target_key)).toEqual(['1009']);
+  });
+
+  /* Counted on the server: a ceiling the client enforces is not a ceiling. */
+  it('refuses an append that would take the shelf past the Plus ceiling', async () => {
+    plus();
+    const many = Array.from({ length: PUBLISH_MAX_TITLES }, (_, i) => title(i));
+    await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: many } });
+    for (let round = 0; round < Math.ceil(PLUS_MAX_TITLES / PUBLISH_MAX_TITLES); round++) {
+      const res = await call(env, 'PUT', '/v1/me/published', {
+        token,
+        body: {
+          kind: 'show',
+          append: true,
+          titles: Array.from({ length: PUBLISH_MAX_TITLES }, (_, i) => title(10_000 + round * 1000 + i)),
+        },
+      });
+      if (res.status === 413) {
+        expect(res.json.error.code).toBe('too_large');
+        return;
+      }
+    }
+    throw new Error('the ceiling never applied');
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '@/env';
-import { call, freshDatabase, makeEnv } from './harness';
+import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness';
 
 /**
  * The dashboard's door. The cases here are the ones where being wrong is
@@ -156,6 +156,45 @@ describe('the admin dashboard', () => {
     );
     expect(me?.today?.[0]?.title).toBe('Poker Face');
     expect(me?.today?.[0]?.where).toBe('S1E1');
+  });
+
+  /*
+   * THE OTHER 27%. A shelf is truncated and a rating is not, so a member with
+   * a large library rates plenty of shows that never reach `profile_titles`.
+   * The name has to ride along with the write or it does not exist.
+   */
+  it('names a title from the rating that carried it', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    insertProfile(raw, 'p9', 'marley');
+    const token = await tokenFor(env, 'p9');
+
+    await call(env, 'POST', '/v1/ratings', {
+      token,
+      body: { target_source: 'tvdb', target_key: '319947', season: 1, episode: 1, score: 10, title: 'Killision Course' },
+    });
+    // Nowhere else on the server knows this show.
+    expect(raw.prepare(`SELECT COUNT(*) AS n FROM profile_titles WHERE target_key='319947'`).get()).toEqual({ n: 0 });
+
+    const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    const them = (res.json.items as { id: string; today: { title: string }[] }[]).find((u) => u.id === 'p9');
+    expect(them?.today?.[0]?.title).toBe('Killision Course');
+  });
+
+  /* First writer wins: one doctored request must not rename a title for
+     everybody who comes after it. */
+  it('keeps the first name it was given', async () => {
+    insertProfile(raw, 'p9', 'marley');
+    const token = await tokenFor(env, 'p9');
+    const rate = (title: string) =>
+      call(env, 'POST', '/v1/ratings', {
+        token,
+        body: { target_source: 'tvdb', target_key: '42', score: 8, title },
+      });
+    await rate('The Real One');
+    await rate('Something Else');
+    expect(raw.prepare(`SELECT name FROM title_names WHERE target_key='42'`).get()).toEqual({
+      name: 'The Real One',
+    });
   });
 
   it('refuses the people list without a cookie', async () => {

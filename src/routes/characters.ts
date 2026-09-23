@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { rememberTitleName } from '@/title-names';
 import {
   isTargetSource,
   numberOrNull,
@@ -93,6 +94,12 @@ characterVotes.post('/character-votes', requireAuth, async (c) => {
 
   const db = c.env.DB;
   const me = c.get('profileId');
+
+  // The name rides along with the write, if the phone sent one. See
+  // `rememberTitleName`: first writer wins, it never fails this request, and
+  // it costs nothing when no title was sent.
+  await rememberTitleName(db, b.target_source, b.target_key, b.title);
+
   const src = b.target_source;
   const key = b.target_key;
   const now = new Date().toISOString();

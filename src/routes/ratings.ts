@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { rememberTitleName } from '@/title-names';
 import {
   AGGREGATE_TARGETS_PER_QUERY,
   aggregateDelta,
@@ -125,6 +126,11 @@ ratings.post('/ratings', requireAuth, async (c) => {
   const db = c.env.DB;
   const me = c.get('profileId');
   const now = new Date().toISOString();
+
+  // The name rides along with the write, if the phone sent one. See
+  // `rememberTitleName`: first writer wins, it never fails this request, and
+  // it costs nothing when no title was sent.
+  await rememberTitleName(db, src, key, b.title);
 
   // The previous vote and the previous set of feelings, read first: a batch
   // cannot branch on a result, so every decision is made here in JS.

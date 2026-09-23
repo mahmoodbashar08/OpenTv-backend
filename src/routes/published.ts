@@ -81,9 +81,31 @@ async function isPlusProfile(db: D1Database, profileId: string, nowIso: string):
   return row ? plusOn(row, nowIso) : false;
 }
 
-/** One request replaces one kind's shelf. Chosen so 250 titles stay inside the
- *  100-parameter ceiling at 9 binds each — see `TITLE_BINDS`. */
+/** One request carries at most this many titles. Chosen so 250 stay inside the
+ *  100-parameter ceiling at 9 binds each — see `TITLE_BINDS`. It is a TRANSPORT
+ *  limit, which is not the same thing as how long a shelf may be: see
+ *  `PLUS_MAX_TITLES`. */
 export const PUBLISH_MAX_TITLES = 250;
+
+/**
+ * HOW LONG A SHELF MAY BE, which until now was 250 by accident.
+ *
+ * 250 was the largest number that fitted in one request, and one request was
+ * the whole protocol, so it silently became the cap on a profile. Nobody
+ * decided that. A member with 900 shows published their 250 most recently
+ * watched and the rest existed nowhere on this server — which is also why the
+ * dashboard could not name a show somebody had rated but not shelved.
+ *
+ * So the shelf is now sent in chunks: the first request replaces, the rest
+ * append. Free accounts still stop at one chunk, which keeps the free shelf
+ * exactly the length it has always been. Plus continues.
+ *
+ * NOT UNBOUNDED, THOUGH. "Unlimited" in the product sense is a number large
+ * enough that no real library reaches it; unbounded in the storage sense is an
+ * invitation to park a megabyte per account. The largest library seen here is
+ * some hundreds of shows, so this is roughly twenty times that.
+ */
+export const PLUS_MAX_TITLES = 5000;
 
 /**
  * Columns bound per title row, and how many rows fit in one statement.
@@ -131,6 +153,36 @@ published.put('/me/published', requireAuth, async (c) => {
   const me = c.get('profileId');
   const db = c.env.DB;
   const nowIso = new Date().toISOString();
+
+  /*
+   * APPEND, FOR THE SECOND CHUNK ONWARDS.
+   *
+   * Without it this route is the reason a shelf stopped at 250: it replaces,
+   * so a second request would delete the first. `append` keeps what is there
+   * and adds to it, and the client sends it on every chunk after the first.
+   *
+   * PLUS ONLY, because it is the thing being paid for -- and because without
+   * that check a free account could append its way past the cap simply by
+   * sending twice, which would make the limit decorative.
+   *
+   * The stats are skipped on an appended chunk: they are the same numbers in
+   * every chunk of one publish, and writing them once is enough.
+   */
+  const append = b.append === true;
+  if (append) {
+    if (!(await isPlusProfile(db, me, nowIso))) {
+      return fail(c, 403, 'plus_required', 'A longer shelf is part of Plus.');
+    }
+    // Counted rather than trusted: the client decides how many chunks to send,
+    // and a ceiling a client enforces is not a ceiling.
+    const held = await db
+      .prepare('SELECT COUNT(*) AS n FROM profile_titles WHERE profile_id = ? AND kind = ?')
+      .bind(me, kind)
+      .first<{ n: number }>();
+    if ((held?.n ?? 0) + b.titles.length > PLUS_MAX_TITLES) {
+      return fail(c, 413, 'too_large', `A shelf holds at most ${PLUS_MAX_TITLES} titles.`);
+    }
+  }
 
   const rows: {
     source: string;
@@ -199,12 +251,24 @@ published.put('/me/published', requireAuth, async (c) => {
     favouritesKept = kept;
   }
 
-  // REPLACE, not merge. A shelf is the whole truth about one kind at one
-  // moment: a title unfollowed on the phone has to disappear here, and a merge
-  // could only ever grow. The delete and the inserts go in one batch so a
-  // crash cannot leave the shelf empty.
+  /*
+   * REPLACE, NOT MERGE, and `append` does not change that.
+   *
+   * A shelf is the whole truth about one kind at one moment: a title
+   * unfollowed on the phone has to disappear here, and a merge could only ever
+   * grow. What `append` splits is the TRANSPORT, not the meaning -- the first
+   * chunk of a publish still clears everything, and the chunks that follow are
+   * the rest of the same truth arriving in a second envelope.
+   *
+   * The delete and the inserts go in one batch so a crash cannot leave the
+   * shelf empty. A crash BETWEEN chunks leaves it short, which is the same
+   * failure a crash has always had, one chunk smaller.
+   */
   const statements = [
-    db.prepare('DELETE FROM profile_titles WHERE profile_id = ? AND kind = ?').bind(me, kind),
+    // The first chunk clears the shelf; the rest add to what it left.
+    ...(append
+      ? []
+      : [db.prepare('DELETE FROM profile_titles WHERE profile_id = ? AND kind = ?').bind(me, kind)]),
     ...chunk(rows, TITLES_PER_STATEMENT).map((group) =>
       db
         .prepare(

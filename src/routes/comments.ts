@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { rememberTitleName } from '@/title-names';
 import { sendPush } from '@/push';
 import {
   COMMENTS_PER_HOUR,
@@ -291,6 +292,11 @@ comments.post('/comments', requireAuth, async (c) => {
     targetSource = b.target_source;
     targetKey = b.target_key;
   }
+
+  // The name rides along with the write, if the phone sent one. See
+  // `rememberTitleName`: first writer wins, it never fails this request, and
+  // it costs nothing when no title was sent.
+  await rememberTitleName(c.env.DB, targetSource, targetKey, b.title);
 
   if (b.is_spoiler !== undefined && typeof b.is_spoiler !== 'boolean' && b.is_spoiler !== 0 && b.is_spoiler !== 1) {
     return fail(c, 400, 'invalid_body', 'is_spoiler must be a boolean.');

@@ -416,10 +416,13 @@ admin.get('/admin/users', async (c) => {
    * The server has no catalogue: it cannot turn 319947 into a title, and by
    * design it never will. What it has is every place a PHONE sent a name
    * alongside a key, and there are three of them — the shelves on a profile,
-   * the items in a published list, and the items in a shared list. A name for
-   * a key is a fact about the catalogue, not about the person who happened to
-   * send it ("289590 is Severance"), so any one of the three names everybody's
-   * rows.
+   * the items in a published list, the items in a shared list, and -- since
+   * 0037 -- `title_names`, which the rating and comment routes fill from the
+   * write itself. That last one is the only one that does not depend on
+   * somebody having SHELVED the title, which is what a library over 250 shows
+   * cannot do for all of them. A name for a key is a fact about the catalogue,
+   * not about the person who happened to send it ("289590 is Severance"), so
+   * any one of the four names everybody's rows.
    *
    * IT ASKED ONLY THE FIRST, which is why the dashboard printed "319947 S1E1".
    * A shelf holds what somebody chose to SHOW on their profile; commenting on
@@ -440,10 +443,12 @@ admin.get('/admin/users', async (c) => {
          SELECT target_key, title FROM list_items        WHERE title IS NOT NULL AND target_key IN (${slots})
          UNION ALL
          SELECT target_key, title FROM shared_list_items WHERE title IS NOT NULL AND target_key IN (${slots})
+         UNION ALL
+         SELECT target_key, name  FROM title_names       WHERE target_key IN (${slots})
        )
        GROUP BY target_key`,
     )
-      .bind(...keys, ...keys, ...keys)
+      .bind(...keys, ...keys, ...keys, ...keys)
       .all<{ target_key: string; name: string }>();
     for (const row of found.results ?? []) names.set(row.target_key, row.name);
   }
