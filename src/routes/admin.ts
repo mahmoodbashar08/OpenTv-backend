@@ -410,24 +410,39 @@ admin.get('/admin/users', async (c) => {
   }>();
 
   /*
-   * NAMES, FROM WHAT MEMBERS ALREADY PUBLISH. `profile_titles` is the shelf a
-   * member chose to show on their profile, so it holds a name against a tvdb
-   * key. Any row for that key gives the same title — "289590 is Severance" is a
-   * fact about the catalogue, not about the person who happened to publish it —
-   * so one lookup names everybody's rows.
+   * NAMES, FROM EVERYWHERE A MEMBER HAS ALREADY SENT ONE.
    *
-   * Only the keys in today's rows are asked for. A join across the whole table
-   * would read tens of thousands of shelf rows to label a dozen events.
+   * The server has no catalogue: it cannot turn 319947 into a title, and by
+   * design it never will. What it has is every place a PHONE sent a name
+   * alongside a key, and there are three of them — the shelves on a profile,
+   * the items in a published list, and the items in a shared list. A name for
+   * a key is a fact about the catalogue, not about the person who happened to
+   * send it ("289590 is Severance"), so any one of the three names everybody's
+   * rows.
+   *
+   * IT ASKED ONLY THE FIRST, which is why the dashboard printed "319947 S1E1".
+   * A shelf holds what somebody chose to SHOW on their profile; commenting on
+   * an episode of a show you have not put on your shelf is completely ordinary,
+   * and for those the server held a name in a list table it never looked at.
+   *
+   * Only the keys in today's rows are asked for. A join across the whole of
+   * any of these would read tens of thousands of rows to label a dozen events.
    */
   const keys = [...new Set((acted.results ?? []).map((r) => r.target_key))];
   const names = new Map<string, string>();
   if (keys.length) {
+    const slots = keys.map(() => '?').join(',');
     const found = await c.env.DB.prepare(
-      `SELECT target_key, MIN(name) AS name FROM profile_titles
-        WHERE name IS NOT NULL AND target_key IN (${keys.map(() => '?').join(',')})
-        GROUP BY target_key`,
+      `SELECT target_key, MIN(name) AS name FROM (
+         SELECT target_key, name  FROM profile_titles    WHERE name  IS NOT NULL AND target_key IN (${slots})
+         UNION ALL
+         SELECT target_key, title FROM list_items        WHERE title IS NOT NULL AND target_key IN (${slots})
+         UNION ALL
+         SELECT target_key, title FROM shared_list_items WHERE title IS NOT NULL AND target_key IN (${slots})
+       )
+       GROUP BY target_key`,
     )
-      .bind(...keys)
+      .bind(...keys, ...keys, ...keys)
       .all<{ target_key: string; name: string }>();
     for (const row of found.results ?? []) names.set(row.target_key, row.name);
   }

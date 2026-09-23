@@ -122,6 +122,42 @@ describe('the admin dashboard', () => {
     expect(res.text).not.toContain('body');
   });
 
+  /*
+   * "319947 S1E1" was what the dashboard printed for a show nobody had put on
+   * their profile. The server holds no catalogue and never will, so the only
+   * names it has are the ones phones sent alongside a key -- and it was asking
+   * one of the three tables that hold them.
+   */
+  it('names a title from a list when no shelf has it', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const now = new Date().toISOString();
+    raw
+      .prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'someone', 'someone', ?)`)
+      .run(now);
+    raw
+      .prepare(
+        `INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
+         VALUES ('r1', 'p1', 'tvdb', '319947', 1, 1, 5, ?)`,
+      )
+      .run(now);
+    // Not on anybody's shelf — only in a list, which is where the name was
+    // sitting unread.
+    raw.prepare(`INSERT INTO lists (id, owner_id, name, created_at) VALUES ('l1', 'p1', 'Later', ?)`).run(now);
+    raw
+      .prepare(
+        `INSERT INTO list_items (list_id, position, target_source, target_key, title)
+         VALUES ('l1', 0, 'tvdb', '319947', 'Poker Face')`,
+      )
+      .run();
+
+    const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    const me = (res.json.items as { id: string; today: { title: string; where: string }[] }[]).find(
+      (u) => u.id === 'p1',
+    );
+    expect(me?.today?.[0]?.title).toBe('Poker Face');
+    expect(me?.today?.[0]?.where).toBe('S1E1');
+  });
+
   it('refuses the people list without a cookie', async () => {
     expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
   });
