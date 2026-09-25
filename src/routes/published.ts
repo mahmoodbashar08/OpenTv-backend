@@ -305,8 +305,20 @@ published.put('/me/published', requireAuth, async (c) => {
       n(stats.episodes_watched),
       n(stats.minutes_watched),
       n(stats.movie_minutes),
-      kind === 'show' ? rows.length : 0,
-      kind === 'movie' ? rows.length : 0,
+      /*
+       * THE LIBRARY'S SIZE, NOT THE SHELF'S.
+       *
+       * This was `rows.length` — the number of titles in THIS request — and
+       * the shelf is capped, so a library of two thousand films reported the
+       * cap as its total. Chunking made it worse: split across requests, the
+       * count became whatever the last chunk happened to hold.
+       *
+       * The phone sends the real figure now. `rows.length` stays as the
+       * fallback for a build that does not yet, which reports the old wrong
+       * number rather than a zero — wrong and unchanged beats wrong and worse.
+       */
+      kind === 'show' ? n(stats.shows_count) || rows.length : 0,
+      kind === 'movie' ? n(stats.movies_count) || rows.length : 0,
       nowIso,
       kind,
       kind,

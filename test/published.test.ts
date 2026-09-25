@@ -323,3 +323,36 @@ describe('a shelf sent in chunks', () => {
     throw new Error('the ceiling never applied');
   });
 });
+
+/*
+ * "250 films" on a profile holding two thousand. The count was the length of
+ * the shelf in the request, and the shelf is capped — so the cap was being
+ * reported as a total, and chunking turned it into the size of the last chunk.
+ */
+describe('the counts on a profile are the library, not the shelf', () => {
+  it('uses the totals the phone sent, not how many titles arrived', async () => {
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: {
+        kind: 'movie',
+        stats: { episodes_watched: 0, minutes_watched: 0, movie_minutes: 0, movies_count: 2000 },
+        titles: [title(1), title(2)],
+      },
+    });
+    expect(raw.prepare(`SELECT movies_count FROM profile_stats WHERE profile_id = 'p1'`).get()).toEqual({
+      movies_count: 2000,
+    });
+  });
+
+  /* An older build sends no total. Reporting the old wrong number beats
+     reporting a zero. */
+  it('falls back to the row count when no total was sent', async () => {
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'movie', stats: { episodes_watched: 0 }, titles: [title(1), title(2), title(3)] },
+    });
+    expect(raw.prepare(`SELECT movies_count FROM profile_stats WHERE profile_id = 'p1'`).get()).toEqual({
+      movies_count: 3,
+    });
+  });
+});
