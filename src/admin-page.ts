@@ -513,7 +513,8 @@ function drawPeople() {
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Today</th>' +
     '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
-    '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
+    '<th class="num">Ratings</th><th class="num">Feelings</th><th class="num">Characters</th>' +
+    '<th class="num">Photos</th><th class="num">Lists</th>' +
     // A LIFETIME TOTAL, NOT AN EVENT. There is no watch history on this server,
     // so nothing here can say what somebody watched today. What a phone sends
     // when it publishes a profile is how many -- which is real, and was sitting
@@ -538,12 +539,13 @@ function drawPeople() {
         '</td><td>' + todayCell(u) + '</td><td>' + how +
         '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
+        '</td><td class="num">' + u.feelings + '</td><td class="num">' + u.characters +
         '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
         '</td><td class="num">' + num(u.episodes_watched) +
         '</td><td class="num">' + num(u.movies_watched) +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('') ||
-    '<tr><td colspan="14" class="name">Nobody yet today.</td></tr>';
+    '<tr><td colspan="16" class="name">Nobody yet today.</td></tr>';
 }
 
 /**

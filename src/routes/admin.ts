@@ -339,6 +339,13 @@ admin.get('/admin/users', async (c) => {
             (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
             (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
             (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
+            /* The other two halves of a vote. A rating is a number, a feeling
+               is a face, and a character is who they picked -- three separate
+               tables and three separate decisions, so a person who never
+               scores anything but taps faces constantly reads as inactive
+               against the ratings column alone. */
+            (SELECT COUNT(*) FROM emotion_votes   x WHERE x.author_id = p.id) AS feelings,
+            (SELECT COUNT(*) FROM character_votes x WHERE x.voter_id  = p.id) AS characters,
             (SELECT COUNT(*) FROM follows   x WHERE x.followee_id = p.id AND x.state = 'accepted') AS followers,
             (SELECT COUNT(*) FROM lists     x WHERE x.owner_id = p.id) AS lists,
             -- How many of their photographs the rescue actually caught. Zero
