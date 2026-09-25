@@ -507,11 +507,19 @@ let whoFilter = 'all';
 function drawPeople() {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  /** A count that may not exist. Never published is not the same as zero. */
+  const num = (v) => (v == null ? '<span class="name">&mdash;</span>' : String(v));
   const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Today</th>' +
     '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
     '<th class="num">Ratings</th><th class="num">Photos</th><th class="num">Lists</th>' +
+    // A LIFETIME TOTAL, NOT AN EVENT. There is no watch history on this server,
+    // so nothing here can say what somebody watched today. What a phone sends
+    // when it publishes a profile is how many -- which is real, and was sitting
+    // unread in profile_stats. Em dash where a profile has never published:
+    // that is the truth about it, where 0 would be a claim.
+    '<th class="num">Episodes</th><th class="num">Films</th>' +
     '<th class="num">Followers</th></tr>' +
     rows.map((u) => {
       const placeholder = String(u.handle).startsWith('user_p_');
@@ -531,9 +539,11 @@ function drawPeople() {
         '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
         '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
+        '</td><td class="num">' + num(u.episodes_watched) +
+        '</td><td class="num">' + num(u.movies_watched) +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('') ||
-    '<tr><td colspan="12" class="name">Nobody yet today.</td></tr>';
+    '<tr><td colspan="14" class="name">Nobody yet today.</td></tr>';
 }
 
 /**

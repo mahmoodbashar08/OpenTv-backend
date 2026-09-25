@@ -346,7 +346,23 @@ admin.get('/admin/users', async (c) => {
             -- Time's CDN died, and those pictures are gone for good.
             (SELECT COUNT(*) FROM comment_images ci
                JOIN comments cm ON cm.id = ci.comment_id
-              WHERE cm.author_id = p.id) AS images
+              WHERE cm.author_id = p.id) AS images,
+            /*
+             * WHAT THEY HAVE WATCHED, which this dashboard could not say at all.
+             *
+             * There is no watch history on this server and there is not going
+             * to be -- that is the promise the app makes in six languages, and
+             * it is why "show me the episode they watched today" has no answer
+             * here. What a phone does send, when somebody publishes a profile,
+             * is the TOTALS: how many episodes, how many films. Those are real
+             * and they were sitting unread in profile_stats.
+             *
+             * So the columns say what is actually known -- a lifetime count,
+             * not an event -- and a profile that has never published simply has
+             * none, which is the truth about it rather than a zero.
+             */
+            (SELECT episodes_watched FROM profile_stats ps WHERE ps.profile_id = p.id) AS episodes_watched,
+            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL
