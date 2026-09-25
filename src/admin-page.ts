@@ -507,8 +507,16 @@ let whoFilter = 'all';
 function drawPeople() {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-  /** A count that may not exist. Never published is not the same as zero. */
-  const num = (v) => (v == null ? '<span class="name">&mdash;</span>' : String(v));
+  /*
+   * A COUNT THAT MAY NOT EXIST, said in words.
+   *
+   * Never published is not the same as zero: a person who opened the app once
+   * and closed it may hold a decade of history on their phone, and this server
+   * has simply never been told. It was an em dash, which read as a rendering
+   * fault twice -- so it says what it means instead. Zero would be the one
+   * genuinely wrong answer of the three.
+   */
+  const num = (v) => (v == null ? '<span class="name">not published</span>' : String(v));
   const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Today</th>' +
