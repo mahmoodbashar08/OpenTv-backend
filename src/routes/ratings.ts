@@ -162,6 +162,16 @@ ratings.post('/ratings', requireAuth, async (c) => {
     return fail(c, 400, 'invalid_body', 'Vote rejected (empty_vote).');
   }
 
+  /*
+   * WHAT IS LEFT WHEN THIS VOTE IS APPLIED, and whether it is anything at all.
+   *
+   * `emotions: undefined` means "say nothing about feelings", so the set that
+   * survives is the previous one; `emotions: []` means clear them. Only with
+   * both halves empty is there nothing left to keep.
+   */
+  const finalEmotions = next.emotions ?? prevEmotions;
+  const nothingLeft = next.score === null && finalEmotions.length === 0;
+
   const d = aggregateDelta(prev, next);
   const em = emotionSetDelta(prevEmotions, next.emotions);
 
@@ -241,20 +251,41 @@ ratings.post('/ratings', requireAuth, async (c) => {
         // by 0005 and the feelings live in `emotion_votes` below. A row with a
         // NULL score is still written and still wanted: it is what makes
         // `vote_count` count the person who only tapped a feeling.
-        `INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (author_id, target_source, target_key, COALESCE(season, -1), COALESCE(episode, -1))
-         DO UPDATE SET score = excluded.score`,
+        /*
+         * TAKING A RATING BACK REMOVES THE ROW.
+         *
+         * Undoing used to write `score = NULL` and leave everything else
+         * standing, so an unrated film was still a row in `ratings` -- still
+         * counted by every total, still listed in the dashboard as something
+         * that person did today. The rating was gone from the rollup and
+         * present everywhere else.
+         *
+         * A NULL-score row is still right when a FEELING is all somebody left:
+         * that is what makes `vote_count` count them. It is only wrong when
+         * nothing at all is left, which is what `nothingLeft` says.
+         */
+        nothingLeft
+          ? `DELETE FROM ratings
+              WHERE author_id = ? AND target_source = ? AND target_key = ?
+                AND COALESCE(season, -1) = ? AND COALESCE(episode, -1) = ?`
+          : `INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (author_id, target_source, target_key, COALESCE(season, -1), COALESCE(episode, -1))
+             DO UPDATE SET score = excluded.score`,
       )
       .bind(
-        `r_${crypto.randomUUID().replace(/-/g, '')}`,
-        me,
-        src,
-        key,
-        next.season,
-        next.episode,
-        next.score,
-        now,
+        ...(nothingLeft
+          ? [me, src, key, s, e]
+          : [
+              `r_${crypto.randomUUID().replace(/-/g, '')}`,
+              me,
+              src,
+              key,
+              next.season,
+              next.episode,
+              next.score,
+              now,
+            ]),
       ),
 
     // The set, replaced: one DELETE per feeling let go, one INSERT per feeling

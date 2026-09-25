@@ -629,3 +629,52 @@ describe('GET /v1/aggregates — the list form past one statement\'s worth', () 
     });
   });
 });
+
+/*
+ * Taking a rating back used to write `score = NULL` and leave the row, so an
+ * unrated film was gone from the rollup and still present in `ratings` --
+ * counted by every total and listed in the dashboard as something that person
+ * did today.
+ */
+describe('unrating', () => {
+  let raw: Database.Database;
+  let env: Env;
+  let token: string;
+  const target = { target_source: 'tvdb', target_key: '900' };
+
+  beforeEach(async () => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = makeEnv(fresh.db);
+    insertProfile(raw, 'p1', 'mahmood');
+    token = await tokenFor(env, 'p1');
+  });
+
+  it('removes the row when nothing is left of the vote', async () => {
+    await call(env, 'POST', '/v1/ratings', { token, body: { ...target, score: 8 } });
+    expect(raw.prepare(`SELECT COUNT(*) AS n FROM ratings WHERE target_key='900'`).get()).toEqual({ n: 1 });
+
+    await call(env, 'POST', '/v1/ratings', { token, body: { ...target, score: null, emotions: [] } });
+    expect(raw.prepare(`SELECT COUNT(*) AS n FROM ratings WHERE target_key='900'`).get()).toEqual({ n: 0 });
+  });
+
+  /* A NULL score is still right when a feeling is all that is left: that row is
+     what makes `vote_count` count somebody who only tapped a face. */
+  it('keeps the row when a feeling survives', async () => {
+    await call(env, 'POST', '/v1/ratings', {
+      token,
+      body: { ...target, score: 8, emotions: ['shocked'] },
+    });
+    // What the app sends when a star is un-tapped: the whole state, with the
+    // feelings it is keeping. `emotions: undefined` would mean "leave them
+    // alone", which is a different instruction and not this one.
+    const res = await call(env, 'POST', '/v1/ratings', {
+      token,
+      body: { ...target, score: null, emotions: ['shocked'] },
+    });
+    expect(res.status).toBe(200);
+    const row = raw.prepare(`SELECT score FROM ratings WHERE target_key='900'`).get() as { score: number | null };
+    expect(row).toBeTruthy();
+    expect(row.score).toBeNull();
+  });
+});
