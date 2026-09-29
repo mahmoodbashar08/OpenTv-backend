@@ -111,6 +111,34 @@ describe('the admin dashboard', () => {
     expect(res.json.totals.raters_today).toBe(1);
   });
 
+  /*
+   * THE DAY BUTTONS. "Opened yesterday" needs the day log, because
+   * last_seen_at only remembers the latest open; and yesterday's ratings must
+   * not show up as today's or vice versa.
+   */
+  it('answers for a past day from the day log, not for today', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const today = new Date().toISOString().slice(0, 10);
+    const yday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at, last_seen_at) VALUES ('p1', 'someone', 'someone', ?, ?)`)
+      .run(`${yday}T08:00:00.000Z`, `${today}T09:00:00.000Z`);
+    raw.prepare(`INSERT INTO profile_days (profile_id, day) VALUES ('p1', ?)`).run(yday);
+    raw.prepare(`INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
+                 VALUES ('r1', 'p1', 'tvdb', '1', 1, 1, 5, ?)`).run(`${yday}T10:00:00.000Z`);
+
+    const past = await call(env, 'GET', `/v1/admin/users?day=${yday}`, { headers: { Cookie: cookie } });
+    expect(past.json.day).toBe(yday);
+    expect(past.json.items[0].opened_today).toBe(true);
+    expect(past.json.items[0].today).toHaveLength(1);
+
+    const now = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    expect(now.json.day).toBe(today);
+    expect(now.json.items[0].today).toHaveLength(0); // yesterday's rating stays yesterday's
+
+    const future = await call(env, 'GET', '/v1/admin/users?day=2999-01-01', { headers: { Cookie: cookie } });
+    expect(future.json.day).toBe(today);
+  });
+
   it('lists people without listing anything they wrote', async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });

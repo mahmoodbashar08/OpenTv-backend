@@ -1,7 +1,9 @@
 # OpenTV — backend
 
-The social layer for [OpenTV](https://github.com/mahmoodbashar08/opentv): a
+The social layer for [OpenTV](https://github.com/mahmoodbashar08/opentv-app): a
 privacy-first TV & movie tracker that runs entirely on-device.
+
+**The app's code is in [opentv-app](https://github.com/mahmoodbashar08/opentv-app).**
 
 **This server is a convenience layer, not a dependency.** The phone's SQLite
 database is the source of truth for a user's own library. If this server

@@ -402,7 +402,20 @@ admin.get('/admin/users', async (c) => {
    * the page was working midnight out from the reader's own clock, and three
    * hours east of UTC those are different days for three hours every night.
    */
-  const midnightUtc = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  /*
+   * ANY DAY, NOT ONLY TODAY. `?day=YYYY-MM-DD` steps the table back through
+   * the day log (0038); anything else, or a day in the future, is today.
+   */
+  const asked = c.req.query('day') ?? '';
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked <= todayUtc && !isNaN(Date.parse(asked)) ? asked : todayUtc;
+  const nextDay = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const midnightUtc = `${day}T00:00:00.000Z`;
+  const openedOn = new Set(
+    ((
+      await c.env.DB.prepare('SELECT profile_id FROM profile_days WHERE day = ?').bind(day).all<{ profile_id: string }>()
+    ).results ?? []).map((r) => r.profile_id),
+  );
 
   const acted = await c.env.DB.prepare(
     `SELECT kind, who, target_source, target_key, season, episode, detail
@@ -410,20 +423,22 @@ admin.get('/admin/users', async (c) => {
          SELECT 'comment' AS kind, author_id AS who, target_source, target_key, season, episode, NULL AS detail,
                 created_at
            FROM comments
-          WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= date('now')
+          WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= ? AND created_at < ?
          UNION ALL
          SELECT 'rating', author_id, target_source, target_key, season, episode, CAST(score AS TEXT), created_at
-           FROM ratings WHERE imported_at IS NULL AND created_at >= date('now')
+           FROM ratings WHERE imported_at IS NULL AND created_at >= ? AND created_at < ?
          UNION ALL
          SELECT 'character', voter_id, target_source, target_key, season, episode, character_name, created_at
-           FROM character_votes WHERE imported_at IS NULL AND created_at >= date('now')
+           FROM character_votes WHERE imported_at IS NULL AND created_at >= ? AND created_at < ?
          UNION ALL
          SELECT 'emotion', author_id, target_source, target_key, season, episode, emotion, created_at
-           FROM emotion_votes WHERE imported_at IS NULL AND created_at >= date('now')
+           FROM emotion_votes WHERE imported_at IS NULL AND created_at >= ? AND created_at < ?
        )
       ORDER BY created_at DESC
       LIMIT 400`,
-  ).all<{
+  )
+    .bind(day, nextDay, day, nextDay, day, nextDay, day, nextDay)
+    .all<{
     kind: string;
     who: string;
     target_source: string;
@@ -513,11 +528,15 @@ admin.get('/admin/users', async (c) => {
 
   const items = (res.results ?? []).map((u) => ({
     ...u,
-    opened_today: typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc,
+    // The day log answers for any day; last_seen_at still answers for today,
+    // so a member stamped before 0038 existed is not missed.
+    opened_today:
+      openedOn.has(String(u.id)) ||
+      (day === todayUtc && typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc),
     today: byId.get(String(u.id)) ?? [],
   }));
 
-  return c.json({ items }, 200, { 'Cache-Control': 'no-store' });
+  return c.json({ items, day, today: todayUtc }, 200, { 'Cache-Control': 'no-store' });
 });
 
 /**

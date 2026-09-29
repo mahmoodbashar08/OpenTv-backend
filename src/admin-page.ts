@@ -118,6 +118,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .tab { background:#16161a; color:#8a8a92; font-weight:600; font-size:13px;
          padding:7px 14px; border-radius:999px; }
   .tab.on { background:#26262b; color:#e9e9ee; }
+  .daynav { margin-left:auto; display:flex; align-items:center; gap:6px; }
+  .daynav #dlabel { color:#e9e9ee; font-weight:600; font-size:13px; min-width:92px; text-align:center; }
+  .daynav .tab:disabled { opacity:.35; cursor:default; }
   /* Doing is the accent; opening is not. */
   .did { color:#FFD400; font-weight:600; }
   /* The linked variant, where nobody has sent a name — underlined so it is
@@ -169,7 +172,13 @@ export const ADMIN_PAGE = `<!doctype html>
          of the list behind a filter. -->
     <div class="tabs" id="whotabs">
       <button class="tab on" data-who="all">Everyone</button>
-      <button class="tab" data-who="opened">Opened today</button>
+      <button class="tab" data-who="opened" id="openedtab">Opened today</button>
+      <!-- Steps the Opened filter and the day column back one day at a time. -->
+      <span class="daynav">
+        <button class="tab" id="dprev" title="Previous day">&lsaquo;</button>
+        <span id="dlabel">Today</span>
+        <button class="tab" id="dnext" title="Next day" disabled>&rsaquo;</button>
+      </span>
     </div>
     <div class="scroll"><table id="users"></table></div>
     <!-- One dialog for the whole table: the rows are rebuilt on every refresh,
@@ -300,7 +309,7 @@ function wireMore() {
     const cell = btn.closest('td');
     const all = cell && cell.querySelector('.allev');
     if (!all) return;
-    $('evdlgt').textContent = 'Today — @' + btn.getAttribute('data-more');
+    $('evdlgt').textContent = dayName(viewDay || serverToday) + ' — @' + btn.getAttribute('data-more');
     $('evdlgb').innerHTML = all.innerHTML;
     $('evdlg').showModal();
   });
@@ -485,9 +494,7 @@ async function load() {
     '<div class="bar ' + (n ? 'on' : '') + '" style="height:' + Math.round((n / max) * 100) + '%" title="' +
     day + ': ' + n + '"><span>' + day.slice(8) + '</span></div>').join('');
 
-  const people = await (await fetch('/v1/admin/users', { credentials: 'same-origin' })).json();
-  allPeople = people.items || [];
-  drawPeople();
+  await loadPeople();
 
   await loadReview();
 
@@ -496,6 +503,38 @@ async function load() {
   // read here, and that is the line the sentence now draws.
   $('foot').textContent = 'This page reads counts, and the titles today was spent on — never the ' +
     'text of a comment. Read ' + new Date().toLocaleTimeString();
+}
+
+/** Which UTC day the people table is showing; '' is today. */
+let viewDay = '';
+let serverToday = '';
+
+function dayName(d) {
+  if (!d || d === serverToday) return 'Today';
+  const y = new Date(Date.parse(serverToday + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  if (d === y) return 'Yesterday';
+  return new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+async function loadPeople() {
+  const q = viewDay ? '?day=' + viewDay : '';
+  const people = await (await fetch('/v1/admin/users' + q, { credentials: 'same-origin' })).json();
+  allPeople = people.items || [];
+  serverToday = people.today || serverToday;
+  const shown = people.day || serverToday;
+  const name = dayName(shown);
+  $('dlabel').textContent = name;
+  $('openedtab').textContent = 'Opened ' + (name === 'Today' || name === 'Yesterday' ? name.toLowerCase() : 'on ' + name);
+  $('dnext').disabled = shown >= serverToday;
+  drawPeople();
+}
+
+function stepDay(delta) {
+  const base = viewDay || serverToday;
+  if (!base) return;
+  const d = new Date(Date.parse(base + 'T00:00:00Z') + delta * 86400000).toISOString().slice(0, 10);
+  viewDay = d >= serverToday ? '' : d;
+  void loadPeople();
 }
 
 /** The rows as fetched. The tabs filter this in the browser rather than asking
@@ -519,7 +558,7 @@ function drawPeople() {
   const num = (v) => (v == null ? '<span class="name">not published</span>' : String(v));
   const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
   $('users').innerHTML =
-    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Today</th>' +
+    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
     '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
     '<th class="num">Ratings</th><th class="num">Feelings</th><th class="num">Characters</th>' +
     '<th class="num">Photos</th><th class="num">Lists</th>' +
@@ -536,7 +575,7 @@ function drawPeople() {
       // person is this row" and the eye should find them in one pass down the
       // names rather than two passes across the table.
       const who = '<span class="who">@' + esc(u.handle) + '</span>' +
-        (didToday(u) ? ' <span class="tag act">active today</span>' : '') +
+        (didToday(u) ? ' <span class="tag act">active ' + esc(dayName(viewDay || serverToday).toLowerCase()) + '</span>' : '') +
         (placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
@@ -597,12 +636,15 @@ async function loadReview() {
   }).join('');
 }
 
+$('dprev').addEventListener('click', () => stepDay(-1));
+$('dnext').addEventListener('click', () => stepDay(1));
+
 /* The people filter. Redraws from what is already loaded — see drawPeople. */
 $('whotabs').addEventListener('click', (ev) => {
-  const tab = ev.target.closest('.tab');
+  const tab = ev.target.closest('.tab[data-who]');
   if (!tab) return;
   whoFilter = tab.dataset.who;
-  [...$('whotabs').children].forEach((b) => b.classList.toggle('on', b === tab));
+  [...$('whotabs').querySelectorAll('.tab[data-who]')].forEach((b) => b.classList.toggle('on', b === tab));
   drawPeople();
 });
 

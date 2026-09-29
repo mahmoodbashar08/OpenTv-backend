@@ -14,7 +14,25 @@ import type { Env } from '@/env';
  */
 
 /** Seven days. */
-export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+/*
+ * SIXTY DAYS, AND RENEWED — together, they are the fix.
+ *
+ * It was seven days and nothing ever renewed it: a token was minted at sign-in
+ * and never again. So every member was signed out seven days after signing in,
+ * however often they used the app, and the app said so nowhere — the Join
+ * button quietly came back and publishing, sync and cloud backup stopped. Found
+ * 27 Sep 2026 when the owner opened the app and was simply out.
+ *
+ * Sixty days on its own only moves the cliff. `GET /v1/me` — asked on every
+ * launch — now hands back a fresh token once the current one is a day old
+ * (`RENEW_AFTER_SECONDS`), so the sixty days count from the last time somebody
+ * opened the app, not from when they signed in. Revocation is unchanged: a
+ * password reset or "sign out my other devices" raises the epoch, and every
+ * older token dies at once regardless of its expiry.
+ */
+export const SESSION_TTL_SECONDS = 60 * 24 * 60 * 60;
+/** A token older than this is replaced on the next `GET /v1/me`. */
+export const RENEW_AFTER_SECONDS = 24 * 60 * 60;
 
 export type SessionClaims = { sub: string; iat: number; exp: number };
 
@@ -133,26 +151,31 @@ export async function verifyScoped(
   env: Env,
   token: string,
   nowMs: number,
-): Promise<{ profileId: string; scope: SessionScope } | null> {
+): Promise<{ profileId: string; scope: SessionScope; iat: number; ep: number } | null> {
   const sub = await verify(env, token, nowMs);
   if (!sub) return null;
   // Re-read the payload for the claims. The signature is already proven above,
   // so this is a parse of trusted bytes rather than a second verification.
   let scope: SessionScope = 'full';
   let ep = 0;
+  // Unreadable → 0, which reads as "very old" and gets renewed: the safe way
+  // to be wrong, since renewing re-signs the same profile, scope and epoch.
+  let iat = 0;
   try {
     const payload = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')) as {
       scp?: unknown;
       ep?: unknown;
+      iat?: unknown;
     };
     if (payload.scp === 'unverified') scope = 'unverified';
     ep = typeof payload.ep === 'number' ? payload.ep : 0;
+    iat = typeof payload.iat === 'number' ? payload.iat : 0;
   } catch {
     /* claims unreadable: treat as a plain, un-revoked, full token */
   }
 
   if ((await currentEpoch(env, sub, nowMs)) > ep) return null;
-  return { profileId: sub, scope };
+  return { profileId: sub, scope, iat, ep };
 }
 
 /** The profile id, or null for anything that is not a live, intact token. */

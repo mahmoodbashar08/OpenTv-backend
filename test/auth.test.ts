@@ -7,7 +7,7 @@ import {
   type ExpectedClaims,
   type IdTokenPayload,
 } from '@/pure';
-import { sign, verify } from '@/session';
+import { SESSION_TTL_SECONDS, sign, verify } from '@/session';
 import type { Env } from '@/env';
 import { call, freshDatabase, makeEnv } from './harness';
 
@@ -186,7 +186,7 @@ describe('session sign / verify', () => {
   it('round-trips against a fixed clock', async () => {
     const { token, expiresAt } = await sign(env, 'p_abc', NOW);
     expect(await verify(env, token, NOW)).toBe('p_abc');
-    expect(expiresAt).toBe(new Date(NOW + 7 * 24 * 3600 * 1000).toISOString());
+    expect(expiresAt).toBe(new Date(NOW + SESSION_TTL_SECONDS * 1000).toISOString());
   });
 
   it('rejects a tampered payload', async () => {
@@ -200,9 +200,9 @@ describe('session sign / verify', () => {
 
   it('rejects an expired token', async () => {
     const { token } = await sign(env, 'p_abc', NOW);
-    const week = 7 * 24 * 3600 * 1000;
-    expect(await verify(env, token, NOW + week - 1000)).toBe('p_abc');
-    expect(await verify(env, token, NOW + week + 1000)).toBeNull();
+    const life = SESSION_TTL_SECONDS * 1000;
+    expect(await verify(env, token, NOW + life - 1000)).toBe('p_abc');
+    expect(await verify(env, token, NOW + life + 1000)).toBeNull();
   });
 
   it('rejects a token signed with a different secret', async () => {

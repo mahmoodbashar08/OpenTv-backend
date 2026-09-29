@@ -73,6 +73,22 @@ export type Env = {
   /** e.g. `OpenTV <noreply@theopentv.com>`. The domain must be onboarded for Email Sending (or verified with Resend). */
   MAIL_FROM?: string;
   /**
+   * CommsUni's API key, and the reason it lives here rather than on the phone.
+   *
+   * `mobile/src/commsuni.ts` says it out loud: nothing in the app talks to
+   * api.commsuni.tv directly. A key shipped inside an app binary is a
+   * published key — anybody can pull it out of the IPA — and this one is a
+   * live credential against somebody else's service, so the Worker proxies
+   * every call and the phone never sees it.
+   *
+   * A SECRET, never a var. `wrangler secret put COMMSUNI_API_KEY`; locally,
+   * `.dev.vars`, which is gitignored. Optional in the type because a
+   * deployment without it must still start — every CommsUni route answers
+   * `not_configured` rather than throwing, the same shape `mail.ts` uses for
+   * an unset `RESEND_API_KEY`.
+   */
+  COMMSUNI_API_KEY?: string;
+  /**
    * "off" closes email SIGN-UP, and nothing else.
    *
    * A kill switch rather than a code change, because the reason to use it is
@@ -144,6 +160,9 @@ export type Vars = {
   /** 'unverified' for an email account that has not entered its code yet. See
    *  `requireVerified` — the claim rides in the token so auth stays zero-I/O. */
   scope: 'full' | 'unverified';
+  /** When the presented token was issued (seconds), and its revocation epoch. */
+  tokenIat: number;
+  tokenEpoch: number;
 };
 
 export type App = { Bindings: Env; Variables: Vars };

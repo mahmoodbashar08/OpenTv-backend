@@ -17,7 +17,7 @@ import {
   type Provider,
 } from '@/pure';
 import { overBudget, SESSION_BUDGET } from '@/rate-limit';
-import { sign } from '@/session';
+import { RENEW_AFTER_SECONDS, sign } from '@/session';
 
 /**
  * Sign-in, the session, the handle flow, and account deletion.
@@ -343,8 +343,22 @@ auth.get('/me', async (c) => {
    * the note about what it can and cannot count.
    */
 
+  /*
+   * THE RENEWAL. This is the route every launch asks, so it is where a session
+   * that is still in use gets its clock reset. Same profile, same scope, same
+   * epoch — a renewal must never widen what a token can do, only how long it
+   * lives. Older apps simply ignore the field and keep their token until it
+   * expires; 1.6.4 stores it.
+   */
+  const nowMs = Date.now();
+  const renewed =
+    nowMs / 1000 - c.get('tokenIat') > RENEW_AFTER_SECONDS
+      ? await sign(c.env, row.id, nowMs, c.get('scope'), c.get('tokenEpoch'))
+      : null;
+
   return c.json({
     ...ownProfile(row),
+    ...(renewed ? { session: { token: renewed.token, expires_at: renewed.expiresAt } } : {}),
     unread_notifications: row.unread,
     needs_handle: needsHandle(row.handle),
     // THE DATABASE'S ANSWER, not the token's. `requireVerified` reads the scope
