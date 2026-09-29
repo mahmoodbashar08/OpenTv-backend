@@ -664,8 +664,20 @@ auth.post('/me/handle', async (c) => {
   }
 
   try {
+    /*
+     * CHOOSING A NAME IS JOINING, so it is also the moment to be findable.
+     *
+     * Profiles are created private (0033/bb77831) because an account made only
+     * for backup or sync must be nobody — and those people never reach this
+     * route. Everybody who does is joining the community, and a member nobody
+     * can find is the opposite of what they asked for: from 21 to 29 Sep every
+     * new member arrived private without being asked. Only on the FIRST name,
+     * leaving the `user_p_` placeholder; renaming a private profile keeps it
+     * private. Settings still switches it either way.
+     */
     const res = await c.env.DB.prepare(
-      `UPDATE profiles SET handle = ?, handle_lower = ?
+      `UPDATE profiles SET handle = ?, handle_lower = ?,
+              is_private = CASE WHEN handle LIKE 'user!_p!_%' ESCAPE '!' THEN 0 ELSE is_private END
        WHERE id = ? AND deleted_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM profiles WHERE handle_lower = ? AND id <> ?)`,
     )

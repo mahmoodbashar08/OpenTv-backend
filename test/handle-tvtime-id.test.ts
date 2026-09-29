@@ -173,3 +173,35 @@ describe('POST /v1/me/handle — the TV Time id', () => {
     expect(res.json.error.code).toBe('tvtime_id_claimed');
   });
 });
+
+/*
+ * CHOOSING A NAME IS JOINING. Profiles start private so an account made only
+ * for backup is nobody; the first real name makes a member findable. From 21
+ * to 29 Sep every new member arrived private without being asked.
+ */
+describe('POST /v1/me/handle — the first name makes a member public', () => {
+  const priv = (id: string) => (raw.prepare('SELECT is_private AS v FROM profiles WHERE id = ?').get(id) as { v: number }).v;
+  const make = (id: string, handle: string, isPrivate: number) =>
+    raw
+      .prepare('INSERT INTO profiles (id, handle, handle_lower, created_at, is_private) VALUES (?, ?, ?, ?, ?)')
+      .run(id, handle, handle, '2026-09-29T00:00:00.000Z', isPrivate);
+
+  it('leaving the user_p_ placeholder turns private off', async () => {
+    make('p1', 'user_p_aaaa1111', 1);
+    const res = await call(env, 'POST', '/v1/me/handle', { token: await tokenFor(env, 'p1'), body: { handle: 'burhan' } });
+    expect(res.status).toBe(200);
+    expect(priv('p1')).toBe(0);
+  });
+
+  it('renaming a member who chose private keeps them private', async () => {
+    make('p2', 'someone', 1);
+    const res = await call(env, 'POST', '/v1/me/handle', { token: await tokenFor(env, 'p2'), body: { handle: 'someone2' } });
+    expect(res.status).toBe(200);
+    expect(priv('p2')).toBe(1);
+  });
+
+  it('an account that never picks a name stays private', () => {
+    make('p3', 'user_p_bbbb2222', 1);
+    expect(priv('p3')).toBe(1);
+  });
+});
