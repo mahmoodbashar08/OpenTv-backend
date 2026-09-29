@@ -29,7 +29,10 @@ describe('POST /v1/dev/plus', () => {
       headers: { 'X-Dev-Secret': 'shh' },
     });
     expect(res.status).toBe(200);
-    expect(isPlus(raw, 'p_me')).toBe(1);
+    // A grant, not a subscription: the dashboard must count it as given.
+    expect(isPlus(raw, 'p_me')).toBe(0);
+    const until = (raw.prepare('SELECT plus_until FROM profiles WHERE id = ?').get('p_me') as { plus_until: string }).plus_until;
+    expect(Date.parse(until)).toBeGreaterThan(Date.now() + 29 * 86400000);
   });
 
   it('turns it off again, and clears a date that would outlive the switch', async () => {
@@ -89,8 +92,9 @@ describe('POST /v1/dev/plus', () => {
       body: { on: true, handle: 'other', id: 'p_other' },
       headers: { 'X-Dev-Secret': 'shh' },
     });
-    expect(isPlus(raw, 'p_me')).toBe(1);
-    expect(isPlus(raw, 'p_other')).toBe(0);
+    const until = (id: string) => (raw.prepare('SELECT plus_until FROM profiles WHERE id = ?').get(id) as { plus_until: string | null }).plus_until;
+    expect(until('p_me')).not.toBeNull();
+    expect(until('p_other')).toBeNull();
   });
 
   it('refuses a body that does not say which way', async () => {

@@ -63,9 +63,19 @@ dev.post('/dev/plus', secretGate, requireAuth, async (c) => {
   if (typeof on !== 'boolean') return fail(c, 400, 'invalid_body', 'on must be a boolean.');
 
   const me = c.get('profileId');
-  await c.env.DB.prepare('UPDATE profiles SET is_plus = ? WHERE id = ? AND deleted_at IS NULL')
-    .bind(on ? 1 : 0, me)
-    .run();
+  /*
+   * A GRANT, NEVER A SUBSCRIPTION. `is_plus` is what RevenueCat writes and the
+   * dashboard counts as "paying"; switching it on here made every test account
+   * a paying customer (29 Sep: "Plus paying 2" was one real subscriber and one
+   * test account). On is a 30-day `plus_until`, the same lane the dashboard's
+   * Give button uses, so it counts as given and ends by itself.
+   */
+  if (on) {
+    const until = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    await c.env.DB.prepare('UPDATE profiles SET plus_until = ? WHERE id = ? AND deleted_at IS NULL').bind(until, me).run();
+  } else {
+    await c.env.DB.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ? AND deleted_at IS NULL').bind(me).run();
+  }
 
   /*
    * `plus_until` is cleared when switching OFF, and left alone otherwise.
