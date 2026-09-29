@@ -159,6 +159,12 @@ describe('the admin dashboard', () => {
     await call(env, 'POST', '/v1/admin/users/someone/plus', { body: { months: 1 }, headers: { Cookie: cookie } });
     const third = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
     expect(third.json.items).toHaveLength(2);
+    // The Hard refresh button does the same without changing anything.
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p3', 'third', 'third', ?)`).run(now);
+    expect((await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } })).json.items).toHaveLength(2);
+    expect((await call(env, 'POST', '/v1/admin/cache/clear', { headers: { Cookie: cookie } })).status).toBe(200);
+    expect((await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } })).json.items).toHaveLength(3);
+    expect((await call(env, 'POST', '/v1/admin/cache/clear')).status).toBe(401);
     // Never served to somebody without the cookie.
     expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
   });

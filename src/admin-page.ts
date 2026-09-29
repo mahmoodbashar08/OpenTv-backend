@@ -139,6 +139,8 @@ export const ADMIN_PAGE = `<!doctype html>
     </div>
     <div class="acts">
       <button class="ghost" id="refresh" hidden>Refresh</button>
+      <!-- Refresh may answer from the ten-minute copy; this one never does. -->
+      <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
       <button class="ghost" id="out" hidden>Sign out</button>
     </div>
   </div>
@@ -697,11 +699,22 @@ function show(ok) {
   $('panel').hidden = !ok;
   $('out').hidden = !ok;
   $('refresh').hidden = !ok;
+  $('hard').hidden = !ok;
   $('sub').textContent = ok ? 'Community dashboard' : 'Sign in to continue';
   // The password field survives a failed sign-in; it must not survive a
   // successful one, and it must not be sitting in the DOM behind the panel.
   if (ok) { $('email').value = ''; $('password').value = ''; }
 }
+
+$('hard').addEventListener('click', async () => {
+  $('hard').textContent = 'Reading…';
+  try {
+    await fetch('/v1/admin/cache/clear', { method: 'POST', credentials: 'same-origin' });
+    await load();
+  } finally {
+    $('hard').textContent = 'Hard refresh';
+  }
+});
 
 $('refresh').addEventListener('click', () => {
   $('refresh').textContent = 'Reading…';

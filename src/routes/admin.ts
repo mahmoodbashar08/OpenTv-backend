@@ -164,6 +164,15 @@ const cachedRead = createMiddleware<App>(async (c, next) => {
     c.executionCtx.waitUntil(c.env.CACHE.put(key, body, { expirationTtl: ADMIN_CACHE_TTL }).catch(() => {}));
   }
 });
+/** The dashboard's "Hard refresh": the next two reads come from the database. */
+admin.post('/admin/cache/clear', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  await bustAdminCache(c.env);
+  return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
+});
+
 admin.use('/admin/stats', cachedRead);
 admin.use('/admin/users', cachedRead);
 // Any change made from the dashboard makes both reads fresh again.
