@@ -169,6 +169,28 @@ describe('the admin dashboard', () => {
     expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
   });
 
+  it("tags Google's test robots and leaves them out of the counts", async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const now = new Date().toISOString();
+    for (const [id, h, mail] of [
+      ['r1', 'user_p_robot', 'roycobb.00486@gmail.com'],
+      // Same shape of address, but a real member: has rated something.
+      ['h1', 'human', 'jane.12345@gmail.com'],
+    ]) {
+      raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES (?, ?, ?, ?)`).run(id, h, h, now);
+      raw.prepare(`INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES ('google', ?, ?, ?, ?)`).run(id, id, mail, now);
+    }
+    raw.prepare(`INSERT INTO ratings (id, author_id, target_source, target_key, season, episode, score, created_at)
+                 VALUES ('x1', 'h1', 'tvdb', '1', 1, 1, 5, ?)`).run(now);
+
+    const stats = await call(env, 'GET', '/v1/admin/stats', { headers: { Cookie: cookie } });
+    expect(stats.json.totals.robots).toBe(1);
+    expect(stats.json.totals.accounts).toBe(1);
+    const users = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    const by = Object.fromEntries(users.json.items.map((u: { handle: string; robot: number }) => [u.handle, u.robot]));
+    expect(by).toEqual({ user_p_robot: 1, human: 0 });
+  });
+
   it('lists people without listing anything they wrote', async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });

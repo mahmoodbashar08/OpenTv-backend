@@ -126,6 +126,21 @@ admin.post('/admin/logout', (c) => {
   return c.json({ ok: true });
 });
 
+// ── Google's test robots ─────────────────────────────────────────────────────
+
+/*
+ * THE PRE-LAUNCH REPORT SIGNS IN. Every upload to Play Console is run on
+ * Google's test phones, which press "Continue with Google" with accounts shaped
+ * `firstlast.12345@gmail.com` — two a release, found 29 Sep, ten of them over
+ * a month, every one with nothing done. They are not people and must not count
+ * as people. Both conditions, so a real member who happens to have that shape
+ * of address but has ever rated or written anything is never mistaken for one.
+ */
+const robotSql = (a: string) => `(EXISTS (SELECT 1 FROM identities ri WHERE ri.profile_id = ${a}.id
+      AND ri.provider = 'google' AND ri.email GLOB '[a-z]*.[0-9][0-9][0-9][0-9][0-9]@gmail.com')
+    AND NOT EXISTS (SELECT 1 FROM ratings rr WHERE rr.author_id = ${a}.id)
+    AND NOT EXISTS (SELECT 1 FROM comments rc WHERE rc.author_id = ${a}.id))`;
+
 // ── the two heavy reads, remembered for ten minutes ──────────────────────────
 
 /*
@@ -194,7 +209,8 @@ admin.get('/admin/stats', async (c) => {
 
   const row = await c.env.DB.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL)                      AS accounts,
+       (SELECT COUNT(*) FROM profiles pr WHERE deleted_at IS NULL AND NOT ${robotSql('pr')}) AS accounts,
+       (SELECT COUNT(*) FROM profiles pr WHERE deleted_at IS NULL AND ${robotSql('pr')})     AS robots,
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NOT NULL)                  AS deleted,
        -- ACTIVE MEMBERS, and the name is the honest one.
        --
@@ -206,11 +222,11 @@ admin.get('/admin/stats', async (c) => {
        --
        -- Three windows because one number cannot tell "quiet today" from
        -- "gone" — a lone DAU figure drops every weekend and reads as decline.
-       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM profiles pr WHERE deleted_at IS NULL AND NOT ${robotSql('pr')}
           AND last_seen_at >= ?)                                                     AS active_today,
-       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM profiles pr WHERE deleted_at IS NULL AND NOT ${robotSql('pr')}
           AND last_seen_at >= ?)                                                     AS active_7d,
-       (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
+       (SELECT COUNT(*) FROM profiles pr WHERE deleted_at IS NULL AND NOT ${robotSql('pr')}
           AND last_seen_at >= ?)                                                     AS active_30d,
        (SELECT COUNT(*) FROM profiles WHERE deleted_at IS NULL
           AND handle LIKE 'user!_p!_%' ESCAPE '!')                                   AS placeholder_handles,
@@ -429,7 +445,8 @@ admin.get('/admin/users', async (c) => {
              * none, which is the truth about it rather than a zero.
              */
             (SELECT episodes_watched FROM profile_stats ps WHERE ps.profile_id = p.id) AS episodes_watched,
-            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched
+            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched,
+            CASE WHEN ${robotSql('p')} THEN 1 ELSE 0 END AS robot
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL

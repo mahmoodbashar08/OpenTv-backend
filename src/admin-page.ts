@@ -403,6 +403,9 @@ async function load() {
 
   cards($('people'), [
     ['Accounts', t.accounts],
+    // Google's pre-launch test phones sign in on every Play upload. Shown so
+    // they are visible, and left out of Accounts and the Opened counts.
+    ['Test robots', t.robots],
     // ACTIVE MEMBERS, never "active users". Only members reach this server, so
     // this is the whole of what can honestly be counted — and the people it
     // leaves out are the ones the app promises never to contact.
@@ -578,7 +581,8 @@ function drawPeople() {
       // names rather than two passes across the table.
       const who = '<span class="who">@' + esc(u.handle) + '</span>' +
         (didToday(u) ? ' <span class="tag act">active ' + esc(dayName(viewDay || serverToday).toLowerCase()) + '</span>' : '') +
-        (placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
+        (u.robot ? ' <span class="tag">Google test robot</span>'
+          : placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
         (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');
