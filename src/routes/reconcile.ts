@@ -4,6 +4,7 @@ import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
 import { chunk, plusOn, RECONCILE_IDS_PER_QUERY, RECONCILE_MAX_IDS, validateFriendIds } from '@/pure';
 import { newNotificationId } from '@/routes/comments';
+import { overBudget } from '@/rate-limit';
 
 /**
  * Reconnection. docs/IMPLEMENTATION.md Step 4, "Reconnection".
@@ -170,3 +171,53 @@ function notifyOnce(
     )
     .bind(newNotificationId(), recipient, actor, subject, nowIso, recipient, actor);
 }
+
+/*
+ * POST /v1/friends/count — "3 of your TV Time friends are already here".
+ *
+ * Asked by somebody who has NOT joined, straight after an import, so it has no
+ * account and must not need one. What it refuses to say is the whole design:
+ *   - the answer is a number and nothing else — never a handle, id or name;
+ *   - nothing is stored: the ids are matched in memory and forgotten;
+ *   - a list of at least FRIENDS_COUNT_MIN ids, so it cannot answer "is this
+ *     one person on OpenTV";
+ *   - private members are not counted — they chose not to be found;
+ *   - rate-limited per address.
+ * Who they are is only revealed once the reader joins and reconciles as
+ * themselves, through the authenticated route above.
+ */
+const FRIENDS_COUNT_MIN = 5;
+const FRIENDS_COUNT_BUDGET = { limit: 20, windowSeconds: 3600 };
+
+reconcile.post('/friends/count', async (c) => {
+  const ip = c.req.header('CF-Connecting-IP') ?? '0.0.0.0';
+  if (await overBudget(c.env, 'friends-count', ip, FRIENDS_COUNT_BUDGET, Date.now())) {
+    return fail(c, 429, 'rate_limited', 'Too many requests.');
+  }
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const friends = validateFriendIds((body as { friend_ids?: unknown } | null)?.friend_ids);
+  if (!friends.ok) return fail(c, 400, 'invalid_body', 'friend_ids must be a list of positive integers.');
+  const ids = [...new Set(friends.ids)];
+  if (ids.length < FRIENDS_COUNT_MIN) return c.json({ found: 0 });
+
+  const db = c.env.DB;
+  const rows = await db.batch<{ n: number }>(
+    chunk(ids, RECONCILE_IDS_PER_QUERY).map((part) =>
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM profiles
+            WHERE tvtime_user_id IN (${part.map(() => '?').join(',')})
+              AND deleted_at IS NULL AND is_private = 0
+              AND handle NOT LIKE 'user!_p!_%' ESCAPE '!'`,
+        )
+        .bind(...part),
+    ),
+  );
+  const found = rows.reduce((sum, r) => sum + Number(r.results?.[0]?.n ?? 0), 0);
+  return c.json({ found }, 200, { 'Cache-Control': 'no-store' });
+});
