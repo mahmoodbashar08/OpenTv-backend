@@ -139,6 +139,30 @@ describe('the admin dashboard', () => {
     expect(future.json.day).toBe(today);
   });
 
+  /*
+   * THE DASHBOARD WAS THE DATABASE'S BIGGEST READER (29 Sep): ~400k rows every
+   * open. A second open inside ten minutes must not touch the database, and a
+   * change made from the dashboard must show at once.
+   */
+  it('serves a repeat read from the cache, and a write makes it fresh', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const now = new Date().toISOString();
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'someone', 'someone', ?)`).run(now);
+    const first = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    await new Promise((r) => setTimeout(r, 5)); // the cache write is waitUntil'd
+    // Changed underneath without going through the dashboard: a cached read
+    // must not see it...
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p2', 'another', 'another', ?)`).run(now);
+    const second = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    expect(second.json.items).toHaveLength(first.json.items.length);
+    // ...and a change made FROM the dashboard makes the next read fresh.
+    await call(env, 'POST', '/v1/admin/users/someone/plus', { body: { months: 1 }, headers: { Cookie: cookie } });
+    const third = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    expect(third.json.items).toHaveLength(2);
+    // Never served to somebody without the cookie.
+    expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
+  });
+
   it('lists people without listing anything they wrote', async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });

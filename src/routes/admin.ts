@@ -1,3 +1,4 @@
+import { createMiddleware } from 'hono/factory';
 import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
@@ -123,6 +124,56 @@ admin.post('/admin/login', async (c) => {
 admin.post('/admin/logout', (c) => {
   c.header('Set-Cookie', `${COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`);
   return c.json({ ok: true });
+});
+
+// ── the two heavy reads, remembered for ten minutes ──────────────────────────
+
+/*
+ * THE DASHBOARD WAS THE DATABASE'S BIGGEST READER. On 29 Sep, 16M rows read in
+ * a day, and ~18M of the week's heaviest queries were this page: the stats
+ * route counts whole tables and the people list runs correlated counts per
+ * person, about 400k rows every time it was opened — over the free D1 cap on
+ * its own after a dozen opens. The numbers do not need to be to the second.
+ *
+ * Kept in KV for ten minutes, keyed by the full URL (so each `?day=` is its
+ * own copy) and by a version every dashboard WRITE bumps, so giving somebody
+ * Plus or deciding a photo shows at once instead of ten minutes later.
+ * Authorised first: a cached copy is never served to someone signed out.
+ */
+const ADMIN_CACHE_TTL = 600;
+const ADMIN_CACHE_VER = 'admin:cachever';
+
+async function adminCacheVersion(env: App['Bindings']): Promise<string> {
+  return (await env.CACHE.get(ADMIN_CACHE_VER)) ?? '0';
+}
+
+/** Every admin write calls this, so the next read is fresh. */
+async function bustAdminCache(env: App['Bindings']): Promise<void> {
+  await env.CACHE.put(ADMIN_CACHE_VER, String(Date.now()));
+}
+
+const cachedRead = createMiddleware<App>(async (c, next) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) return next();
+  const url = new URL(c.req.url);
+  const key = `admin:v${await adminCacheVersion(c.env)}:${url.pathname}${url.search}`;
+  const hit = await c.env.CACHE.get(key);
+  if (hit) return c.body(hit, 200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Admin-Cache': 'hit' });
+  await next();
+  if (c.res.status === 200) {
+    const body = await c.res.clone().text();
+    c.executionCtx.waitUntil(c.env.CACHE.put(key, body, { expirationTtl: ADMIN_CACHE_TTL }).catch(() => {}));
+  }
+});
+admin.use('/admin/stats', cachedRead);
+admin.use('/admin/users', cachedRead);
+// Any change made from the dashboard makes both reads fresh again.
+admin.use('/admin/users/*', async (c, next) => {
+  await next();
+  if (c.req.method === 'POST' && c.res.status < 300) await bustAdminCache(c.env);
+});
+admin.use('/admin/images/*', async (c, next) => {
+  await next();
+  if (c.req.method === 'POST' && c.res.status < 300) await bustAdminCache(c.env);
 });
 
 // ── GET /v1/admin/stats ──────────────────────────────────────────────────────
