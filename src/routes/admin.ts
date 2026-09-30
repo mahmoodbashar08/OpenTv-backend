@@ -223,6 +223,8 @@ admin.post('/admin/cache/clear', async (c) => {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
   }
   await bustAdminCache(c.env);
+  await c.env.CACHE.delete(COUNTS_KEY);
+  await c.env.CACHE.delete(TOTALS_KEY);
   return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
 });
 
@@ -239,6 +241,33 @@ admin.use('/admin/images/*', async (c, next) => {
 });
 
 // ── GET /v1/admin/stats ──────────────────────────────────────────────────────
+
+/*
+ * WHOLE-TABLE TOTALS, CACHED FOR AN HOUR. Each reads every row of its table —
+ * ~200k rows together, every time the stats card missed its cache — to print
+ * five numbers that only go up. Hard refresh deletes the copy.
+ */
+const TOTALS_KEY = 'admin:totals';
+
+async function tableTotals(env: App['Bindings']): Promise<Record<string, unknown>> {
+  try {
+    const hit = await env.CACHE.get<Record<string, unknown>>(TOTALS_KEY, 'json');
+    if (hit) return hit;
+  } catch {
+    // fall through to the database
+  }
+  const row =
+    (await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL) AS comments,
+         (SELECT COUNT(*) FROM ratings)                           AS ratings,
+         (SELECT COUNT(*) FROM character_votes)                   AS character_votes,
+         (SELECT COUNT(*) FROM emotion_votes)                     AS emotion_votes,
+         (SELECT COUNT(*) FROM comment_likes)                     AS likes`,
+    ).first<Record<string, unknown>>()) ?? {};
+  await env.CACHE.put(TOTALS_KEY, JSON.stringify(row), { expirationTtl: 3600 });
+  return row;
+}
 
 admin.get('/admin/stats', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
@@ -284,9 +313,6 @@ admin.get('/admin/stats', async (c) => {
        (SELECT COUNT(*) FROM identities WHERE provider = 'google')                   AS via_google,
        (SELECT COUNT(*) FROM identities WHERE provider = 'apple')                    AS via_apple,
        (SELECT COUNT(*) FROM email_credentials WHERE verified_at IS NULL)            AS unconfirmed,
-       (SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL)                      AS comments,
-       (SELECT COUNT(*) FROM ratings)                                                AS ratings,
-       (SELECT COUNT(*) FROM character_votes)                                        AS character_votes,
        -- WRITTEN HERE, NOT ARRIVED HERE. Every window excludes rows carrying
        -- an imported_at (0029), because a member seeding a TV Time archive
        -- is one decision, not three thousand.
@@ -359,8 +385,6 @@ admin.get('/admin/stats', async (c) => {
           WHERE imported_at IS NULL AND created_at >= date('now', '-6 days'))                   AS voters_7d,
        (SELECT COUNT(DISTINCT voter_id) FROM character_votes
           WHERE imported_at IS NULL AND created_at >= date('now', '-29 days'))                  AS voters_30d,
-       (SELECT COUNT(*) FROM emotion_votes)                                          AS emotion_votes,
-       (SELECT COUNT(*) FROM comment_likes)                                          AS likes,
        -- The list repair. calls is phones that asked, films is entries
        -- actually named -- the second is the one that says whether the
        -- catalogue is any good, because a call that resolves nothing still
@@ -401,7 +425,7 @@ admin.get('/admin/stats', async (c) => {
       GROUP BY day ORDER BY day`,
   ).all<{ day: string; n: number }>();
 
-  return c.json({ totals: row ?? {}, joins: joins.results ?? [] }, 200, {
+  return c.json({ totals: { ...(await tableTotals(c.env)), ...row }, joins: joins.results ?? [] }, 200, {
     'Cache-Control': 'no-store',
   });
 });
@@ -421,36 +445,33 @@ admin.get('/admin/stats', async (c) => {
  * beside each person say how much, never what. Moderation reads content
  * through the report queue, where somebody has asked for it to be read.
  */
-admin.get('/admin/users', async (c) => {
-  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
-    return fail(c, 401, 'unauthenticated', 'Sign in first.');
-  }
+/*
+ * THE LIFETIME COUNTS, CACHED FOR A DAY ON THEIR OWN.
+ *
+ * They were most of the D1 bill: an importer has thousands of comments and
+ * ratings, and every count reads each one, so one miss of the people list was
+ * ~200k rows. They barely move and the dashboard only needs them roughly right,
+ * so they live under their own key that dashboard writes do NOT bust (giving
+ * Plus changes none of them). Somebody new since the copy was made is counted
+ * on their own and folded in. Hard refresh deletes it.
+ */
+const COUNTS_KEY = 'admin:counts';
+const COUNTS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+type Counts = Record<string, Record<string, unknown>>;
 
-  const res = await c.env.DB.prepare(
-    `SELECT p.id,
-            p.handle,
-            p.display_name,
-            p.created_at,
-            -- PLUS, BOTH WAYS IT CAN BE TRUE. is_plus is the flag the
-            -- RevenueCat webhook owns; plus_until is the hand-grant escape
-            -- hatch. The dashboard shows which of the two it is, because
-            -- "paying" and "given a month by Mahmood" are different facts and
-            -- a single green tick would hide the difference.
-            p.is_plus,
-            p.plus_until,
-            p.plus_since,
-            -- Stamped by GET /v1/me, which the app calls on every launch. It
-            -- is the closest thing this server has to "still using it", and
-            -- it is a DATE, not a history: nothing records the launch before
-            -- this one.
-            p.last_seen_at,
-            p.app_version,
-            -- The address only where the person typed one into this app. A
-            -- provider's copy is Apple's or Google's to show, not ours to
-            -- collect a list of.
-            c.email,
-            c.verified_at IS NULL AND c.profile_id IS NOT NULL AS unconfirmed,
-            (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
+async function lifetimeCounts(env: App['Bindings'], ids: string[]): Promise<Counts> {
+  let cached: { at: number; rows: Counts } | null = null;
+  try {
+    cached = await env.CACHE.get<{ at: number; rows: Counts }>(COUNTS_KEY, 'json');
+  } catch {
+    cached = null;
+  }
+  const copy = cached && Date.now() - cached.at <= COUNTS_MAX_AGE_MS ? cached : { at: Date.now(), rows: {} as Counts };
+  const missing = ids.filter((id) => !(id in copy.rows));
+  if (missing.length > 0) {
+    const holes = missing.map(() => '?').join(',');
+    const res = await env.DB.prepare(
+      `SELECT p.id,
             (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
             (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
             /* The other two halves of a vote. A rating is a number, a feeling
@@ -483,7 +504,50 @@ admin.get('/admin/users', async (c) => {
              * none, which is the truth about it rather than a zero.
              */
             (SELECT episodes_watched FROM profile_stats ps WHERE ps.profile_id = p.id) AS episodes_watched,
-            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched,
+            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched
+         FROM profiles p
+        WHERE p.id IN (${holes})`,
+    )
+      .bind(...missing)
+      .all<Record<string, unknown>>();
+    for (const r of res.results ?? []) copy.rows[r.id as string] = r;
+    await env.CACHE.put(COUNTS_KEY, JSON.stringify(copy), {
+      expirationTtl: Math.max(60, Math.ceil((copy.at + COUNTS_MAX_AGE_MS - Date.now()) / 1000)),
+    });
+  }
+  return copy.rows;
+}
+
+admin.get('/admin/users', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+
+  const res = await c.env.DB.prepare(
+    `SELECT p.id,
+            p.handle,
+            p.display_name,
+            p.created_at,
+            -- PLUS, BOTH WAYS IT CAN BE TRUE. is_plus is the flag the
+            -- RevenueCat webhook owns; plus_until is the hand-grant escape
+            -- hatch. The dashboard shows which of the two it is, because
+            -- "paying" and "given a month by Mahmood" are different facts and
+            -- a single green tick would hide the difference.
+            p.is_plus,
+            p.plus_until,
+            p.plus_since,
+            -- Stamped by GET /v1/me, which the app calls on every launch. It
+            -- is the closest thing this server has to "still using it", and
+            -- it is a DATE, not a history: nothing records the launch before
+            -- this one.
+            p.last_seen_at,
+            p.app_version,
+            -- The address only where the person typed one into this app. A
+            -- provider's copy is Apple's or Google's to show, not ours to
+            -- collect a list of.
+            c.email,
+            c.verified_at IS NULL AND c.profile_id IS NOT NULL AS unconfirmed,
+            (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.profile_id = p.id) AS providers,
             CASE WHEN ${robotSql('p')} THEN 1 ELSE 0 END AS robot
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
@@ -641,7 +705,9 @@ admin.get('/admin/users', async (c) => {
     byId.set(r.who, list);
   }
 
+  const counts = await lifetimeCounts(c.env, (res.results ?? []).map((u) => String(u.id)));
   const items = (res.results ?? []).map((u) => ({
+    ...counts[String(u.id)],
     ...u,
     // The day log answers for any day; last_seen_at still answers for today,
     // so a member stamped before 0038 existed is not missed.
