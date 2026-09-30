@@ -374,3 +374,24 @@ describe('the admin dashboard', () => {
     });
   });
 });
+
+describe('POST /v1/admin/users/:handle/message', () => {
+  it('puts one message in one person\'s bell, and only with the admin cookie', async () => {
+    const fresh = freshDatabase();
+    const env = { ...makeEnv(fresh.db), ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+    fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'Someone', 'someone', '2026-09-29')`).run();
+    const cookie = (await call(env, 'POST', '/v1/admin/login', { body: { email: 'me@example.com', password: 'a-long-one' } }))
+      .headers.get('set-cookie')!.split(';')[0]!;
+
+    expect((await call(env, 'POST', '/v1/admin/users/someone/message', { body: { text: 'hi' } })).status).toBe(401);
+    expect((await call(env, 'POST', '/v1/admin/users/someone/message', { body: { text: '' }, headers: { Cookie: cookie } })).status).toBe(400);
+    const ok = await call(env, 'POST', '/v1/admin/users/someone/message', {
+      body: { text: 'Thanks for the review — the import is fixed in 1.6.4. — Noddy' },
+      headers: { Cookie: cookie },
+    });
+    expect(ok.status).toBe(200);
+
+    const bell = await call(env, 'GET', '/v1/notifications', { token: await tokenFor(env, 'p1') });
+    expect(bell.json.items[0]).toMatchObject({ kind: 'message', actor: null, body: 'Thanks for the review — the import is fixed in 1.6.4. — Noddy' });
+  });
+});

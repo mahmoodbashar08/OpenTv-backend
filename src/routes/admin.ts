@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { constantTimeEqual } from '@/pure';
+import { sendMessagePush } from '@/push';
 import { overBudget } from '@/rate-limit';
 
 /**
@@ -179,6 +180,43 @@ const cachedRead = createMiddleware<App>(async (c, next) => {
     c.executionCtx.waitUntil(c.env.CACHE.put(key, body, { expirationTtl: ADMIN_CACHE_TTL }).catch(() => {}));
   }
 });
+/**
+ * POST /v1/admin/users/:handle/message — a message from OpenTV to one person,
+ * delivered as a push (the app has no inbox to show the row in). ONE WAY:
+ * nothing replies to it. Plain text, 1–500 characters. `devices` says how many
+ * phones will ring — 0 means push was never allowed and the row is all there is.
+ */
+admin.post('/admin/users/:handle/message', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const text = typeof (body as { text?: unknown })?.text === 'string' ? (body as { text: string }).text.trim() : '';
+  if (text.length < 1 || text.length > 500) return fail(c, 400, 'invalid_body', 'text must be 1–500 characters.');
+  const row = await c.env.DB.prepare('SELECT id FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL')
+    .bind(c.req.param('handle').toLowerCase())
+    .first<{ id: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such profile.');
+  await c.env.DB.prepare(
+    `INSERT INTO notifications (id, recipient_id, actor_id, kind, subject_type, subject_id, body, created_at)
+     VALUES (?, ?, NULL, 'message', NULL, NULL, ?, ?)`,
+  )
+    .bind(crypto.randomUUID(), row.id, text, new Date().toISOString())
+    .run();
+  const devices = await c.env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM push_tokens WHERE profile_id = ? AND disabled_at IS NULL',
+  )
+    .bind(row.id)
+    .first<{ n: number }>();
+  c.executionCtx.waitUntil(sendMessagePush(c.env, row.id, text));
+  return c.json({ ok: true, devices: devices?.n ?? 0 }, 200, { 'Cache-Control': 'no-store' });
+});
+
 /** The dashboard's "Hard refresh": the next two reads come from the database. */
 admin.post('/admin/cache/clear', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {

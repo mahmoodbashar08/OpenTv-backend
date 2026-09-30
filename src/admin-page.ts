@@ -359,6 +359,34 @@ function grantCell(handle) {
  * Wired once on the table rather than per button: the rows are rebuilt on every
  * refresh, and a listener per row would be re-attached each time or lost.
  */
+/** A message from OpenTV to one person, in their bell. One way — no replies. */
+function wireMessage() {
+  $('users').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-msg]');
+    if (!btn) return;
+    const handle = btn.getAttribute('data-msg');
+    const text = prompt('Message to @' + handle + ' (shows in their notifications, max 500 characters). Sign it — Noddy.');
+    if (text == null || !text.trim()) return;
+    if (text.trim().length > 500) { alert('That is over 500 characters.'); return; }
+    btn.disabled = true;
+    try {
+      const res = await fetch('/v1/admin/users/' + encodeURIComponent(handle) + '/message', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.trim() }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error?.message || 'failed');
+      btn.textContent = out.devices > 0 ? 'Sent ✓' : 'Saved — no phone';
+      if (!out.devices) alert('Saved, but this person never allowed notifications, so no phone will ring.');
+    } catch (err) {
+      alert('Not sent: ' + err.message);
+      btn.disabled = false;
+    }
+  });
+}
+
 function wirePlus() {
   $('users').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-give]');
@@ -581,6 +609,7 @@ function drawPeople() {
       // names rather than two passes across the table.
       const who = '<span class="who">@' + esc(u.handle) + '</span>' +
         (didToday(u) ? ' <span class="tag act">active ' + esc(dayName(viewDay || serverToday).toLowerCase()) + '</span>' : '') +
+        ' <button class="more" data-msg="' + esc(u.handle) + '">Message</button>' +
         (u.robot ? ' <span class="tag">Google test robot</span>'
           : placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
@@ -752,6 +781,7 @@ $('out').addEventListener('click', async () => {
 // the listener lives on the table rather than on the buttons inside it.
 wirePlus();
 wireMore();
+wireMessage();
 load();
 </script>
 </body>

@@ -55,6 +55,7 @@ const MIGRATION_FILES = [
   '../migrations/0036_commsuni_consent.sql',
   '../migrations/0037_title_names.sql',
   '../migrations/0038_profile_days.sql',
+  '../migrations/0039_notification_body.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

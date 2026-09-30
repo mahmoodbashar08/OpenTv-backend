@@ -27,6 +27,7 @@ type NotificationRow = {
   avatar_key: string | null;
   is_plus: number | null;
   plus_until: string | null;
+  body: string | null;
 };
 
 function shape(row: NotificationRow) {
@@ -48,6 +49,8 @@ function shape(row: NotificationRow) {
         : null,
     subject_type: row.subject_type,
     subject_id: row.subject_id,
+    // Only `message` (from OpenTV, to this one person) carries text.
+    body: row.kind === 'message' ? row.body : null,
     read_at: row.read_at,
     created_at: row.created_at,
   };
@@ -75,7 +78,7 @@ notifications.get('/notifications', requireAuth, async (c) => {
   // reason they do in a thread — a block that leaves the notification behind
   // is a mute with a back door.
   const res = await c.env.DB.prepare(
-    `SELECT n.id, n.kind, n.subject_type, n.subject_id, n.read_at, n.created_at,
+    `SELECT n.id, n.kind, n.subject_type, n.subject_id, n.read_at, n.created_at, n.body,
             n.actor_id, a.handle, a.display_name, a.avatar_key, a.is_plus, a.plus_until
      FROM notifications n
      LEFT JOIN profiles a ON a.id = n.actor_id

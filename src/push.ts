@@ -26,6 +26,9 @@ const BATCH = 100;
 
 export type PushKind = 'follow' | 'like' | 'reply' | 'comment';
 
+/** What a push can carry: the four community kinds, or a message from OpenTV. */
+type DataKind = PushKind | 'message';
+
 type Message = {
   to: string;
   title: string;
@@ -49,7 +52,7 @@ type Message = {
    */
   channelId: 'community';
   /** What the app opens. Mirrors the in-app row's destination. */
-  data: { kind: PushKind; subjectId: string | null; handle: string | null };
+  data: { kind: DataKind; subjectId: string | null; handle: string | null };
 };
 
 /**
@@ -124,36 +127,59 @@ export async function sendPush(
     const who = actor?.display_name || actor?.handle || 'Someone';
     const handle = actor?.handle ?? null;
 
-    const { title, body } = line(kind, who);
-    const messages: Message[] = rows.map((r) => ({
-      to: r.token,
-      title,
-      body,
-      sound: 'default',
-      channelId: 'community',
-      data: { kind, subjectId, handle },
-    }));
-
-    const nowIso = new Date().toISOString();
-    for (let i = 0; i < messages.length; i += BATCH) {
-      const slice = messages.slice(i, i + BATCH);
-      const res = await fetch(EXPO_SEND, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(slice),
-      });
-      if (!res.ok) continue;
-
-      // Expo answers per message, in order, and reports a dead token as an
-      // error rather than an HTTP failure.
-      const json = (await res.json()) as { data?: { status?: string; details?: { error?: string } }[] };
-      const dead = (json.data ?? [])
-        .map((d, n) => (d?.details?.error === 'DeviceNotRegistered' ? slice[n]?.to : null))
-        .filter((tk): tk is string => tk != null);
-      await disable(env, dead, nowIso);
-    }
+    await deliver(env, rows, line(kind, who), { kind, subjectId, handle });
   } catch {
     // The row is written and the app will show it. A doorbell that does not ring
     // is not a reason to fail the action that caused it.
+  }
+}
+
+/**
+ * A message from OpenTV to one person (admin dashboard). Unlike the community
+ * kinds the text IS the point, so it rides in the body — it is written by the
+ * operator, never by another user, so there is no spoiler to leak. Never throws.
+ */
+export async function sendMessagePush(env: Env, recipientId: string, text: string): Promise<void> {
+  try {
+    const rows = await tokensFor(env, recipientId);
+    if (rows.length === 0) return;
+    await deliver(env, rows, { title: 'OpenTV', body: text }, { kind: 'message', subjectId: null, handle: null });
+  } catch {
+    // The row is written either way.
+  }
+}
+
+async function deliver(
+  env: Env,
+  rows: { token: string }[],
+  { title, body }: { title: string; body: string },
+  data: Message['data'],
+): Promise<void> {
+  const messages: Message[] = rows.map((r) => ({
+    to: r.token,
+    title,
+    body,
+    sound: 'default',
+    channelId: 'community',
+    data,
+  }));
+
+  const nowIso = new Date().toISOString();
+  for (let i = 0; i < messages.length; i += BATCH) {
+    const slice = messages.slice(i, i + BATCH);
+    const res = await fetch(EXPO_SEND, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(slice),
+    });
+    if (!res.ok) continue;
+
+    // Expo answers per message, in order, and reports a dead token as an
+    // error rather than an HTTP failure.
+    const json = (await res.json()) as { data?: { status?: string; details?: { error?: string } }[] };
+    const dead = (json.data ?? [])
+      .map((d, n) => (d?.details?.error === 'DeviceNotRegistered' ? slice[n]?.to : null))
+      .filter((tk): tk is string => tk != null);
+    await disable(env, dead, nowIso);
   }
 }
