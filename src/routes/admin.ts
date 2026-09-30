@@ -469,9 +469,12 @@ async function lifetimeCounts(env: App['Bindings'], ids: string[]): Promise<Coun
   const copy = cached && Date.now() - cached.at <= COUNTS_MAX_AGE_MS ? cached : { at: Date.now(), rows: {} as Counts };
   const missing = ids.filter((id) => !(id in copy.rows));
   if (missing.length > 0) {
-    const holes = missing.map(() => '?').join(',');
-    const res = await env.DB.prepare(
-      `SELECT p.id,
+    // D1 refuses more than 100 bound parameters in one statement.
+    for (let i = 0; i < missing.length; i += 90) {
+      const part = missing.slice(i, i + 90);
+      const holes = part.map(() => '?').join(',');
+      const res = await env.DB.prepare(
+        `SELECT p.id,
             (SELECT COUNT(*) FROM comments  x WHERE x.author_id = p.id AND x.deleted_at IS NULL) AS comments,
             (SELECT COUNT(*) FROM ratings   x WHERE x.author_id = p.id) AS ratings,
             /* The other two halves of a vote. A rating is a number, a feeling
@@ -507,10 +510,11 @@ async function lifetimeCounts(env: App['Bindings'], ids: string[]): Promise<Coun
             (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched
          FROM profiles p
         WHERE p.id IN (${holes})`,
-    )
-      .bind(...missing)
-      .all<Record<string, unknown>>();
-    for (const r of res.results ?? []) copy.rows[r.id as string] = r;
+      )
+        .bind(...part)
+        .all<Record<string, unknown>>();
+      for (const r of res.results ?? []) copy.rows[r.id as string] = r;
+    }
     await env.CACHE.put(COUNTS_KEY, JSON.stringify(copy), {
       expirationTtl: Math.max(60, Math.ceil((copy.at + COUNTS_MAX_AGE_MS - Date.now()) / 1000)),
     });
