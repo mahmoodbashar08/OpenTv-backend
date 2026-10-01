@@ -29,6 +29,10 @@ describe('commsuniPath', () => {
 });
 
 describe('trimComment', () => {
+  it('carries the picture a GIF-only comment is made of, https only', () => {
+    expect(trimComment({ id: 'g', text: '', attachments: [{ url: 'https://static.klipy.com/x.webp' }] } as never)?.image).toBe('https://static.klipy.com/x.webp');
+    expect(trimComment({ id: 'h', text: 'hi', imageUrl: 'http://insecure.example/x.png' } as never)?.image).toBeNull();
+  });
   it('hides a tombstone completely', () => {
     expect(trimComment({ id: 'a', text: null as unknown as string, deleted: true })).toBeNull();
   });

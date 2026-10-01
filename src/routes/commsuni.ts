@@ -212,7 +212,16 @@ type RawComment = {
   replyCount?: unknown;
   isSpoiler?: unknown;
   deleted?: unknown;
+  imageUrl?: unknown;
+  attachments?: unknown;
 };
+
+/** The comment's picture, when it has one: https only, as other apps host it. */
+function imageOf(r: RawComment): string | null {
+  const first = Array.isArray(r.attachments) ? (r.attachments[0] as { url?: unknown; contentType?: unknown } | undefined) : undefined;
+  const url = typeof r.imageUrl === 'string' ? r.imageUrl : typeof first?.url === 'string' ? first.url : null;
+  return url && /^https:\/\//.test(url) && url.length <= 1024 ? url : null;
+}
 
 /** Only what the app draws. Tombstones are dropped whole (§3: hide them
  *  completely), and viewer state is dropped so the page can be shared. */
@@ -237,6 +246,7 @@ export function trimComment(r: RawComment) {
     likes: typeof r.likeCount === 'number' ? r.likeCount : 0,
     replyCount: typeof r.replyCount === 'number' ? r.replyCount : 0,
     isSpoiler: r.isSpoiler === true,
+    image: imageOf(r),
   };
 }
 
