@@ -317,3 +317,45 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
   await c.env.CACHE.put(cacheKey, body, { expirationTtl: 60 });
   return c.body(body, 200, { 'Content-Type': 'application/json' });
 });
+
+/**
+ * GET /v1/commsuni/replies?id=<comment uuid>[&cursor=...]
+ *
+ * One thread's replies, fetched only when somebody taps to open it (the guide:
+ * "fetch replies lazily when the user expands a thread"). Same trim, same
+ * one-minute cache and 429 cooldown as a comment page.
+ */
+commsuni.get('/commsuni/replies', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  const id = c.req.query('id') ?? '';
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return fail(c, 400, 'invalid_body', 'Unknown comment.');
+  const p = new URLSearchParams({ limit: '50', sort: 'most_recent' });
+  const cursor = c.req.query('cursor');
+  if (cursor && cursor.length <= 512) p.set('cursor', cursor);
+  const path = `/comments/${id}/replies?${p.toString()}`;
+
+  const cacheKey = `commsuni:r:${path}`;
+  const cached = await c.env.CACHE.get(cacheKey);
+  if (cached) return c.body(cached, 200, { 'Content-Type': 'application/json' });
+  if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
+
+  let up: Upstream;
+  try {
+    up = await upstream(c.env, path, await actorId(c.env.SESSION_SECRET, c.get('profileId')));
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+  if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
+  const data = (up.body as { data?: { replies?: RawComment[]; nextCursor?: unknown } } | null)?.data;
+  if (up.status !== 200 || !data || !Array.isArray(data.replies)) {
+    if (up.status !== 429) console.log(`[commsuni] replies ${up.status}`);
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+  const body = JSON.stringify({
+    replies: data.replies.map(trimComment).filter((x) => x !== null),
+    nextCursor: typeof data.nextCursor === 'string' ? data.nextCursor : null,
+  });
+  await c.env.CACHE.put(cacheKey, body, { expirationTtl: 60 });
+  return c.body(body, 200, { 'Content-Type': 'application/json' });
+});
+

@@ -108,3 +108,30 @@ describe('GET /v1/commsuni/comments', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('GET /v1/commsuni/replies', () => {
+  let env: Env;
+  let urls: string[];
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    urls = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ data: { replies: [{ id: 'r1', text: 'agreed', origin: { kind: 'partner', slug: 'seenfy' } }, { id: 'r2', text: null, deleted: true }], nextCursor: null } }), { status: 200 });
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("opens one thread's replies, tombstones hidden", async () => {
+    const res = await call(env, 'GET', '/v1/commsuni/replies?id=4f1c2a9e-1111-2222-3333-444455556666', { token: await tokenFor(env, 'p1') });
+    expect(res.status).toBe(200);
+    expect(res.json.replies.map((r: { id: string }) => r.id)).toEqual(['r1']);
+    expect(urls[0]).toBe('https://api.commsuni.tv/v1/comments/4f1c2a9e-1111-2222-3333-444455556666/replies?limit=50&sort=most_recent');
+  });
+  it('refuses an id that is not one, and needs a member', async () => {
+    expect((await call(env, 'GET', '/v1/commsuni/replies?id=../../x', { token: await tokenFor(env, 'p1') })).status).toBe(400);
+    expect((await call(env, 'GET', '/v1/commsuni/replies?id=4f1c2a9e-1111')).status).toBe(401);
+  });
+});
