@@ -20,6 +20,7 @@ import {
   validateCommentBody,
 } from '@/pure';
 import { verify } from '@/session';
+import { unshareComment } from '@/routes/commsuni';
 
 /**
  * Threads, and the moderation tools that ship *with* them.
@@ -503,6 +504,8 @@ comments.delete('/comments/:id', requireAuth, async (c) => {
   // with a tombstone parent — the lesser evil against cascading a conversation
   // out of existence.
   if (res.meta.changes === 0) return fail(c, 403, 'forbidden', 'Not your comment.');
+  // And off CommsUni, if it was shared there (§10: author deletes).
+  c.executionCtx.waitUntil(unshareComment(c.env, c.get('profileId'), c.req.param('id')));
   return c.body(null, 204);
 });
 

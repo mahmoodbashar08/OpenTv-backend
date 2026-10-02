@@ -135,3 +135,60 @@ describe('GET /v1/commsuni/replies', () => {
     expect((await call(env, 'GET', '/v1/commsuni/replies?id=4f1c2a9e-1111')).status).toBe(401);
   });
 });
+
+describe('POST /v1/commsuni/share', () => {
+  let env: Env;
+  let raw: import('better-sqlite3').Database;
+  let sent: { url: string; method: string; headers: Headers; body: unknown }[];
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29'), ('p2', 'b', 'b', '2026-09-29')`).run();
+    const say = raw.prepare(
+      `INSERT INTO comments (id, author_id, target_source, target_key, season, episode, body, is_spoiler, lang, parent_id, imported_at, created_at, like_count)
+       VALUES (?, ?, 'tvdb', '289590', 1, 2, ?, 0, 'en', ?, NULL, '2026-10-02T10:00:00Z', 0)`,
+    );
+    say.run('mine', 'p1', 'great episode', null);
+    say.run('theirs', 'p2', 'not yours', null);
+    say.run('reply', 'p1', 'a reply', 'theirs');
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    sent = [];
+    vi.stubGlobal('fetch', async (url: string, init: { method?: string; headers: Record<string, string>; body?: string }) => {
+      sent.push({ url, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith('/comments')) return new Response(JSON.stringify({ data: { comment: { id: 'cu1' } } }), { status: 201 });
+      return new Response(null, { status: 204 });
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const consent = (decision: string, identity: string | null) =>
+    raw.prepare(`INSERT INTO commsuni_consent (id, profile_id, decision, identity, prompt_version, covers_existing, decided_at) VALUES (?, 'p1', ?, ?, 1, 0, ?)`).run(crypto.randomUUID(), decision, identity, new Date().toISOString());
+  const share = async (comment_id: string) => call(env, 'POST', '/v1/commsuni/share', { token: await tokenFor(env, 'p1'), body: { comment_id } });
+
+  it('refuses without consent to share', async () => {
+    expect((await share('mine')).status).toBe(403);
+    consent('keep_private', null);
+    expect((await share('mine')).status).toBe(403);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('shares a comment already saved here, by id, with an idempotency key and the actor', async () => {
+    consent('share', 'persona');
+    const res = await share('mine');
+    expect(res.status).toBe(200);
+    const post = sent.find((s) => s.method === 'POST')!;
+    expect(post.url).toBe('https://api.commsuni.tv/v1/entities/episode/tvdb-289590-s1e2/comments');
+    expect(post.headers.get('idempotency-key')).toBe('mine');
+    expect(post.headers.get('x-tvta-actor-id')).toMatch(/^[0-9a-f]{64}$/);
+    expect(post.body).toEqual({ text: 'great episode', language: 'en', isSpoiler: false });
+    // persona: the profile overlay is cleared, not set
+    expect(sent.find((s) => s.url.endsWith('/authors/me/profile'))!.method).toBe('DELETE');
+  });
+
+  it("never shares somebody else's comment or a reply", async () => {
+    consent('share', 'profile');
+    expect((await share('theirs')).status).toBe(404);
+    expect((await share('reply')).status).toBe(404);
+    expect(sent.filter((s) => s.method === 'POST')).toHaveLength(0);
+  });
+});

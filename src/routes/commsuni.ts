@@ -154,13 +154,23 @@ type Upstream = { status: number; body: unknown };
 
 /** One request to CommsUni with an allowlisted set of headers — never the
  *  device's own (§1: no forwarded Origin). */
-async function upstream(env: App['Bindings'], path: string, actor: string): Promise<Upstream> {
+async function upstream(
+  env: App['Bindings'],
+  path: string,
+  actor: string,
+  write?: { method: 'POST' | 'PUT' | 'DELETE'; body?: unknown; idempotencyKey?: string },
+): Promise<Upstream> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${env.COMMSUNI_API_KEY}`,
+    Accept: 'application/json',
+    'X-TVTA-Actor-ID': actor,
+  };
+  if (write?.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (write?.idempotencyKey) headers['Idempotency-Key'] = write.idempotencyKey;
   const res = await fetch(`${COMMSUNI_BASE}${path}`, {
-    headers: {
-      Authorization: `Bearer ${env.COMMSUNI_API_KEY}`,
-      Accept: 'application/json',
-      'X-TVTA-Actor-ID': actor,
-    },
+    method: write?.method ?? 'GET',
+    headers,
+    body: write?.body !== undefined ? JSON.stringify(write.body) : undefined,
   });
   let body: unknown = null;
   try {
@@ -358,4 +368,107 @@ commsuni.get('/commsuni/replies', requireAuth, async (c) => {
   await c.env.CACHE.put(cacheKey, body, { expirationTtl: 60 });
   return c.body(body, 200, { 'Content-Type': 'application/json' });
 });
+
+/** Where a comment of ours lives on CommsUni, or null when it cannot live there. */
+export function commsuniEntityRef(row: { target_source: string; target_key: string; season: number | null; episode: number | null }, tvdbMovie: number | null): string | null {
+  if (row.target_source === 'tvdb' && /^\d+$/.test(row.target_key)) {
+    if (row.season != null && row.episode != null) return `episode/tvdb-${row.target_key}-s${row.season}e${row.episode}`;
+    if (row.season == null && row.episode == null) return `show/tvdb-${row.target_key}`;
+    return null;
+  }
+  return tvdbMovie != null && tvdbMovie > 0 ? `movie/tvdb-${tvdbMovie}` : null;
+}
+
+const sharedKey = (id: string) => `commsuni:shared:${id}`;
+
+/**
+ * POST /v1/commsuni/share { comment_id, tvdb_movie? }
+ *
+ * SHARES A COMMENT THAT ALREADY EXISTS HERE, by id — never text the app sends
+ * along. So everything that reaches CommsUni has already passed through our own
+ * posting rules (length, rate limit) and is still live: a deleted or hidden
+ * comment, someone else's, or a reply cannot be shared. That is our pre-send
+ * moderation (§10): the same bar as a comment that stays on OpenTV.
+ *
+ * Words only. Our pictures wait for a person to approve them, so none is sent.
+ * Only for an author whose LATEST consent is `share`; their identity choice
+ * decides whether their OpenTV name goes with it or CommsUni's generated one.
+ */
+commsuni.post('/commsuni/share', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  let b: { comment_id?: unknown; tvdb_movie?: unknown };
+  try {
+    b = (await c.req.json()) as typeof b;
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const me = c.get('profileId');
+  const id = typeof b.comment_id === 'string' ? b.comment_id : '';
+  const consent = await c.env.DB.prepare(
+    'SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1',
+  )
+    .bind(me)
+    .first<{ decision: string; identity: string | null }>();
+  if (consent?.decision !== 'share') return fail(c, 403, 'forbidden', 'Sharing is not on.');
+
+  const row = await c.env.DB.prepare(
+    `SELECT c.target_source, c.target_key, c.season, c.episode, c.body, c.is_spoiler, c.lang, p.handle, p.display_name, p.avatar_key
+       FROM comments c JOIN profiles p ON p.id = c.author_id
+      WHERE c.id = ? AND c.author_id = ? AND c.parent_id IS NULL AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND c.imported_at IS NULL`,
+  )
+    .bind(id, me)
+    .first<{ target_source: string; target_key: string; season: number | null; episode: number | null; body: string; is_spoiler: number; lang: string | null; handle: string; display_name: string | null; avatar_key: string | null }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such comment.');
+  if (!row.body.trim()) return fail(c, 400, 'invalid_body', 'Only comments with words are shared.');
+  const ref = commsuniEntityRef(row, typeof b.tvdb_movie === 'number' ? b.tvdb_movie : null);
+  if (!ref) return fail(c, 400, 'invalid_body', 'This title is not on CommsUni.');
+  if (await c.env.CACHE.get(sharedKey(id))) return c.json({ ok: true, already: true });
+  if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
+
+  const actor = await actorId(c.env.SESSION_SECRET, me);
+  try {
+    // The profile overlay before the first write, once (§11): their OpenTV name
+    // and picture, or nothing at all and CommsUni's generated persona.
+    const profileKey = `commsuni:profile:${me}:${consent.identity}`;
+    if (!(await c.env.CACHE.get(profileKey))) {
+      const avatarUrl = row.avatar_key ? `${new URL(c.req.url).origin}/v1/${row.avatar_key}` : null;
+      const done =
+        consent.identity === 'profile'
+          ? await upstream(c.env, '/authors/me/profile', actor, { method: 'PUT', body: { displayName: (row.display_name || row.handle).slice(0, 64), avatarUrl } })
+          : await upstream(c.env, '/authors/me/profile', actor, { method: 'DELETE' });
+      if (done.status < 300) await c.env.CACHE.put(profileKey, '1', { expirationTtl: 7 * 24 * 60 * 60 });
+    }
+    const up = await upstream(c.env, `/entities/${ref}/comments`, actor, {
+      method: 'POST',
+      idempotencyKey: id,
+      body: { text: row.body, language: row.lang ?? undefined, isSpoiler: row.is_spoiler === 1 },
+    });
+    if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
+    const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
+    if (up.status !== 201 && up.status !== 200) {
+      console.log(`[commsuni] share ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
+      return fail(c, 503, 'unavailable', 'Try again later.');
+    }
+    if (typeof theirs === 'string') await c.env.CACHE.put(sharedKey(id), theirs);
+    return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+});
+
+/**
+ * Take a shared comment back off CommsUni when it is deleted here. Called from
+ * the comment DELETE route; never throws, because the deletion on OpenTV has
+ * already happened and is what the person asked for.
+ */
+export async function unshareComment(env: App['Bindings'], profileId: string, commentId: string): Promise<void> {
+  try {
+    const theirs = await env.CACHE.get(sharedKey(commentId));
+    if (!theirs || !env.COMMSUNI_API_KEY) return;
+    const up = await upstream(env, `/comments/${encodeURIComponent(theirs)}`, await actorId(env.SESSION_SECRET, profileId), { method: 'DELETE' });
+    if (up.status === 204 || up.status === 404) await env.CACHE.delete(sharedKey(commentId));
+  } catch {
+    // Left for a later cleanup pass; the comment is already gone here.
+  }
+}
 
