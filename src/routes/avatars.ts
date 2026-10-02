@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
-import { imageExtension, MAX_AVATAR_BYTES, MAX_COVER_BYTES } from '@/pure';
+import { imageExtension, MAX_AVATAR_BYTES, MAX_COVER_BYTES, MAX_COVER_GIF_BYTES, plusOn } from '@/pure';
 
 /**
  * Profile pictures.
@@ -90,11 +90,22 @@ async function storeImage(c: Context<App>, kind: 'avatar' | 'cover'): Promise<Re
     bytes = await c.req.arrayBuffer();
   }
 
-  if (!ALLOWED.has(type)) {
+  // A GIF of their own, as a BANNER, on Plus — the same rule as a GIPHY
+  // banner. Never an avatar: a moving face beside every comment is a different
+  // thing, and not one anybody has asked for.
+  const gif = type === 'image/gif' && kind === 'cover';
+  if (gif) {
+    const owner = await c.env.DB.prepare('SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL')
+      .bind(c.get('profileId'))
+      .first<{ is_plus: number; plus_until: string | null }>();
+    if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+    if (!plusOn(owner, new Date().toISOString())) return fail(c, 403, 'plus_required', 'A GIF banner needs OpenTV Plus.');
+  }
+  if (!ALLOWED.has(type) && !gif) {
     return fail(c, 415, 'unsupported_type', `Type ${type || 'unknown'} is not an image.`);
   }
   if (bytes.byteLength <= 0) return fail(c, 400, 'invalid_body', 'The image is empty.');
-  const limit = kind === 'avatar' ? MAX_AVATAR_BYTES : MAX_COVER_BYTES;
+  const limit = kind === 'avatar' ? MAX_AVATAR_BYTES : gif ? MAX_COVER_GIF_BYTES : MAX_COVER_BYTES;
   if (bytes.byteLength > limit) {
     return fail(c, 413, 'too_large', `That image is at most ${Math.floor(limit / 1_000_000)} MB.`);
   }

@@ -551,6 +551,9 @@ export const MAX_AVATAR_BYTES = 2_000_000;
 /** A cover is a full-width backdrop rather than a 44-point circle, so it gets more room. */
 export const MAX_COVER_BYTES = 5_000_000;
 
+/** An uploaded GIF banner (Plus): frames add up, so a little more room. */
+export const MAX_COVER_GIF_BYTES = 8_000_000;
+
 // ── email sign-in ───────────────────────────────────────────────────────────
 
 /**
