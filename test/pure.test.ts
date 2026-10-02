@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slug, sourceLangOf, targetKey, validCoverUrl } from '@/pure';
+import { isHandleValid, slug, sourceLangOf, targetKey, validCoverUrl } from '@/pure';
 
 /**
  * The allow-list IS the moderation story for covers — it is the only thing
@@ -126,5 +126,14 @@ describe('sourceLangOf — what language a comment is actually in', () => {
 
   it('a latin title inside an Arabic sentence does not make it English', () => {
     expect(sourceLangOf('en', 'The Hand و Hulk وكان الأفضل بالنسبة لي دائمًا')).toBe('ar');
+  });
+});
+
+describe('handles with dots', () => {
+  it('takes inner dots, refuses them at the ends or doubled', () => {
+    expect(isHandleValid('itsnoddy.dev')).toEqual({ ok: true, handle: 'itsnoddy.dev' });
+    for (const bad of ['.noddy', 'noddy.', 'its..noddy']) {
+      expect(isHandleValid(bad)).toEqual({ ok: false, reason: 'bad_characters' });
+    }
   });
 });
