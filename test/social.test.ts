@@ -323,6 +323,23 @@ describe('a profile’s own comments', () => {
     expect(res.json.items.map((i: { body: string }) => i.body)).toEqual(['newer', 'older']);
   });
 
+  // The owner's other devices sync from this feed; without the picture here a
+  // photograph approved for an imported comment never reached them (1 Oct).
+  it('says which comments carry an approved picture, and only those', async () => {
+    say('c1', 'p1', 'with picture', '2022-01-01T00:00:00.000Z');
+    say('c2', 'p1', 'waiting', '2022-01-02T00:00:00.000Z');
+    const pic = raw.prepare(
+      "INSERT INTO comment_images (comment_id, r2_key, width, height, is_gif, scan_status, created_at) VALUES (?, ?, 640, 480, 0, ?, '2026-10-01')",
+    );
+    pic.run('c1', 'k1', 'clean');
+    pic.run('c2', 'k2', 'pending');
+
+    const res = await call(env, 'GET', '/v1/profiles/mahmood/comments');
+    const byBody = Object.fromEntries(res.json.items.map((i: { body: string; image: unknown }) => [i.body, i.image]));
+    expect(byBody['with picture']).toEqual({ width: 640, height: 480, is_gif: false });
+    expect(byBody['waiting']).toBeNull();
+  });
+
   it('returns only that person’s', async () => {
     say('c1', 'p1', 'mine', '2022-01-01T00:00:00.000Z');
     say('c2', 'p2', 'hers', '2022-01-02T00:00:00.000Z');

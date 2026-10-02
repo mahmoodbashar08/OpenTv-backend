@@ -136,7 +136,7 @@ export function shapeComment(row: CommentRow, viewerId = '') {
 }
 
 /** The columns every read of a comment selects, so the shaper always has them. */
-const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
+export const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
        c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
        c.created_at, c.edited_at,
        p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
@@ -156,7 +156,7 @@ const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.sea
  * than here so a pending image still joins and simply reports itself as absent
  * — one query shape for every case.
  */
-const IMAGE_JOIN = 'LEFT JOIN comment_images ci ON ci.comment_id = c.id';
+export const IMAGE_JOIN = 'LEFT JOIN comment_images ci ON ci.comment_id = c.id';
 
 /**
  * The block filter, both directions, as a fragment. `?me` is `''` for an

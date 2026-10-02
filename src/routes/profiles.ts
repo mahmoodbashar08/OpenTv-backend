@@ -13,7 +13,7 @@ import {
   USER_SEARCH_LIMIT,
   visibleProfileFields,
 } from '@/pure';
-import { optionalViewer, shapeComment, type CommentRow } from '@/routes/comments';
+import { COMMENT_COLUMNS, IMAGE_JOIN, optionalViewer, shapeComment, type CommentRow } from '@/routes/comments';
 import { edgePage } from '@/routes/follows';
 
 /**
@@ -489,10 +489,11 @@ profiles.get('/profiles/:handle/comments', async (c) => {
   }
 
   const res = await c.env.DB.prepare(
-    `SELECT c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
-            c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
-            c.created_at, c.edited_at,
-            p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
+    // COMMENT_COLUMNS and IMAGE_JOIN, the same as every thread read. This feed
+    // listed its own columns and left the picture out, so every comment on a
+    // profile said "no image" — and the owner's other devices, which sync from
+    // here, never learned of a picture approved for one of theirs (1 Oct).
+    `SELECT ${COMMENT_COLUMNS},
             EXISTS(SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ?) AS liked_by_me,
             -- COUNTED, not zero. It used to be hardcoded, on the reasoning
             -- that a profile feed is a list of what somebody wrote rather than
@@ -508,7 +509,7 @@ profiles.get('/profiles/:handle/comments', async (c) => {
                 AND NOT EXISTS (SELECT 1 FROM blocks rb
                                 WHERE (rb.blocker_id = ? AND rb.blocked_id = r.author_id)
                                    OR (rb.blocker_id = r.author_id AND rb.blocked_id = ?))) AS reply_count
-     FROM comments c JOIN profiles p ON p.id = c.author_id
+     FROM comments c JOIN profiles p ON p.id = c.author_id ${IMAGE_JOIN}
      WHERE ${where.join(' AND ')}
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT ?`,
