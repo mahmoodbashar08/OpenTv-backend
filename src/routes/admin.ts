@@ -559,7 +559,9 @@ admin.get('/admin/users', async (c) => {
             (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched,
             -- When the phone last published those totals: the only trace a
             -- library change leaves here (added shows, marked episodes).
-            (SELECT updated_at       FROM profile_stats ps WHERE ps.profile_id = p.id) AS library_at
+            (SELECT updated_at       FROM profile_stats ps WHERE ps.profile_id = p.id) AS library_at,
+            (SELECT day_base_episodes FROM profile_stats ps WHERE ps.profile_id = p.id) AS day_base_episodes,
+            (SELECT day_base_movies   FROM profile_stats ps WHERE ps.profile_id = p.id) AS day_base_movies
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL

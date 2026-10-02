@@ -298,6 +298,13 @@ published.put('/me/published', requireAuth, async (c) => {
          movie_minutes    = excluded.movie_minutes,
          shows_count      = CASE WHEN ? = 'show'  THEN excluded.shows_count  ELSE profile_stats.shows_count  END,
          movies_count     = CASE WHEN ? = 'movie' THEN excluded.movies_count ELSE profile_stats.movies_count END,
+         -- The first sync of a (UTC) day stamps where the day started; later
+         -- ones keep it. Read from the OLD row, which is what profile_stats.*
+         -- means inside DO UPDATE.
+         day_base_episodes = CASE WHEN substr(profile_stats.updated_at, 1, 10) = substr(excluded.updated_at, 1, 10)
+                                  THEN profile_stats.day_base_episodes ELSE profile_stats.episodes_watched END,
+         day_base_movies   = CASE WHEN substr(profile_stats.updated_at, 1, 10) = substr(excluded.updated_at, 1, 10)
+                                  THEN profile_stats.day_base_movies ELSE profile_stats.movies_count END,
          updated_at       = excluded.updated_at`,
     )
     .bind(

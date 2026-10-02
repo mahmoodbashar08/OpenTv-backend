@@ -356,3 +356,20 @@ describe('the counts on a profile are the library, not the shelf', () => {
     });
   });
 });
+
+describe('where the day started', () => {
+  const put = (episodes: number) =>
+    call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', stats: { episodes_watched: episodes }, titles: [title(1)] } });
+  const base = () => raw.prepare('SELECT day_base_episodes AS b FROM profile_stats').get() as { b: number | null };
+
+  it('stamps the previous total on the first sync of a new day and keeps it through the day', async () => {
+    await put(100);
+    expect(base().b).toBeNull(); // joined: no earlier day to start from
+    // Pretend that sync was yesterday.
+    raw.prepare("UPDATE profile_stats SET updated_at = '2000-01-01T10:00:00.000Z'").run();
+    await put(103);
+    expect(base().b).toBe(100);
+    await put(105);
+    expect(base().b).toBe(100); // the same day: the start does not move
+  });
+});

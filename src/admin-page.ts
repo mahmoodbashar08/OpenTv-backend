@@ -269,12 +269,30 @@ function todayCell(u) {
   const rows = u.today || [];
   // Library work (shows added, episodes marked) is not an event this server
   // keeps — only that the phone republished its totals on this day.
-  // On the day they joined, the first sync IS the joining — "updated" would
-  // claim a change that was really an arrival.
+  // WHAT CHANGED, not the whole library: the totals minus where the day
+  // started (profile_stats.day_base_*). On the joining day there is no start,
+  // so it says what they arrived with. A sync that moved neither count was a
+  // favourite, a list or Plus changing.
   const joinedThatDay = typeof u.created_at === 'string' && typeof u.library_at === 'string' && u.created_at.slice(0, 10) === u.library_at.slice(0, 10);
-  const library = u.library_on_day
-    ? '<div class="ev"><span class="vb">' + (joinedThatDay ? 'joined with' : 'synced library') + '</span> <span class="did">' +
-      esc(u.episodes_watched ?? 0) + ' episodes &middot; ' + esc(u.movies_watched ?? 0) + ' films</span></div>'
+  const signed = (d, one, many) => (d > 0 ? '+' : '') + d + ' ' + (Math.abs(d) === 1 ? one : many);
+  let libraryVerb = '';
+  let libraryText = '';
+  if (u.library_on_day) {
+    if (joinedThatDay || u.day_base_episodes == null) {
+      libraryVerb = joinedThatDay ? 'joined with' : 'synced';
+      libraryText = esc(u.episodes_watched ?? 0) + ' episodes &middot; ' + esc(u.movies_watched ?? 0) + ' films';
+    } else {
+      const de = (u.episodes_watched ?? 0) - u.day_base_episodes;
+      const dm = (u.movies_watched ?? 0) - (u.day_base_movies ?? u.movies_watched ?? 0);
+      const parts = [];
+      if (de !== 0) parts.push(signed(de, 'episode', 'episodes'));
+      if (dm !== 0) parts.push(signed(dm, 'film', 'films'));
+      libraryVerb = parts.length ? 'library' : 'changed';
+      libraryText = parts.length ? parts.join(' &middot; ') : 'favourites, lists or Plus';
+    }
+  }
+  const library = libraryVerb
+    ? '<div class="ev"><span class="vb">' + libraryVerb + '</span> <span class="did">' + libraryText + '</span></div>'
     : '';
   if (!rows.length) {
     if (library) return library;
