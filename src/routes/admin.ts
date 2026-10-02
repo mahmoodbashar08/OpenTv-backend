@@ -556,7 +556,10 @@ admin.get('/admin/users', async (c) => {
              * publish by a day. One primary-key row per person, so live is cheap.
              */
             (SELECT episodes_watched FROM profile_stats ps WHERE ps.profile_id = p.id) AS episodes_watched,
-            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched
+            (SELECT movies_count     FROM profile_stats ps WHERE ps.profile_id = p.id) AS movies_watched,
+            -- When the phone last published those totals: the only trace a
+            -- library change leaves here (added shows, marked episodes).
+            (SELECT updated_at       FROM profile_stats ps WHERE ps.profile_id = p.id) AS library_at
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL
@@ -723,6 +726,8 @@ admin.get('/admin/users', async (c) => {
       openedOn.has(String(u.id)) ||
       (day === todayUtc && typeof u.last_seen_at === 'string' && u.last_seen_at >= midnightUtc),
     today: byId.get(String(u.id)) ?? [],
+    // Last publish only, so a past day says yes only if nothing came after it.
+    library_on_day: typeof u.library_at === 'string' && u.library_at.slice(0, 10) === day,
   }));
 
   return c.json({ items, day, today: todayUtc }, 200, { 'Cache-Control': 'no-store' });

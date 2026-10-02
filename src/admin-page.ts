@@ -267,7 +267,14 @@ function todayCell(u) {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   const rows = u.today || [];
+  // Library work (shows added, episodes marked) is not an event this server
+  // keeps — only that the phone republished its totals on this day.
+  const library = u.library_on_day
+    ? '<div class="ev"><span class="vb">updated library</span> <span class="did">' +
+      esc(u.episodes_watched ?? 0) + ' episodes &middot; ' + esc(u.movies_watched ?? 0) + ' films</span></div>'
+    : '';
   if (!rows.length) {
+    if (library) return library;
     return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
   }
   // The verb first, because the kind of thing they did is what is being scanned
@@ -287,12 +294,12 @@ function todayCell(u) {
     return '<div class="ev"><span class="vb">' + (verb[r.kind] || r.kind) + '</span> ' + did +
       '<span class="name">' + detail + '</span></div>';
   };
-  const all = rows.map(one).join('');
+  const all = library + rows.map(one).join('');
   if (rows.length <= 4) return all;
   // The full list travels with the row rather than being fetched again: it is
   // already here, and the dashboard refreshes often enough that a second
   // request would race the rebuild.
-  return rows.slice(0, 4).map(one).join('') +
+  return library + rows.slice(0, 4).map(one).join('') +
     '<button class="more" data-more="' + esc(u.handle || '') + '">+' + (rows.length - 4) + ' more</button>' +
     '<div class="allev" hidden>' + all + '</div>';
 }
