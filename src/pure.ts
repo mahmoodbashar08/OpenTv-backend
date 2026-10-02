@@ -1618,24 +1618,28 @@ export function isSafeLinkUrl(url: unknown): boolean {
 // ── banner frame ────────────────────────────────────────────────────────────
 
 /**
- * Which part of a banner shows: "x,y,zoom,tall". x and y are the focal point
- * as fractions (0–1), zoom 1–3, tall 0/1 (a tall GIF banner, Plus). Every
- * visitor's app draws from it, so a malformed value is refused rather than
- * stored and rendered as nonsense. Normalised to fixed precision on the way in.
+ * How the banner is drawn: "x,y,zoom,size[,bg]". x and y are the focal point
+ * (0–1), zoom 1–3. size is the banner's height as a fraction of its width, set
+ * by dragging its edge (Plus): 0 = the normal height, else 0.3–2 (the old
+ * "tall" flag, 1, reads as a square banner). bg 1 = the picture fills the whole
+ * profile behind everything (Plus). Every visitor's app draws from it, so a
+ * malformed value is refused, and it is normalised on the way in.
  */
 export function validateCoverFrame(v: unknown): { ok: true; value: string | null } | { ok: false } {
   if (v === null) return { ok: true, value: null };
-  if (typeof v !== 'string' || v.length > 40) return { ok: false };
+  if (typeof v !== 'string' || v.length > 48) return { ok: false };
   const parts = v.split(',');
-  if (parts.length !== 4) return { ok: false };
-  const [x, y, zoom, tall] = parts.map(Number) as [number, number, number, number];
-  if (![x, y, zoom].every(Number.isFinite) || x < 0 || x > 1 || y < 0 || y > 1 || zoom < 1 || zoom > 3) return { ok: false };
-  if (tall !== 0 && tall !== 1) return { ok: false };
-  return { ok: true, value: `${x.toFixed(3)},${y.toFixed(3)},${zoom.toFixed(2)},${tall}` };
+  if (parts.length !== 4 && parts.length !== 5) return { ok: false };
+  const [x, y, zoom, size, bg = 0] = parts.map(Number) as [number, number, number, number, number?];
+  if (![x, y, zoom, size].every(Number.isFinite) || x < 0 || x > 1 || y < 0 || y > 1 || zoom < 1 || zoom > 3) return { ok: false };
+  if (size !== 0 && (size < 0.3 || size > 2)) return { ok: false };
+  if (bg !== 0 && bg !== 1) return { ok: false };
+  return { ok: true, value: `${x.toFixed(3)},${y.toFixed(3)},${zoom.toFixed(2)},${size === 0 ? 0 : size.toFixed(3)},${bg}` };
 }
 
-/** The frame a visitor is sent: tall is Plus, so it is dropped once Plus lapses. */
+/** The frame a visitor is sent: size and background are Plus, so both drop once Plus lapses. */
 export function publicCoverFrame(frame: string | null, plus: boolean): string | null {
   if (!frame || plus) return frame;
-  return frame.replace(/,1$/, ',0');
+  const [x, y, zoom] = frame.split(',');
+  return `${x},${y},${zoom},0,0`;
 }

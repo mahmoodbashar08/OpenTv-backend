@@ -140,12 +140,14 @@ describe('handles with dots', () => {
 
 describe('banner frame', () => {
   it('normalises a valid frame and refuses anything else', () => {
-    expect(validateCoverFrame('0.5,0.25,1.5,1')).toEqual({ ok: true, value: '0.500,0.250,1.50,1' });
+    expect(validateCoverFrame('0.5,0.25,1.5,0.9,1')).toEqual({ ok: true, value: '0.500,0.250,1.50,0.900,1' });
+    expect(validateCoverFrame('0.5,0.25,1.5,1')).toEqual({ ok: true, value: '0.500,0.250,1.50,1.000,0' });
+    expect(validateCoverFrame('0.5,0.5,1,0')).toEqual({ ok: true, value: '0.500,0.500,1.00,0,0' });
     expect(validateCoverFrame(null)).toEqual({ ok: true, value: null });
-    for (const bad of ['1.2,0,1,0', '0,0,0.5,0', '0,0,1,2', '0,0,1', 'a,b,c,d', 7]) expect(validateCoverFrame(bad).ok).toBe(false);
+    for (const bad of ['1.2,0,1,0', '0,0,0.5,0', '0,0,1,2.5', '0,0,1,0.1', '0,0,1,0,2', '0,0,1', 'a,b,c,d', 7]) expect(validateCoverFrame(bad).ok).toBe(false);
   });
-  it('drops tall for visitors once Plus has lapsed', () => {
-    expect(publicCoverFrame('0.500,0.250,1.50,1', false)).toBe('0.500,0.250,1.50,0');
-    expect(publicCoverFrame('0.500,0.250,1.50,1', true)).toBe('0.500,0.250,1.50,1');
+  it('drops size and background for visitors once Plus has lapsed', () => {
+    expect(publicCoverFrame('0.500,0.250,1.50,0.900,1', false)).toBe('0.500,0.250,1.50,0,0');
+    expect(publicCoverFrame('0.500,0.250,1.50,0.900,1', true)).toBe('0.500,0.250,1.50,0.900,1');
   });
 });

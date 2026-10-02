@@ -500,7 +500,7 @@ auth.patch('/me', async (c) => {
     // Moving and zooming the banner is everyone's; `tall` is Plus, and is
     // simply not sent to visitors once Plus lapses (`publicCoverFrame`).
     const v = validateCoverFrame(b.cover_frame);
-    if (!v.ok) return fail(c, 400, 'invalid_body', 'cover_frame must be "x,y,zoom,tall" or null.');
+    if (!v.ok) return fail(c, 400, 'invalid_body', 'cover_frame must be "x,y,zoom,size[,bg]" or null.');
     sets.push('cover_frame = ?');
     binds.push(v.value);
   }
