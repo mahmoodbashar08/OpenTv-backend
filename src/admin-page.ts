@@ -269,8 +269,11 @@ function todayCell(u) {
   const rows = u.today || [];
   // Library work (shows added, episodes marked) is not an event this server
   // keeps — only that the phone republished its totals on this day.
+  // On the day they joined, the first sync IS the joining — "updated" would
+  // claim a change that was really an arrival.
+  const joinedThatDay = typeof u.created_at === 'string' && typeof u.library_at === 'string' && u.created_at.slice(0, 10) === u.library_at.slice(0, 10);
   const library = u.library_on_day
-    ? '<div class="ev"><span class="vb">updated library</span> <span class="did">' +
+    ? '<div class="ev"><span class="vb">' + (joinedThatDay ? 'joined with' : 'synced library') + '</span> <span class="did">' +
       esc(u.episodes_watched ?? 0) + ' episodes &middot; ' + esc(u.movies_watched ?? 0) + ' films</span></div>'
     : '';
   if (!rows.length) {
