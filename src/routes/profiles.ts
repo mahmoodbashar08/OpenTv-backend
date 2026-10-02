@@ -12,6 +12,7 @@ import {
   sectionHidden,
   USER_SEARCH_LIMIT,
   visibleProfileFields,
+  publicCoverFrame,
 } from '@/pure';
 import { COMMENT_COLUMNS, IMAGE_JOIN, optionalViewer, shapeComment, type CommentRow } from '@/routes/comments';
 import { edgePage } from '@/routes/follows';
@@ -42,6 +43,7 @@ type ProfileReadRow = {
   cover_url: string | null;
   theme_color: string | null;
   theme_layout: string | null;
+  cover_frame: string | null;
   widgets: string | null;
   bio: string | null;
   is_private: number;
@@ -77,7 +79,7 @@ function parseLinks(raw: string | null): unknown {
  */
 export async function readProfile(env: Env, handle: string, viewer: string): Promise<ProfileReadRow | null> {
   return env.DB.prepare(
-    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.theme_color, p.theme_layout, p.widgets, p.bio, p.is_private, p.links,
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.cover_url, p.cover_frame, p.theme_color, p.theme_layout, p.widgets, p.bio, p.is_private, p.links,
             p.plus_until, p.is_plus, p.hidden_sections, p.created_at,
             -- ACCEPTED ONLY, in all four. A pending request is a question, and
             -- counting it would make "12 followers" mean "9 followers and 3
@@ -138,6 +140,7 @@ export function shapeProfile(row: ProfileReadRow, viewer: string, nowIso: string
        */
       theme_color: plusOn(row, nowIso) ? row.theme_color : null,
       theme_layout: plusOn(row, nowIso) ? row.theme_layout : null,
+      cover_frame: publicCoverFrame(row.cover_frame ?? null, plusOn(row, nowIso)),
       /*
        * The arrangement, and the SAME Plus rule as the colour and the layout —
        * for the same reason, spelled out three lines above: older builds will

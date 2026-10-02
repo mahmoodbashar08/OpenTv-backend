@@ -1310,6 +1310,7 @@ export type FullProfileView = {
   cover_url: string | null;
   theme_color?: string | null;
   theme_layout?: string | null;
+  cover_frame?: string | null;
   /** The owner's arrangement, as the opaque JSON string it is stored as. Null
    *  when never arranged, or when their Plus has lapsed. */
   widgets?: string | null;
@@ -1609,4 +1610,29 @@ export function isSafeLinkUrl(url: unknown): boolean {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001F\u007F]/.test(url)) return false;
   return /^https:\/\/[^/]+\./i.test(url);
+}
+
+// ── banner frame ────────────────────────────────────────────────────────────
+
+/**
+ * Which part of a banner shows: "x,y,zoom,tall". x and y are the focal point
+ * as fractions (0–1), zoom 1–3, tall 0/1 (a tall GIF banner, Plus). Every
+ * visitor's app draws from it, so a malformed value is refused rather than
+ * stored and rendered as nonsense. Normalised to fixed precision on the way in.
+ */
+export function validateCoverFrame(v: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (v === null) return { ok: true, value: null };
+  if (typeof v !== 'string' || v.length > 40) return { ok: false };
+  const parts = v.split(',');
+  if (parts.length !== 4) return { ok: false };
+  const [x, y, zoom, tall] = parts.map(Number) as [number, number, number, number];
+  if (![x, y, zoom].every(Number.isFinite) || x < 0 || x > 1 || y < 0 || y > 1 || zoom < 1 || zoom > 3) return { ok: false };
+  if (tall !== 0 && tall !== 1) return { ok: false };
+  return { ok: true, value: `${x.toFixed(3)},${y.toFixed(3)},${zoom.toFixed(2)},${tall}` };
+}
+
+/** The frame a visitor is sent: tall is Plus, so it is dropped once Plus lapses. */
+export function publicCoverFrame(frame: string | null, plus: boolean): string | null {
+  if (!frame || plus) return frame;
+  return frame.replace(/,1$/, ',0');
 }

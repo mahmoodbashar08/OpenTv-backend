@@ -15,6 +15,7 @@ import {
   validateHiddenSections,
   validCoverUrl,
   type Provider,
+  validateCoverFrame,
 } from '@/pure';
 import { overBudget, SESSION_BUDGET } from '@/rate-limit';
 import { RENEW_AFTER_SECONDS, sign } from '@/session';
@@ -37,6 +38,7 @@ type ProfileRow = {
   cover_url: string | null;
   theme_color: string | null;
   theme_layout: string | null;
+  cover_frame: string | null;
   widgets: string | null;
   bio: string | null;
   is_private: number;
@@ -69,6 +71,7 @@ function ownProfile(row: ProfileRow) {
     cover_url: row.cover_url,
     theme_color: row.theme_color,
     theme_layout: row.theme_layout,
+    cover_frame: row.cover_frame ?? null,
     widgets: row.widgets,
     bio: row.bio,
     is_private: row.is_private,
@@ -384,6 +387,7 @@ const PATCHABLE = [
   'is_private',
   'links',
   'cover_url',
+  'cover_frame',
   'theme_color',
   'theme_layout',
   'widgets',
@@ -490,6 +494,15 @@ auth.patch('/me', async (c) => {
     }
     sets.push('theme_color = ?');
     binds.push(v === null ? null : (v as string).toUpperCase());
+  }
+
+  if ('cover_frame' in b) {
+    // Moving and zooming the banner is everyone's; `tall` is Plus, and is
+    // simply not sent to visitors once Plus lapses (`publicCoverFrame`).
+    const v = validateCoverFrame(b.cover_frame);
+    if (!v.ok) return fail(c, 400, 'invalid_body', 'cover_frame must be "x,y,zoom,tall" or null.');
+    sets.push('cover_frame = ?');
+    binds.push(v.value);
   }
 
   if ('theme_layout' in b) {

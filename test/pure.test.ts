@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isHandleValid, slug, sourceLangOf, targetKey, validCoverUrl } from '@/pure';
+import { isHandleValid, publicCoverFrame, slug, sourceLangOf, targetKey, validateCoverFrame, validCoverUrl } from '@/pure';
 
 /**
  * The allow-list IS the moderation story for covers — it is the only thing
@@ -135,5 +135,17 @@ describe('handles with dots', () => {
     for (const bad of ['.noddy', 'noddy.', 'its..noddy']) {
       expect(isHandleValid(bad)).toEqual({ ok: false, reason: 'bad_characters' });
     }
+  });
+});
+
+describe('banner frame', () => {
+  it('normalises a valid frame and refuses anything else', () => {
+    expect(validateCoverFrame('0.5,0.25,1.5,1')).toEqual({ ok: true, value: '0.500,0.250,1.50,1' });
+    expect(validateCoverFrame(null)).toEqual({ ok: true, value: null });
+    for (const bad of ['1.2,0,1,0', '0,0,0.5,0', '0,0,1,2', '0,0,1', 'a,b,c,d', 7]) expect(validateCoverFrame(bad).ok).toBe(false);
+  });
+  it('drops tall for visitors once Plus has lapsed', () => {
+    expect(publicCoverFrame('0.500,0.250,1.50,1', false)).toBe('0.500,0.250,1.50,0');
+    expect(publicCoverFrame('0.500,0.250,1.50,1', true)).toBe('0.500,0.250,1.50,1');
   });
 });
