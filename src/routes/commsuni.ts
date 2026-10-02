@@ -473,6 +473,10 @@ async function sendOverlay(
   if (done.status < 300) await env.CACHE.put(profileKey, '1', { expirationTtl: 7 * 24 * 60 * 60 });
 }
 
+/** The cached first page of a comment's replies (GET /commsuni/replies), so the writer sees their own at once. */
+const firstRepliesKey = (parent: string) =>
+  `commsuni:r:/comments/${parent}/replies?${new URLSearchParams({ limit: '50', sort: 'most_recent' }).toString()}`;
+
 /** Replies a person may send to CommsUni in an hour: the same cap as our own comments. */
 const REPLIES_PER_HOUR = 30;
 
@@ -536,6 +540,7 @@ commsuni.post('/commsuni/reply', requireAuth, async (c) => {
       return fail(c, 503, 'unavailable', 'Try again later.');
     }
     await c.env.CACHE.put(capKey, String(sent + 1), { expirationTtl: 3600 });
+    await c.env.CACHE.delete(firstRepliesKey(parent));
     const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
     return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
   } catch {
@@ -550,7 +555,11 @@ commsuni.delete('/commsuni/reply/:id', requireAuth, async (c) => {
   if (!UUID_RE.test(id)) return fail(c, 400, 'invalid_body', 'Unknown comment.');
   try {
     const up = await upstream(c.env, `/comments/${id}`, await actorId(c.env.SESSION_SECRET, c.get('profileId')), { method: 'DELETE' });
-    if (up.status === 204 || up.status === 404) return c.json({ ok: true });
+    if (up.status === 204 || up.status === 404) {
+      const parent = c.req.query('parent') ?? '';
+      if (UUID_RE.test(parent)) await c.env.CACHE.delete(firstRepliesKey(parent));
+      return c.json({ ok: true });
+    }
     return fail(c, up.status === 403 ? 403 : 503, up.status === 403 ? 'forbidden' : 'unavailable', 'Could not delete.');
   } catch {
     return fail(c, 503, 'unavailable', 'Try again later.');
