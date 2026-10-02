@@ -42,6 +42,8 @@ export const comments = new Hono<App>();
 
 export type CommentRow = {
   id: string;
+  /** Set once the comment is shared to CommsUni. */
+  commsuni_id?: string | null;
   author_id: string;
   target_source: string;
   target_key: string;
@@ -133,13 +135,15 @@ export function shapeComment(row: CommentRow, viewerId = '') {
      * caller that forgets it reveals nothing rather than revealing everything.
      */
     image_pending: row.image_scan === 'pending' && !!viewerId && row.author_id === viewerId,
+    /** Also on CommsUni — so the thread can stop calling it "OpenTV only". */
+    shared: !!row.commsuni_id,
   };
 }
 
 /** The columns every read of a comment selects, so the shaper always has them. */
 export const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
        c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
-       c.created_at, c.edited_at,
+       c.created_at, c.edited_at, c.commsuni_id,
        p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
        ci.width AS image_w, ci.height AS image_h, ci.is_gif AS image_gif,
        (ci.scan_status = 'clean') AS image_ok,

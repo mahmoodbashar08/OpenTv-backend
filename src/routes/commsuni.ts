@@ -379,8 +379,6 @@ export function commsuniEntityRef(row: { target_source: string; target_key: stri
   return tvdbMovie != null && tvdbMovie > 0 ? `movie/tvdb-${tvdbMovie}` : null;
 }
 
-const sharedKey = (id: string) => `commsuni:shared:${id}`;
-
 /**
  * POST /v1/commsuni/share { comment_id, tvdb_movie? }
  *
@@ -422,7 +420,8 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
   if (!row.body.trim()) return fail(c, 400, 'invalid_body', 'Only comments with words are shared.');
   const ref = commsuniEntityRef(row, typeof b.tvdb_movie === 'number' ? b.tvdb_movie : null);
   if (!ref) return fail(c, 400, 'invalid_body', 'This title is not on CommsUni.');
-  if (await c.env.CACHE.get(sharedKey(id))) return c.json({ ok: true, already: true });
+  const prior = await c.env.DB.prepare('SELECT commsuni_id FROM comments WHERE id = ?').bind(id).first<{ commsuni_id: string | null }>();
+  if (prior?.commsuni_id) return c.json({ ok: true, already: true, commsuni_id: prior.commsuni_id });
   if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
 
   const actor = await actorId(c.env.SESSION_SECRET, me);
@@ -449,7 +448,7 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
       console.log(`[commsuni] share ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
       return fail(c, 503, 'unavailable', 'Try again later.');
     }
-    if (typeof theirs === 'string') await c.env.CACHE.put(sharedKey(id), theirs);
+    if (typeof theirs === 'string') await c.env.DB.prepare('UPDATE comments SET commsuni_id = ? WHERE id = ?').bind(theirs, id).run();
     return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
   } catch {
     return fail(c, 503, 'unavailable', 'Try again later.');
@@ -463,10 +462,10 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
  */
 export async function unshareComment(env: App['Bindings'], profileId: string, commentId: string): Promise<void> {
   try {
-    const theirs = await env.CACHE.get(sharedKey(commentId));
+    const theirs = (await env.DB.prepare('SELECT commsuni_id FROM comments WHERE id = ? AND author_id = ?').bind(commentId, profileId).first<{ commsuni_id: string | null }>())?.commsuni_id;
     if (!theirs || !env.COMMSUNI_API_KEY) return;
     const up = await upstream(env, `/comments/${encodeURIComponent(theirs)}`, await actorId(env.SESSION_SECRET, profileId), { method: 'DELETE' });
-    if (up.status === 204 || up.status === 404) await env.CACHE.delete(sharedKey(commentId));
+    if (up.status === 204 || up.status === 404) await env.DB.prepare('UPDATE comments SET commsuni_id = NULL WHERE id = ?').bind(commentId).run();
   } catch {
     // Left for a later cleanup pass; the comment is already gone here.
   }
