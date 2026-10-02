@@ -59,6 +59,7 @@ const MIGRATION_FILES = [
   '../migrations/0040_emotion_votes_activity.sql',
   '../migrations/0041_comment_commsuni_id.sql',
   '../migrations/0042_profile_cover_frame.sql',
+  '../migrations/0043_title_key_indexes.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
