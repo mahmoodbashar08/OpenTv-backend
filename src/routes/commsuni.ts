@@ -431,7 +431,10 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
   try {
     // The profile overlay before the first write, once (§11): their OpenTV name
     // and picture, or nothing at all and CommsUni's generated persona.
-    const profileKey = `commsuni:profile:${me}:${consent.identity}`;
+    // The name and picture are IN the key: a renamed handle, a new display
+    // name or a new photo is a new overlay, sent on the next share rather than
+    // after the week-long stamp runs out.
+    const profileKey = `commsuni:profile:${me}:${consent.identity}:${row.display_name || row.handle}:${row.avatar_key ?? ''}`;
     if (!(await c.env.CACHE.get(profileKey))) {
       const avatarUrl = row.avatar_key ? `${new URL(c.req.url).origin}/v1/${row.avatar_key}` : null;
       const done =
