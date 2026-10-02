@@ -155,7 +155,7 @@ describe('POST /v1/commsuni/share', () => {
     sent = [];
     vi.stubGlobal('fetch', async (url: string, init: { method?: string; headers: Record<string, string>; body?: string }) => {
       sent.push({ url, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body ? JSON.parse(init.body) : null });
-      if (url.endsWith('/comments')) return new Response(JSON.stringify({ data: { comment: { id: 'cu1' } } }), { status: 201 });
+      if (url.endsWith('/comments') || url.endsWith('/replies')) return new Response(JSON.stringify({ data: { comment: { id: 'cu1' } } }), { status: 201 });
       return new Response(null, { status: 204 });
     });
   });
@@ -190,6 +190,29 @@ describe('POST /v1/commsuni/share', () => {
     expect((await share('theirs')).status).toBe(404);
     expect((await share('reply')).status).toBe(404);
     expect(sent.filter((s) => s.method === 'POST')).toHaveLength(0);
+  });
+
+  const PARENT = '4f1c2a9e-1111-2222-3333-444455556666';
+  const reply = async (body: Record<string, unknown>) => call(env, 'POST', '/v1/commsuni/reply', { token: await tokenFor(env, 'p1'), body });
+
+  it('replies only with consent, and only with words', async () => {
+    expect((await reply({ parent: PARENT, text: 'agreed', client_id: 'client-1234' })).status).toBe(403);
+    consent('share', 'profile');
+    expect((await reply({ parent: PARENT, text: '   ', client_id: 'client-1234' })).status).toBe(400);
+    expect((await reply({ parent: 'not-a-uuid', text: 'agreed', client_id: 'client-1234' })).status).toBe(400);
+    expect(sent.filter((s) => s.method === 'POST')).toHaveLength(0);
+  });
+
+  it('posts a reply under the parent, keyed by the client id', async () => {
+    consent('share', 'profile');
+    const res = await reply({ parent: PARENT, text: ' agreed ', client_id: 'client-1234' });
+    expect(res.status).toBe(200);
+    const post = sent.find((s) => s.method === 'POST')!;
+    expect(post.url).toBe(`https://api.commsuni.tv/v1/comments/${PARENT}/replies`);
+    expect(post.headers.get('idempotency-key')).toBe('client-1234');
+    expect(post.body).toEqual({ text: 'agreed' });
+    // profile identity: their name goes first
+    expect(sent.find((s) => s.url.endsWith('/authors/me/profile'))!.method).toBe('PUT');
   });
 });
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { validateCommentBody } from '@/pure';
 
 /**
  * The CommsUni consent record.
@@ -429,20 +430,7 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
 
   const actor = await actorId(c.env.SESSION_SECRET, me);
   try {
-    // The profile overlay before the first write, once (§11): their OpenTV name
-    // and picture, or nothing at all and CommsUni's generated persona.
-    // The name and picture are IN the key: a renamed handle, a new display
-    // name or a new photo is a new overlay, sent on the next share rather than
-    // after the week-long stamp runs out.
-    const profileKey = `commsuni:profile:${me}:${consent.identity}:${row.display_name || row.handle}:${row.avatar_key ?? ''}`;
-    if (!(await c.env.CACHE.get(profileKey))) {
-      const avatarUrl = row.avatar_key ? `${new URL(c.req.url).origin}/v1/${row.avatar_key}` : null;
-      const done =
-        consent.identity === 'profile'
-          ? await upstream(c.env, '/authors/me/profile', actor, { method: 'PUT', body: { displayName: (row.display_name || row.handle).slice(0, 64), avatarUrl } })
-          : await upstream(c.env, '/authors/me/profile', actor, { method: 'DELETE' });
-      if (done.status < 300) await c.env.CACHE.put(profileKey, '1', { expirationTtl: 7 * 24 * 60 * 60 });
-    }
+    await sendOverlay(c.env, me, actor, consent.identity, row, new URL(c.req.url).origin);
     const up = await upstream(c.env, `/entities/${ref}/comments`, actor, {
       method: 'POST',
       idempotencyKey: id,
@@ -456,6 +444,114 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
     }
     if (typeof theirs === 'string') await c.env.DB.prepare('UPDATE comments SET commsuni_id = ? WHERE id = ?').bind(theirs, id).run();
     return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+});
+
+/**
+ * The profile overlay before a write (§11): their OpenTV name and picture, or
+ * nothing at all and CommsUni's generated persona. The name and picture are IN
+ * the key: a renamed handle, a new display name or a new photo is a new
+ * overlay, sent on the next write rather than after the week-long stamp.
+ */
+async function sendOverlay(
+  env: App['Bindings'],
+  me: string,
+  actor: string,
+  identity: string | null,
+  who: { handle: string; display_name: string | null; avatar_key: string | null },
+  origin: string,
+): Promise<void> {
+  const profileKey = `commsuni:profile:${me}:${identity}:${who.display_name || who.handle}:${who.avatar_key ?? ''}`;
+  if (await env.CACHE.get(profileKey)) return;
+  const avatarUrl = who.avatar_key ? `${origin}/v1/${who.avatar_key}` : null;
+  const done =
+    identity === 'profile'
+      ? await upstream(env, '/authors/me/profile', actor, { method: 'PUT', body: { displayName: (who.display_name || who.handle).slice(0, 64), avatarUrl } })
+      : await upstream(env, '/authors/me/profile', actor, { method: 'DELETE' });
+  if (done.status < 300) await env.CACHE.put(profileKey, '1', { expirationTtl: 7 * 24 * 60 * 60 });
+}
+
+/** Replies a person may send to CommsUni in an hour: the same cap as our own comments. */
+const REPLIES_PER_HOUR = 30;
+
+/**
+ * POST /v1/commsuni/reply { parent, text, client_id }
+ *
+ * A reply to a comment on the shared board. Unlike a top-level share there is
+ * no OpenTV comment to send by id — the parent lives on CommsUni — so this is
+ * where our pre-send rules (§10) run instead: the same body rules as a comment
+ * here (words, 2,000 characters), an hourly cap per person, and the latest
+ * consent must be `share`. `client_id` is the idempotency key, so a retried
+ * tap cannot post twice. Nothing is stored here: the reply is CommsUni's, and
+ * its id goes back to the phone, which is what deletes it again.
+ */
+commsuni.post('/commsuni/reply', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  let b: { parent?: unknown; text?: unknown; client_id?: unknown };
+  try {
+    b = (await c.req.json()) as typeof b;
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const parent = typeof b.parent === 'string' ? b.parent : '';
+  const clientId = typeof b.client_id === 'string' ? b.client_id : '';
+  if (!UUID_RE.test(parent) || !/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) return fail(c, 400, 'invalid_body', 'parent and client_id are required.');
+  const text = validateCommentBody(b.text);
+  if (!text.ok) {
+    return text.reason === 'too_long'
+      ? fail(c, 400, 'too_large', 'A comment is at most 2,000 characters.')
+      : fail(c, 400, 'invalid_body', 'text is required.');
+  }
+  const me = c.get('profileId');
+  const consent = await c.env.DB.prepare(
+    'SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1',
+  )
+    .bind(me)
+    .first<{ decision: string; identity: string | null }>();
+  if (consent?.decision !== 'share') return fail(c, 403, 'forbidden', 'Sharing is not on.');
+  const who = await c.env.DB.prepare('SELECT handle, display_name, avatar_key FROM profiles WHERE id = ? AND deleted_at IS NULL')
+    .bind(me)
+    .first<{ handle: string; display_name: string | null; avatar_key: string | null }>();
+  if (!who) return fail(c, 401, 'unauthenticated', 'No such profile.');
+
+  const capKey = `commsuni:replies:${me}:${new Date().toISOString().slice(0, 13)}`;
+  const sent = Number((await c.env.CACHE.get(capKey)) ?? 0);
+  if (sent >= REPLIES_PER_HOUR) return fail(c, 429, 'rate_limited', 'Too many comments in the last hour.');
+  if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
+
+  const actor = await actorId(c.env.SESSION_SECRET, me);
+  try {
+    await sendOverlay(c.env, me, actor, consent.identity, who, new URL(c.req.url).origin);
+    const up = await upstream(c.env, `/comments/${parent}/replies`, actor, {
+      method: 'POST',
+      idempotencyKey: clientId,
+      body: { text: text.body },
+    });
+    if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
+    if (up.status === 404) return fail(c, 404, 'not_found', 'No such comment.');
+    if (up.status !== 201 && up.status !== 200) {
+      console.log(`[commsuni] reply ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
+      return fail(c, 503, 'unavailable', 'Try again later.');
+    }
+    await c.env.CACHE.put(capKey, String(sent + 1), { expirationTtl: 3600 });
+    const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
+    return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+});
+
+/** DELETE /v1/commsuni/reply/:id — take one's own reply back. CommsUni checks it is theirs. */
+commsuni.delete('/commsuni/reply/:id', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  const id = c.req.param('id');
+  if (!UUID_RE.test(id)) return fail(c, 400, 'invalid_body', 'Unknown comment.');
+  try {
+    const up = await upstream(c.env, `/comments/${id}`, await actorId(c.env.SESSION_SECRET, c.get('profileId')), { method: 'DELETE' });
+    if (up.status === 204 || up.status === 404) return c.json({ ok: true });
+    return fail(c, up.status === 403 ? 403 : 503, up.status === 403 ? 'forbidden' : 'unavailable', 'Could not delete.');
   } catch {
     return fail(c, 503, 'unavailable', 'Try again later.');
   }
