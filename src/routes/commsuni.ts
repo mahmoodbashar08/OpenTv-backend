@@ -224,6 +224,7 @@ type RawComment = {
   deleted?: unknown;
   imageUrl?: unknown;
   attachments?: unknown;
+  media?: { kind?: unknown } | null;
 };
 
 /** The comment's picture, when it has one: https only, as other apps host it. */
@@ -257,6 +258,8 @@ export function trimComment(r: RawComment) {
     replyCount: typeof r.replyCount === 'number' ? r.replyCount : 0,
     isSpoiler: r.isSpoiler === true,
     image: imageOf(r),
+    /** A private archive picture: fetched through GET /v1/commsuni/media/:id. */
+    archiveImage: r.media?.kind === 'archive',
   };
 }
 
@@ -470,4 +473,60 @@ export async function unshareComment(env: App['Bindings'], profileId: string, co
     // Left for a later cleanup pass; the comment is already gone here.
   }
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * GET /v1/commsuni/media/:id — the archive picture of one CommsUni comment,
+ * by its id. That is a board comment's id, or the ORIGINAL TV Time comment id
+ * an import kept (§4: "you do not need to read comments to read media").
+ *
+ * THE BYTES ARE CACHED, NEVER THE URL. CommsUni signs a five-minute URL per
+ * image and charges for each; the guide forbids storing one. So the first
+ * reader's request asks for a grant, downloads the picture, and puts the
+ * picture itself in this Worker's edge cache under our own URL for a month —
+ * every later reader costs CommsUni nothing. "No picture" is remembered for
+ * six hours, so a missing one is not asked for again on every scroll.
+ */
+commsuni.get('/commsuni/media/:id', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  const id = c.req.param('id');
+  if (!UUID_RE.test(id)) return fail(c, 400, 'invalid_body', 'Unknown comment.');
+
+  const cache = (caches as unknown as { default: Cache }).default;
+  const cacheKey = new Request(`https://media-cache.opentv.internal/commsuni/${id}`);
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+  const missingKey = `commsuni:media-missing:${id}`;
+  if (await c.env.CACHE.get(missingKey)) return fail(c, 404, 'not_found', 'No picture.');
+  if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
+
+  try {
+    const up = await upstream(c.env, '/media-grants', await actorId(c.env.SESSION_SECRET, c.get('profileId')), {
+      method: 'POST',
+      body: { commentIds: [id] },
+    });
+    if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
+    const grant = (up.body as { data?: { grants?: { status?: string; url?: unknown; contentType?: unknown }[] } } | null)?.data?.grants?.[0];
+    if (up.status !== 200 || grant?.status !== 'granted' || typeof grant.url !== 'string' || !grant.url.startsWith('https://')) {
+      if (up.status === 200) await c.env.CACHE.put(missingKey, '1', { expirationTtl: 6 * 60 * 60 });
+      return fail(c, 404, 'not_found', 'No picture.');
+    }
+    // No Authorization on the delivery host (§4b): it is a different host and
+    // the signed URL is the only credential it needs.
+    const img = await fetch(grant.url);
+    if (!img.ok || !img.body) return fail(c, 503, 'unavailable', 'Try again later.');
+    const res = new Response(img.body, {
+      headers: {
+        'Content-Type': typeof grant.contentType === 'string' ? grant.contentType : (img.headers.get('Content-Type') ?? 'image/jpeg'),
+        'Cache-Control': 'public, max-age=2592000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+    c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
+    return res;
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+});
 

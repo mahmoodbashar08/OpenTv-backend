@@ -192,3 +192,50 @@ describe('POST /v1/commsuni/share', () => {
     expect(sent.filter((s) => s.method === 'POST')).toHaveLength(0);
   });
 });
+
+describe('GET /v1/commsuni/media/:id', () => {
+  let env: Env;
+  let calls: { url: string; auth: string | null }[];
+  let grant: { status: string; url?: string };
+  const store = new Map<string, Response>();
+  const ID = '4f1c2a9e-1111-2222-3333-444455556666';
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    calls = [];
+    store.clear();
+    grant = { status: 'granted', url: 'https://media.commsuni.tv/signed/abc' };
+    vi.stubGlobal('caches', {
+      default: {
+        match: async (r: Request) => store.get(r.url)?.clone(),
+        put: async (r: Request, res: Response) => void store.set(r.url, res),
+      },
+    });
+    vi.stubGlobal('fetch', async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push({ url, auth: init?.headers?.Authorization ?? null });
+      if (url.endsWith('/media-grants')) return new Response(JSON.stringify({ data: { grants: [{ commentId: ID, ...grant, contentType: 'image/jpeg' }] } }), { status: 200 });
+      return new Response('JPEGBYTES', { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const get = async () => call(env, 'GET', `/v1/commsuni/media/${ID}`, { token: await tokenFor(env, 'p1') });
+
+  it('fetches the signed picture without our key, and serves the bytes', async () => {
+    const res = await get();
+    expect(res.status).toBe(200);
+    const delivery = calls.find((c) => c.url.startsWith('https://media.commsuni.tv'))!;
+    expect(delivery.auth).toBeNull();
+  });
+
+  it('remembers a missing picture instead of asking again', async () => {
+    grant = { status: 'missing' };
+    expect((await get()).status).toBe(404);
+    expect((await get()).status).toBe(404);
+    expect(calls.filter((c) => c.url.endsWith('/media-grants'))).toHaveLength(1);
+  });
+
+  it('refuses an id that is not a comment id', async () => {
+    expect((await call(env, 'GET', '/v1/commsuni/media/abc', { token: await tokenFor(env, 'p1') })).status).toBe(400);
+  });
+});
