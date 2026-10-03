@@ -673,8 +673,12 @@ admin.get('/admin/users', async (c) => {
    */
   const keys = [...new Set((acted.results ?? []).map((r) => r.target_key))];
   const names = new Map<string, string>();
-  if (keys.length) {
-    const slots = keys.map(() => '?').join(',');
+  // IN BATCHES OF 24: each key is bound four times (one per table), and D1
+  // refuses more than 100 parameters a statement. A day with a shelf of new
+  // titles (27 on 3 Oct) made one query of 108 and emptied the people list.
+  for (let i = 0; i < keys.length; i += 24) {
+    const part = keys.slice(i, i + 24);
+    const slots = part.map(() => '?').join(',');
     const found = await c.env.DB.prepare(
       `SELECT target_key, MIN(name) AS name FROM (
          SELECT target_key, name  FROM profile_titles    WHERE name  IS NOT NULL AND target_key IN (${slots})
@@ -687,7 +691,7 @@ admin.get('/admin/users', async (c) => {
        )
        GROUP BY target_key`,
     )
-      .bind(...keys, ...keys, ...keys, ...keys)
+      .bind(...part, ...part, ...part, ...part)
       .all<{ target_key: string; name: string }>();
     for (const row of found.results ?? []) names.set(row.target_key, row.name);
   }

@@ -394,4 +394,21 @@ describe('POST /v1/admin/users/:handle/message', () => {
     const bell = await call(env, 'GET', '/v1/notifications', { token: await tokenFor(env, 'p1') });
     expect(bell.json.items[0]).toMatchObject({ kind: 'message', actor: null, body: 'Thanks for the review — the import is fixed in 1.6.4. — Noddy' });
   });
+
+});
+
+describe('the people list on a busy day', () => {
+  it('still lists people with many new shelf titles (D1 caps a statement at 100 parameters)', async () => {
+    const fresh = freshDatabase();
+    const env = { ...makeEnv(fresh.db), ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+    insertProfile(fresh.raw, 'p1', 'mahmood');
+    const now = new Date().toISOString();
+    const add = fresh.raw.prepare("INSERT INTO shelf_seen (profile_id, kind, target_key, first_seen_at) VALUES ('p1', 'show', ?, ?)");
+    for (let i = 0; i < 40; i++) add.run(`key-${i}`, now);
+    const login = await call(env, 'POST', '/v1/admin/login', { body: { email: 'me@example.com', password: 'a-long-one' } });
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]!;
+    const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    expect(res.status).toBe(200);
+    expect(res.json.items.length).toBe(1);
+  });
 });
