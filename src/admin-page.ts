@@ -616,7 +616,10 @@ function drawPeople() {
    * fault twice -- so it says what it means instead. Zero would be the one
    * genuinely wrong answer of the three.
    */
-  const num = (v) => (v == null ? '<span class="name">not published</span>' : String(v));
+  // Null means their phone has never sent totals: no library of their own yet
+  // (a new install shows a demo library, which is never sent) or not opened
+  // since signing in. Nothing failed, so it should not read like a fault.
+  const num = (v) => (v == null ? '<span class="name">no library yet</span>' : String(v));
   const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
