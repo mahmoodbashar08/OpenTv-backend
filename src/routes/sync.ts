@@ -114,6 +114,8 @@ sync.post('/sync', requireAuth, async (c) => {
       'INSERT OR IGNORE INTO sync_ops (profile_id, op_id, device_id, ts, kind, payload) VALUES (?, ?, ?, ?, ?, ?)',
     );
     await c.env.DB.batch(ops.map((o) => stmt.bind(profileId, o.id, device, o.ts, o.kind, o.payload)));
+    // For the dashboard's Sync column: when this account last pushed a change.
+    await c.env.DB.prepare('UPDATE profiles SET sync_at = ? WHERE id = ?').bind(new Date().toISOString(), profileId).run();
   }
 
   const top = await c.env.DB.prepare('SELECT MAX(seq) AS m FROM sync_ops WHERE profile_id = ?')

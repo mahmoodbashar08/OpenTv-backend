@@ -379,6 +379,28 @@ function didToday(u) {
   return !!(u.today && u.today.length);
 }
 
+/**
+ * Cloud backup to OpenTV and sync between devices: when each last happened.
+ * "on" is a sync within 30 days — a phone with sync on pushes whenever
+ * something changes. Backups also show their size, which says a real library
+ * went up rather than an empty one.
+ */
+function backupSyncCell(u) {
+  const short = (iso) => {
+    const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    return mins < 60 ? mins + 'm ago' : mins < 1440 ? Math.round(mins / 60) + 'h ago' : Math.round(mins / 1440) + 'd ago';
+  };
+  const mb = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+  const backup = u.backup_at
+    ? '<div><span class="tag paid">backup</span> ' + short(u.backup_at) + (u.backup_bytes ? ' &middot; ' + mb(u.backup_bytes) : '') + '</div>'
+    : '<div><span class="tag">backup</span> <span class="name">never</span></div>';
+  const syncOn = u.sync_at && Date.now() - Date.parse(u.sync_at) < 30 * 86400000;
+  const sync = u.sync_at
+    ? '<div><span class="tag ' + (syncOn ? 'paid' : 'gone') + '">sync ' + (syncOn ? 'on' : 'idle') + '</span> ' + short(u.sync_at) + '</div>'
+    : '<div><span class="tag">sync</span> <span class="name">never</span></div>';
+  return backup + sync;
+}
+
 function seenCell(iso) {
   if (!iso) return '<span class="name">never</span>';
   const t = Date.parse(iso);
@@ -639,7 +661,7 @@ function drawPeople() {
   const num = (v) => (v == null ? '<span class="name">no library yet</span>' : String(v));
   const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
   $('users').innerHTML =
-    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
+    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Backup / Sync</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
     '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
     '<th class="num">Ratings</th><th class="num">Feelings</th><th class="num">Characters</th>' +
     '<th class="num">Photos</th><th class="num">Lists</th>' +
@@ -666,7 +688,7 @@ function drawPeople() {
       return '<tr><td>' + who + '</td><td>' + plusCell(u) + '</td><td>' + grantCell(u.handle) +
         '</td><td>' + seenCell(u.last_seen_at) +
           (u.app_version ? '<div class="name">v' + esc(u.app_version) + '</div>' : '') +
-        '</td><td>' + todayCell(u) + '</td><td>' + how +
+        '</td><td>' + backupSyncCell(u) + '</td><td>' + todayCell(u) + '</td><td>' + how +
         '</td><td>' + esc(baghdad(u.created_at)) +
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
         '</td><td class="num">' + u.feelings + '</td><td class="num">' + u.characters +
@@ -675,7 +697,7 @@ function drawPeople() {
         '</td><td class="num">' + num(u.movies_watched) +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('') ||
-    '<tr><td colspan="16" class="name">Nobody yet today.</td></tr>';
+    '<tr><td colspan="17" class="name">Nobody yet today.</td></tr>';
 }
 
 /**

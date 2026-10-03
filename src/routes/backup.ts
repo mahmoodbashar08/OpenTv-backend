@@ -234,7 +234,12 @@ backup.post('/backup', requireAuth, async (c) => {
     customMetadata: toMetadata(info),
   });
 
-  return c.json({ ok: true, size: body.byteLength, updatedAt: new Date().toISOString(), device });
+  const updatedAt = new Date().toISOString();
+  // For the dashboard's Backup column: when, and how big. Never what.
+  await c.env.DB.prepare('UPDATE profiles SET backup_at = ?, backup_bytes = ? WHERE id = ?')
+    .bind(updatedAt, body.byteLength, profileId)
+    .run();
+  return c.json({ ok: true, size: body.byteLength, updatedAt, device });
 });
 
 // ── read ─────────────────────────────────────────────────────────────────────

@@ -64,6 +64,7 @@ const MIGRATION_FILES = [
   '../migrations/0045_rc_anonymous_purchases.sql',
   '../migrations/0046_plus_thanked.sql',
   '../migrations/0047_shelf_seen.sql',
+  '../migrations/0048_backup_sync_seen.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

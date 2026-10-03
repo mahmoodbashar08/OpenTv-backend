@@ -525,6 +525,9 @@ admin.get('/admin/users', async (c) => {
             p.plus_until,
             p.plus_since,
             p.device_plus,
+            p.backup_at,
+            p.backup_bytes,
+            p.sync_at,
             -- Stamped by GET /v1/me, which the app calls on every launch. It
             -- is the closest thing this server has to "still using it", and
             -- it is a DATE, not a history: nothing records the launch before
