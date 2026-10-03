@@ -563,3 +563,34 @@ describe('a purchase made anonymously', () => {
     expect(isPlusRow('p1').is_plus).toBe(0);
   });
 });
+
+describe('thanking a new subscriber', () => {
+  let mails: { to: string; subject: string; text: string; from: { email: string } }[];
+  beforeEach(() => {
+    mails = [];
+    env = { ...env, EMAIL: { send: async (m: { to: string; subject: string; text: string; from: { email: string } }) => void mails.push(m) } } as Env;
+    raw.prepare("INSERT INTO identities (provider, external_id, profile_id, email, created_at) VALUES ('apple', 'a1', 'p1', 'p1@privaterelay.appleid.com', '2026-10-01')").run();
+  });
+  const purchase = (type = 'INITIAL_PURCHASE') => rcEvent({ type, app_user_id: 'p1', entitlement_ids: ['plus'] });
+
+  it('emails once, from info@, asking what made them get Plus', async () => {
+    await purchase();
+    expect(mails).toHaveLength(1);
+    expect(mails[0]!.to).toBe('p1@privaterelay.appleid.com');
+    expect(mails[0]!.from.email).toBe('info@theopentv.com');
+    expect(mails[0]!.text).toContain('what made you get Plus');
+    await purchase('RENEWAL');
+    expect(mails).toHaveLength(1);
+  });
+
+  it('tells an account-only user the community is there, and a member nothing extra', async () => {
+    raw.prepare("UPDATE profiles SET handle = 'user_p_abc', handle_lower = 'user_p_abc' WHERE id = 'p1'").run();
+    await purchase();
+    expect(mails[0]!.text).toContain('join the OpenTV community');
+  });
+
+  it('sends nothing for a given month', async () => {
+    raw.prepare("UPDATE profiles SET plus_until = '2099-01-01T00:00:00Z' WHERE id = 'p1'").run();
+    expect(mails).toHaveLength(0);
+  });
+});

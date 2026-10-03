@@ -99,6 +99,62 @@ function profileIds(value: unknown): string[] {
  * must not move it, or "member since" would read as today, every month.
  * Idempotent by construction: running the same event twice writes the same row.
  */
+/** The thank-you's two versions; the community one names what they can now share. */
+export function plusThanks(name: string | null, community: boolean): { subject: string; text: string } {
+  const hi = name ? `Hi ${name},` : 'Hi there,';
+  const joinLine = community
+    ? ''
+    : '\n\nIf you ever want to, you can also join the OpenTV community from Settings — rate episodes, comment and find the friends you had on TV Time. It is entirely optional.';
+  return {
+    subject: 'Thank you for getting OpenTV Plus',
+    text:
+      `${hi}\n\n` +
+      'Thank you for getting OpenTV Plus. It means a lot for an app one person builds, and it is what keeps OpenTV free of ads and private for everyone.\n\n' +
+      "Your Plus is on: Cloud Backup, Sync between your devices, themes, GIF banners and the rest. If anything ever says you need Plus, just reply to this email and I'll sort it out straight away." +
+      joinLine +
+      "\n\nI'd also love to know what made you get Plus. Was it Backup and Sync, the themes, or something else? It helps me decide what to build next.\n\n— Noddy",
+  };
+}
+
+/**
+ * THANK A NEW SUBSCRIBER, ONCE. Sent the first time a profile becomes a paying
+ * one by any route (webhook, a claimed anonymous purchase, the daily check) —
+ * never for a hand-given month, which is `plus_until`, not `is_plus`.
+ * `plus_thanked_at` is stamped BEFORE sending, so a retry can never send twice;
+ * a send that fails is simply not retried. From info@ so a reply reaches a
+ * person. The address is the one they signed up with, or the one Apple or
+ * Google shared (Apple's private relay forwards).
+ */
+async function thankNewSubscriber(env: Env, profileId: string): Promise<void> {
+  if (!env.EMAIL) return;
+  const nowIso = new Date().toISOString();
+  const claim = await env.DB.prepare(
+    'UPDATE profiles SET plus_thanked_at = ? WHERE id = ? AND is_plus = 1 AND plus_thanked_at IS NULL AND deleted_at IS NULL',
+  )
+    .bind(nowIso, profileId)
+    .run();
+  if (claim.meta.changes === 0) return;
+  const who = await env.DB.prepare(
+    `SELECT p.handle, p.display_name,
+            COALESCE((SELECT c.email FROM email_credentials c WHERE c.profile_id = p.id AND c.verified_at IS NOT NULL),
+                     (SELECT i.email FROM identities i WHERE i.profile_id = p.id AND i.email IS NOT NULL LIMIT 1)) AS email
+       FROM profiles p WHERE p.id = ?`,
+  )
+    .bind(profileId)
+    .first<{ handle: string; display_name: string | null; email: string | null }>();
+  if (!who?.email) return;
+  const community = !who.handle.startsWith('user_p_');
+  const name = who.display_name && !who.display_name.startsWith('user_p_') ? who.display_name : null;
+  const { subject, text } = plusThanks(name, community);
+  const html = '<div>' + text.split('\n\n').map((p) => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`).join('') + '</div>';
+  try {
+    await env.EMAIL.send({ to: who.email, from: { email: 'info@theopentv.com', name: 'Noddy — OpenTV' }, subject, text, html });
+    console.log('[rc] thanked a new subscriber');
+  } catch {
+    console.log('[rc] thank-you failed');
+  }
+}
+
 export async function setPlus(env: Env, profileId: string, on: boolean, nowIso: string): Promise<boolean> {
   const res = on
     ? await env.DB.prepare(
@@ -110,6 +166,7 @@ export async function setPlus(env: Env, profileId: string, on: boolean, nowIso: 
     : await env.DB.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ? AND deleted_at IS NULL')
         .bind(profileId)
         .run();
+  if (on && res.meta.changes > 0) await thankNewSubscriber(env, profileId);
   return res.meta.changes > 0;
 }
 
