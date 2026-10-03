@@ -121,6 +121,15 @@ export const ADMIN_PAGE = `<!doctype html>
   .daynav { margin-left:auto; display:flex; align-items:center; gap:6px; }
   .daynav #dlabel { color:#e9e9ee; font-weight:600; font-size:13px; min-width:92px; text-align:center; }
   .daynav .tab:disabled { opacity:.35; cursor:default; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 12px; }
+  .chip { font:inherit; font-size:12.5px; font-weight:600; color:#a7a7ae; background:#16161a;
+    border:1px solid #2a2a30; border-radius:999px; padding:6px 12px; cursor:pointer; }
+  .chip .n { color:#6b6b72; margin-left:6px; font-weight:500; }
+  .chip.on { color:#111; background:#ffd400; border-color:#ffd400; }
+  .chip.on .n { color:#4a3f00; }
+  .chip.clear { background:transparent; border-style:dashed; }
+  .chip:focus-visible { outline:2px solid #ffd400; outline-offset:2px; }
+  .shown { color:#8a8a92; font-size:12.5px; margin:-4px 0 10px; }
   /* Doing is the accent; opening is not. */
   .did { color:#FFD400; font-weight:600; }
   /* The linked variant, where nobody has sent a name — underlined so it is
@@ -172,9 +181,12 @@ export const ADMIN_PAGE = `<!doctype html>
          still here". Two buttons, not three: whether somebody DID anything is a
          tag on their name, so it reads down the column without hiding the rest
          of the list behind a filter. -->
+    <!-- FILTERS, NOT TABS: each button is on or off, several at once, and a
+         person must match every one that is on. Drawn in the browser from the
+         list already loaded — never another request. -->
+    <div class="chips" id="chips"></div>
+    <div class="shown" id="shown"></div>
     <div class="tabs" id="whotabs">
-      <button class="tab on" data-who="all">Everyone</button>
-      <button class="tab" data-who="opened" id="openedtab">Opened today</button>
       <!-- Steps the Opened filter and the day column back one day at a time. -->
       <span class="daynav">
         <button class="tab" id="dprev" title="Previous day">&lsaquo;</button>
@@ -624,7 +636,7 @@ async function loadPeople() {
   const shown = people.day || serverToday;
   const name = dayName(shown);
   $('dlabel').textContent = name;
-  $('openedtab').textContent = 'Opened ' + (name === 'Today' || name === 'Yesterday' ? name.toLowerCase() : 'on ' + name);
+  openedLabel = 'Opened ' + (name === 'Today' || name === 'Yesterday' ? name.toLowerCase() : 'on ' + name);
   $('dnext').disabled = shown >= serverToday;
   drawPeople();
 }
@@ -641,7 +653,37 @@ function stepDay(delta) {
  *  the server again: 200 rows is nothing, and a refetch per tap would make the
  *  three buttons feel like page loads. */
 let allPeople = [];
-let whoFilter = 'all';
+/**
+ * The people filters. Every one is a question about a person the list already
+ * answers; a person shows when they match ALL the filters that are on.
+ */
+let openedLabel = 'Opened today';
+const FILTERS = [
+  { id: 'opened', label: () => openedLabel, test: (u) => openedToday(u) },
+  { id: 'did', label: () => 'Did something', test: (u) => didToday(u) || !!u.library_on_day },
+  { id: 'paying', label: () => 'Paying', test: (u) => !!u.is_plus },
+  { id: 'given', label: () => 'Plus given', test: (u) => !u.is_plus && !!u.plus_until && Date.parse(u.plus_until) > Date.now() },
+  { id: 'expired', label: () => 'Plus expired', test: (u) => !u.is_plus && !!u.plus_until && Date.parse(u.plus_until) <= Date.now() },
+  { id: 'mismatch', label: () => '\u26A0 Paid on phone', test: (u) => u.device_plus === 1 && !u.is_plus },
+  { id: 'backup', label: () => 'Backs up', test: (u) => !!u.backup_at },
+  { id: 'sync', label: () => 'Sync on', test: (u) => !!u.sync_at && Date.now() - Date.parse(u.sync_at) < 30 * 86400000 },
+  { id: 'library', label: () => 'Has a library', test: (u) => u.episodes_watched != null },
+  { id: 'nolibrary', label: () => 'No library yet', test: (u) => u.episodes_watched == null },
+  { id: 'nousername', label: () => 'No username', test: (u) => String(u.handle || '').startsWith('user_p_') },
+  { id: 'week', label: () => 'Joined this week', test: (u) => Date.now() - Date.parse(u.created_at) < 7 * 86400000 },
+  { id: 'apple', label: () => 'Apple', test: (u) => String(u.providers || '').includes('apple') },
+  { id: 'google', label: () => 'Google', test: (u) => String(u.providers || '').includes('google') },
+  { id: 'email', label: () => 'Email', test: (u) => !!u.email },
+  { id: 'robot', label: () => 'Test robots', test: (u) => !!u.robot },
+];
+const activeFilters = new Set();
+
+function drawChips() {
+  $('chips').innerHTML = FILTERS.map((f) =>
+    '<button class="chip' + (activeFilters.has(f.id) ? ' on' : '') + '" data-f="' + f.id + '" aria-pressed="' + activeFilters.has(f.id) + '">' +
+    f.label() + '<span class="n">' + allPeople.filter(f.test).length + '</span></button>').join('') +
+    (activeFilters.size ? '<button class="chip clear" data-f="__clear">Clear</button>' : '');
+}
 
 function drawPeople() {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
@@ -659,7 +701,10 @@ function drawPeople() {
   // (a new install shows a demo library, which is never sent) or not opened
   // since signing in. Nothing failed, so it should not read like a fault.
   const num = (v) => (v == null ? '<span class="name">no library yet</span>' : String(v));
-  const rows = allPeople.filter((u) => (whoFilter === 'opened' ? openedToday(u) : true));
+  const on = FILTERS.filter((f) => activeFilters.has(f.id));
+  const rows = allPeople.filter((u) => on.every((f) => f.test(u)));
+  drawChips();
+  $('shown').textContent = on.length ? 'Showing ' + rows.length + ' of ' + allPeople.length : allPeople.length + ' people';
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Backup / Sync</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
     '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
@@ -697,7 +742,7 @@ function drawPeople() {
         '</td><td class="num">' + num(u.movies_watched) +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('') ||
-    '<tr><td colspan="17" class="name">Nobody yet today.</td></tr>';
+    '<tr><td colspan="17" class="name">' + (on.length ? 'Nobody matches these filters.' : 'Nobody yet.') + '</td></tr>';
 }
 
 /**
@@ -745,11 +790,13 @@ $('dprev').addEventListener('click', () => stepDay(-1));
 $('dnext').addEventListener('click', () => stepDay(1));
 
 /* The people filter. Redraws from what is already loaded — see drawPeople. */
-$('whotabs').addEventListener('click', (ev) => {
-  const tab = ev.target.closest('.tab[data-who]');
-  if (!tab) return;
-  whoFilter = tab.dataset.who;
-  [...$('whotabs').querySelectorAll('.tab[data-who]')].forEach((b) => b.classList.toggle('on', b === tab));
+$('chips').addEventListener('click', (ev) => {
+  const chip = ev.target.closest('.chip[data-f]');
+  if (!chip) return;
+  const id = chip.dataset.f;
+  if (id === '__clear') activeFilters.clear();
+  else if (activeFilters.has(id)) activeFilters.delete(id);
+  else activeFilters.add(id);
   drawPeople();
 });
 
