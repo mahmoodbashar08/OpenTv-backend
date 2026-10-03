@@ -1,5 +1,6 @@
 import type { Env } from '@/env';
 import { mergeEmotionCounts } from '@/pure';
+import { rcSaysPlus, setPlus } from '@/routes/rc';
 
 /**
  * The night shift. docs/IMPLEMENTATION.md Step 5 — maintenance.
@@ -503,6 +504,41 @@ export async function migrateTitleThreads(
  * reconciliation that runs after it, and a job that throws is a log line, not a
  * silent night.
  */
+/**
+ * THE STORE IS THE TRUTH ABOUT A SUBSCRIPTION; ASK IT DAILY.
+ *
+ * The webhook is how the server hears about purchases, and on 3 Oct it missed
+ * one: bought 53 seconds before the account existed, booked to an anonymous
+ * id, never attached. So once a day the accounts that have or claim Plus, seen
+ * in the last 60 days, are checked with RevenueCat, and `is_plus` is set to what RevenueCat says —
+ * granted where it was missed, taken back where a subscription really ended.
+ * Only a definite answer changes anything; a failed lookup changes nothing.
+ * Gifts live in `plus_until`, which this never touches.
+ */
+export async function reconcilePlusWithRevenueCat(env: Env): Promise<{ checked: number; corrected: number }> {
+  if (!env.RC_SECRET_API_KEY) return { checked: 0, corrected: 0 };
+  const since = new Date(Date.now() - 60 * 86400000).toISOString();
+  const rows = await env.DB.prepare(
+    // ONLY ACCOUNTS REVENUECAT ALREADY KNOWS: a lookup creates a customer for
+    // an id it has never seen, which would fill its customer list with every
+    // account that never opened the paywall. So: Plus on the server (to take
+    // back what ended), or a phone that says it paid (to grant what was missed).
+    `SELECT id, is_plus FROM profiles
+      WHERE deleted_at IS NULL AND last_seen_at >= ? AND (is_plus = 1 OR device_plus = 1)
+      ORDER BY last_seen_at DESC LIMIT 500`,
+  )
+    .bind(since)
+    .all<{ id: string; is_plus: number }>();
+  const nowIso = new Date().toISOString();
+  let corrected = 0;
+  for (const r of rows.results ?? []) {
+    const says = await rcSaysPlus(env, r.id);
+    if (says === null || says === (r.is_plus === 1)) continue;
+    if (await setPlus(env, r.id, says, nowIso)) corrected += 1;
+  }
+  return { checked: rows.results?.length ?? 0, corrected };
+}
+
 export async function runMaintenance(env: Env): Promise<void> {
   const started = Date.now();
   const db = env.DB;
@@ -513,6 +549,7 @@ export async function runMaintenance(env: Env): Promise<void> {
     reconcileCharacterVoteAggregates(db),
   );
   const purge = await step('purgeSoftDeleted', () => purgeSoftDeleted(db, env));
+  const plus = await step('reconcilePlusWithRevenueCat', () => reconcilePlusWithRevenueCat(env));
   // Empty on purpose: the mechanism is proven, the mapping source is deferred
   // until the TheTVDB licence is settled (Step 5c, "Decision deferred").
   const migrated = await step('migrateTitleThreads', () => migrateTitleThreads(db, []));
@@ -524,7 +561,8 @@ export async function runMaintenance(env: Env): Promise<void> {
       `corrected, characters ${characters?.corrected ?? '!'}/${characters?.checked ?? '!'} ` +
       `corrected, ${purge?.purged ?? '!'} profiles purged ` +
       `(${purge?.skipped.length ?? '!'} held back), ` +
-      `${migrated?.comments ?? '!'} comments re-keyed`,
+      `${migrated?.comments ?? '!'} comments re-keyed, ` +
+      `plus ${plus?.corrected ?? '!'}/${plus?.checked ?? '!'} corrected`,
   );
 }
 

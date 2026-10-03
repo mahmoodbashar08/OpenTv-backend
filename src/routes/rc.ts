@@ -99,7 +99,7 @@ function profileIds(value: unknown): string[] {
  * must not move it, or "member since" would read as today, every month.
  * Idempotent by construction: running the same event twice writes the same row.
  */
-async function setPlus(env: Env, profileId: string, on: boolean, nowIso: string): Promise<boolean> {
+export async function setPlus(env: Env, profileId: string, on: boolean, nowIso: string): Promise<boolean> {
   const res = on
     ? await env.DB.prepare(
         `UPDATE profiles SET is_plus = 1, plus_since = COALESCE(plus_since, ?)
@@ -241,7 +241,7 @@ rc.post('/rc/webhook', async (c) => {
  * Does RevenueCat itself say this profile has Plus? Null when it cannot be
  * asked (no key, network, an unknown customer) — never treated as "no".
  */
-async function rcSaysPlus(env: Env, profileId: string): Promise<boolean | null> {
+export async function rcSaysPlus(env: Env, profileId: string): Promise<boolean | null> {
   if (!env.RC_SECRET_API_KEY) return null;
   try {
     const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(profileId)}`, {
