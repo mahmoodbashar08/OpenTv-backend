@@ -9,7 +9,7 @@ import {
   reconcileRatingAggregates,
 } from '@/jobs';
 import { mergeEmotionCounts } from '@/pure';
-import { freshDatabase, insertProfile } from './harness';
+import { freshDatabase, insertProfile, makeEnv } from './harness';
 
 /**
  * docs/IMPLEMENTATION.md Step 5, "Unit tests": the reconcile statements are
@@ -547,5 +547,24 @@ describe('mergeEmotionCounts', () => {
 
   it('drops the zeroed keys the write path leaves behind', () => {
     expect(mergeEmotionCounts('{"touched":0,"shocked":2}', '{"sad":-1}')).toBe('{"shocked":2}');
+  });
+});
+
+import { backupTimesFromStorage } from '@/jobs';
+
+describe('backup times from the stored files', () => {
+  it('takes the newest file per profile and never moves a date back', async () => {
+    const fresh = freshDatabase();
+    fresh.raw.prepare("INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1','a','a','2026-09-01'), ('p2','b','b','2026-09-01')").run();
+    fresh.raw.prepare("UPDATE profiles SET backup_at = '2030-01-01T00:00:00.000Z' WHERE id = 'p2'").run();
+    const objects = [
+      { key: 'backups/p1/phone.zip', uploaded: new Date('2026-10-01T10:00:00Z'), size: 100 },
+      { key: 'backups/p1/mac.zip', uploaded: new Date('2026-10-02T10:00:00Z'), size: 200 },
+      { key: 'backups/p2.zip', uploaded: new Date('2026-10-02T10:00:00Z'), size: 300 },
+    ];
+    const BACKUPS = { list: async () => ({ objects, truncated: false }) } as unknown as R2Bucket;
+    await backupTimesFromStorage({ ...makeEnv(fresh.db), BACKUPS });
+    expect(fresh.raw.prepare("SELECT backup_at, backup_bytes FROM profiles WHERE id = 'p1'").get()).toEqual({ backup_at: '2026-10-02T10:00:00.000Z', backup_bytes: 200 });
+    expect((fresh.raw.prepare("SELECT backup_at FROM profiles WHERE id = 'p2'").get() as { backup_at: string }).backup_at).toBe('2030-01-01T00:00:00.000Z');
   });
 });

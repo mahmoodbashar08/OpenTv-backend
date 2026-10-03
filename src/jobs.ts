@@ -539,6 +539,36 @@ export async function reconcilePlusWithRevenueCat(env: Env): Promise<{ checked: 
   return { checked: rows.results?.length ?? 0, corrected };
 }
 
+/**
+ * THE BACKUP COLUMN FROM THE FILES THEMSELVES. `backup_at` is stamped on each
+ * upload, but uploads before that existed were never recorded — and a stamp
+ * can be missed. Each object is `backups/<profile>/<device>.zip` (or the older
+ * `backups/<profile>.zip`) with its own upload time, so the newest one per
+ * profile is the truth. Only ever moves a date forward.
+ */
+export async function backupTimesFromStorage(env: Env): Promise<{ profiles: number }> {
+  const bucket = env.BACKUPS;
+  if (!bucket) return { profiles: 0 };
+  const newest = new Map<string, { at: string; size: number }>();
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix: 'backups/', cursor });
+    for (const o of page.objects) {
+      const id = o.key.slice('backups/'.length).split('/')[0]!.replace(/\.zip$/, '');
+      const at = o.uploaded.toISOString();
+      const prev = newest.get(id);
+      if (!prev || at > prev.at) newest.set(id, { at, size: o.size });
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  for (const [id, { at, size }] of newest) {
+    await env.DB.prepare('UPDATE profiles SET backup_at = ?, backup_bytes = ? WHERE id = ? AND (backup_at IS NULL OR backup_at < ?)')
+      .bind(at, size, id, at)
+      .run();
+  }
+  return { profiles: newest.size };
+}
+
 export async function runMaintenance(env: Env): Promise<void> {
   const started = Date.now();
   const db = env.DB;
@@ -550,6 +580,7 @@ export async function runMaintenance(env: Env): Promise<void> {
   );
   const purge = await step('purgeSoftDeleted', () => purgeSoftDeleted(db, env));
   const plus = await step('reconcilePlusWithRevenueCat', () => reconcilePlusWithRevenueCat(env));
+  await step('backupTimesFromStorage', () => backupTimesFromStorage(env));
   // Empty on purpose: the mechanism is proven, the mapping source is deferred
   // until the TheTVDB licence is settled (Step 5c, "Decision deferred").
   const migrated = await step('migrateTitleThreads', () => migrateTitleThreads(db, []));
