@@ -115,14 +115,14 @@ describe('POST /v1/rc/webhook — the entitlement', () => {
     expect(isPlusRow('p1').is_plus).toBe(1);
   });
 
-  it('ignores an anonymous RevenueCat id with a 200 — there is nothing to map', async () => {
+  it('keeps an anonymous purchase (200, matched to nobody yet) instead of dropping it', async () => {
     const res = await rcEvent({
       type: 'INITIAL_PURCHASE',
       app_user_id: '$RCAnonymousID:8a9f2c0d1e',
       entitlement_ids: ['plus'],
     });
     expect(res.status).toBe(200);
-    expect(res.json).toEqual({ ok: true, matched: false });
+    expect(res.json).toEqual({ ok: true, matched: false, kept: true });
   });
 
   it('answers 200 for a profile it has never heard of — a 4xx would be retried for ever', async () => {
@@ -519,5 +519,47 @@ describe('PATCH /v1/me theme_layout', () => {
     });
     expect(res.status).toBe(200);
     expect(res.json.theme_layout).toBeNull();
+  });
+});
+
+describe('a purchase made anonymously', () => {
+  const ANON = '$RCAnonymousID:8f3c2a1b9d7e4f60a1b2c3d4e5f60718';
+  const buy = (extra: Record<string, unknown> = {}) =>
+    rcEvent({ type: 'INITIAL_PURCHASE', app_user_id: ANON, entitlement_ids: ['plus'], ...extra });
+  const check = async (who: string, body: Record<string, unknown>) =>
+    call(env, 'POST', '/v1/me/plus-check', { token: await tokenFor(env, who), body });
+
+  it('is kept, not dropped, and the phone that made it claims it on sign-in', async () => {
+    await buy();
+    expect(raw.prepare('SELECT active FROM rc_anon_purchases WHERE rc_id = ?').get(ANON)).toEqual({ active: 1 });
+    expect(isPlusRow('p1').is_plus).toBe(0);
+    const res = await check('p1', { rc_ids: [ANON], device_plus: true });
+    expect(res.status).toBe(200);
+    expect(isPlusRow('p1').is_plus).toBe(1);
+  });
+
+  it('belongs to one profile: a second claim on the same id gets nothing', async () => {
+    await buy();
+    await check('p1', { rc_ids: [ANON] });
+    await check('p2', { rc_ids: [ANON] });
+    expect(isPlusRow('p2').is_plus).toBe(0);
+  });
+
+  it('names the profile straight away when an alias does', async () => {
+    await buy({ aliases: [ANON, 'p2'] });
+    expect(isPlusRow('p2').is_plus).toBe(1);
+  });
+
+  it('follows later events once claimed — an expiry takes it back', async () => {
+    await buy();
+    await check('p1', { rc_ids: [ANON] });
+    await rcEvent({ type: 'EXPIRATION', app_user_id: ANON, entitlement_ids: ['plus'] });
+    expect(isPlusRow('p1').is_plus).toBe(0);
+  });
+
+  it('records what the phone says, without granting anything from it', async () => {
+    await check('p1', { device_plus: true });
+    expect(raw.prepare('SELECT device_plus FROM profiles WHERE id = ?').get('p1')).toEqual({ device_plus: 1 });
+    expect(isPlusRow('p1').is_plus).toBe(0);
   });
 });

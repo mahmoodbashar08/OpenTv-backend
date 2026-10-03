@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { constantTimeEqual } from '@/pure';
+import { requireAuth } from '@/middleware';
 
 /**
  * The RevenueCat webhook — the only thing on this server that may grant Plus.
@@ -41,6 +42,9 @@ const ANON_PREFIX = '$RCAnonymousID:';
 type RcEvent = {
   type?: unknown;
   app_user_id?: unknown;
+  original_app_user_id?: unknown;
+  aliases?: unknown;
+  expiration_at_ms?: unknown;
   entitlement_id?: unknown;
   entitlement_ids?: unknown;
   transferred_from?: unknown;
@@ -189,10 +193,36 @@ rc.post('/rc/webhook', async (c) => {
   // entitlement that is not ours — is understood and ignored.
   if (!grant && !revoke) return c.json({ ok: true, matched: false });
 
-  // An anonymous id, a missing one, or a profile that has been deleted: nothing
-  // to map, and a 200 so RevenueCat stops asking.
-  const [profileId] = profileIds(ev.app_user_id);
-  if (!profileId) return c.json({ ok: true, matched: false });
+  /*
+   * WHO BOUGHT IT. The app user id first, then every other id RevenueCat knows
+   * for the same customer (`original_app_user_id`, `aliases`): a purchase made
+   * anonymously and aliased afterwards names the profile there.
+   */
+  const [profileId] = [...profileIds(ev.app_user_id), ...profileIds(ev.original_app_user_id), ...profileIds(ev.aliases)];
+  if (!profileId) {
+    /*
+     * STILL ANONYMOUS: KEEP IT. This used to return here and forget the
+     * purchase — a paying customer (3 Oct) then had no Plus on the server for
+     * Cloud Backup or Sync. Remembered by its anonymous id until the phone that
+     * made it signs in and names that id (`/v1/me/plus-check`).
+     */
+    const anon = [ev.app_user_id, ev.original_app_user_id, ...(Array.isArray(ev.aliases) ? ev.aliases : [])].filter(
+      (v): v is string => typeof v === 'string' && v.startsWith(ANON_PREFIX),
+    );
+    const exp = typeof ev.expiration_at_ms === 'number' ? new Date(ev.expiration_at_ms).toISOString() : null;
+    for (const id of new Set(anon)) {
+      await c.env.DB.prepare(
+        `INSERT INTO rc_anon_purchases (rc_id, active, expires_at, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (rc_id) DO UPDATE SET active = excluded.active, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+      )
+        .bind(id, grant ? 1 : 0, exp, nowIso)
+        .run();
+      // Already claimed by a profile: the event applies to it too.
+      const claimed = await c.env.DB.prepare('SELECT claimed_by FROM rc_anon_purchases WHERE rc_id = ?').bind(id).first<{ claimed_by: string | null }>();
+      if (claimed?.claimed_by) await setPlus(c.env, claimed.claimed_by, grant, nowIso);
+    }
+    return c.json({ ok: true, matched: false, kept: anon.length > 0 });
+  }
 
   const matched = await setPlus(c.env, profileId, grant, nowIso);
   /*
@@ -205,4 +235,70 @@ rc.post('/rc/webhook', async (c) => {
    */
   if (!matched) console.log(`[rc] ${type} unmatched`);
   return c.json({ ok: true, matched });
+});
+
+/**
+ * Does RevenueCat itself say this profile has Plus? Null when it cannot be
+ * asked (no key, network, an unknown customer) — never treated as "no".
+ */
+async function rcSaysPlus(env: Env, profileId: string): Promise<boolean | null> {
+  if (!env.RC_SECRET_API_KEY) return null;
+  try {
+    const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(profileId)}`, {
+      headers: { Authorization: `Bearer ${env.RC_SECRET_API_KEY}` },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { subscriber?: { entitlements?: Record<string, { expires_date?: string | null }> } };
+    const ent = body.subscriber?.entitlements?.[PLUS_ENTITLEMENT];
+    if (!ent) return false;
+    return ent.expires_date == null || Date.parse(ent.expires_date) > Date.now();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /v1/me/plus-check { rc_ids?: string[], device_plus?: boolean }
+ *
+ * The phone, on launch and after a purchase, saying two things:
+ *
+ *  - THE ANONYMOUS IDS IT HAS BOUGHT UNDER. A purchase kept in
+ *    `rc_anon_purchases` is attached to this profile — once, to one profile.
+ *    The ids are RevenueCat's random ones, which only the phone that made the
+ *    purchase holds.
+ *  - WHAT THE STORE TOLD IT (`device_plus`). Stored for the dashboard to flag a
+ *    disagreement; it grants nothing on its own, because a phone can lie.
+ *
+ * And then, with a RevenueCat secret key configured, the server asks
+ * RevenueCat itself — the safety net for anything the webhook missed.
+ */
+rc.post('/me/plus-check', requireAuth, async (c) => {
+  let b: { rc_ids?: unknown; device_plus?: unknown };
+  try {
+    b = (await c.req.json()) as typeof b;
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const me = c.get('profileId');
+  const nowIso = new Date().toISOString();
+  if (typeof b.device_plus === 'boolean') {
+    await c.env.DB.prepare('UPDATE profiles SET device_plus = ?, device_plus_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .bind(b.device_plus ? 1 : 0, nowIso, me)
+      .run();
+  }
+  const ids = Array.isArray(b.rc_ids)
+    ? b.rc_ids.filter((v): v is string => typeof v === 'string' && v.startsWith(ANON_PREFIX) && v.length <= 80).slice(0, 5)
+    : [];
+  let granted = false;
+  for (const id of ids) {
+    const row = await c.env.DB.prepare('SELECT active, expires_at, claimed_by FROM rc_anon_purchases WHERE rc_id = ?')
+      .bind(id)
+      .first<{ active: number; expires_at: string | null; claimed_by: string | null }>();
+    if (!row || (row.claimed_by && row.claimed_by !== me)) continue;
+    if (!row.claimed_by) await c.env.DB.prepare('UPDATE rc_anon_purchases SET claimed_by = ? WHERE rc_id = ? AND claimed_by IS NULL').bind(me, id).run();
+    if (row.active === 1 && (row.expires_at == null || row.expires_at > nowIso)) granted = (await setPlus(c.env, me, true, nowIso)) || granted;
+  }
+  const rcPlus = await rcSaysPlus(c.env, me);
+  if (rcPlus === true) granted = (await setPlus(c.env, me, true, nowIso)) || granted;
+  return c.json({ ok: true, granted, checked_with_revenuecat: rcPlus !== null });
 });

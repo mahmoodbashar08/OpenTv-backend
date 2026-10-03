@@ -137,6 +137,12 @@ export type Env = {
    * grant themselves Plus. A deployment that has not opted in has no webhook.
    */
   RC_WEBHOOK_SECRET?: string;
+  /**
+   * A RevenueCat SECRET API key (read-only is enough), for asking RevenueCat
+   * directly whether a profile has Plus — the safety net under the webhook.
+   * Unset: that check is skipped and everything else works as before.
+   */
+  RC_SECRET_API_KEY?: string;
 
   /**
    * SET ONLY BY `selfhost/server.ts`. Never on the hosted Worker.

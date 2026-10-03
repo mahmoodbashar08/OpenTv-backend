@@ -234,6 +234,12 @@ function baghdad(iso) {
 function plusCell(u) {
   const until = u.plus_until ? new Date(u.plus_until) : null;
   const live = until && !isNaN(until) && until.getTime() > Date.now();
+  // THE PHONE SAYS PAID, THE SERVER DOES NOT. What cost a subscriber their
+  // Cloud Backup and Sync on 3 Oct, with every column reading "no". The phone's
+  // word grants nothing; it is here so the disagreement is seen.
+  const mismatch = u.device_plus === 1 && !u.is_plus && !live
+    ? '<div class="tag gone" title="Apple or Google says this account is subscribed; the server does not">&#9888; paid on phone, not on server</div>'
+    : '';
   if (u.is_plus) {
     return '<span class="tag paid">paying</span>' +
       (u.plus_since ? '<div class="name">since ' + baghdad(u.plus_since) + '</div>' : '');
@@ -244,9 +250,9 @@ function plusCell(u) {
       '<div class="name">ends ' + baghdad(u.plus_until) + ' (' + days + 'd)</div>';
   }
   if (until && !isNaN(until)) {
-    return '<span class="tag gone">expired</span><div class="name">' + baghdad(u.plus_until) + '</div>';
+    return '<span class="tag gone">expired</span><div class="name">' + baghdad(u.plus_until) + '</div>' + mismatch;
   }
-  return '<span class="tag">no</span>';
+  return '<span class="tag">no</span>' + mismatch;
 }
 
 /** Never "3 hours ago" with no date under it: a relative age answers "are they
