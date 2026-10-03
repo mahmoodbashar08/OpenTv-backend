@@ -373,3 +373,20 @@ describe('where the day started', () => {
     expect(base().b).toBe(100); // the same day: the start does not move
   });
 });
+
+describe('when a title first appeared on a shelf', () => {
+  const put = (titles: ReturnType<typeof title>[]) =>
+    call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', stats: {}, titles } });
+  const seen = () =>
+    raw.prepare('SELECT target_key, first_seen_at FROM shelf_seen ORDER BY target_key').all() as { target_key: string; first_seen_at: string }[];
+
+  it('keeps the first date for a title already there and stamps only the new one', async () => {
+    await put([title(1)]);
+    raw.prepare("UPDATE shelf_seen SET first_seen_at = '2000-01-01T00:00:00.000Z'").run();
+    await put([title(1), title(2)]);
+    const rows = seen();
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.first_seen_at.startsWith('2000'))).toBeDefined();
+    expect(rows.filter((r) => !r.first_seen_at.startsWith('2000'))).toHaveLength(1);
+  });
+});

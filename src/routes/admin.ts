@@ -626,11 +626,16 @@ admin.get('/admin/users', async (c) => {
          UNION ALL
          SELECT 'emotion', author_id, target_source, target_key, season, episode, emotion, created_at
            FROM emotion_votes WHERE imported_at IS NULL AND created_at >= ? AND created_at < ?
+         UNION ALL
+         -- Titles newly on somebody's PUBLIC shelf (0047): what they chose to
+         -- show, never what they watched.
+         SELECT 'added', profile_id, 'title', target_key, NULL, NULL, kind, first_seen_at
+           FROM shelf_seen WHERE first_seen_at >= ? AND first_seen_at < ?
        )
       ORDER BY created_at DESC
-      LIMIT 400`,
+      LIMIT 1500`,
   )
-    .bind(day, nextDay, day, nextDay, day, nextDay, day, nextDay)
+    .bind(day, nextDay, day, nextDay, day, nextDay, day, nextDay, day, nextDay)
     .all<{
     kind: string;
     who: string;

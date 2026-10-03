@@ -272,7 +272,12 @@ function plusCell(u) {
 function todayCell(u) {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-  const rows = u.today || [];
+  const everything = u.today || [];
+  // TITLES NEWLY ON THEIR PUBLIC SHELF (shelf_seen): named, unless it is a
+  // whole library arriving at once — a first sync or an import — which is one
+  // line, not a hundred.
+  const added = everything.filter((r) => r.kind === 'added');
+  const rows = everything.filter((r) => r.kind !== 'added');
   // Library work (shows added, episodes marked) is not an event this server
   // keeps — only that the phone republished its totals on this day.
   // WHAT CHANGED, not the whole library: the totals minus where the day
@@ -297,16 +302,22 @@ function todayCell(u) {
       libraryText = parts.length ? parts.join(' &middot; ') : 'favourites, lists or Plus';
     }
   }
-  const library = libraryVerb
+  const libraryLine = libraryVerb
     ? '<div class="ev"><span class="vb">' + libraryVerb + '</span> <span class="did">' + libraryText + '</span></div>'
     : '';
+  const shelfLines = !added.length ? ''
+    : added.length > 15 || joinedThatDay
+      ? '<div class="ev"><span class="vb">added</span> <span class="did">' + added.length + ' titles</span><span class="name"> to their shelves</span></div>'
+      : added.map((r) => '<div class="ev"><span class="vb">added</span> <span class="did">' + esc(r.title) +
+          '</span><span class="name"> &middot; ' + (r.detail === 'movie' ? 'film' : 'show') + '</span></div>').join('');
+  const library = libraryLine + shelfLines;
   if (!rows.length) {
     if (library) return library;
     return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
   }
   // The verb first, because the kind of thing they did is what is being scanned
   // for; the title carries the accent because it is what the eye stops on.
-  const verb = { comment: 'wrote on', rating: 'rated', character: 'voted', emotion: 'felt' };
+  const verb = { comment: 'wrote on', rating: 'rated', character: 'voted', emotion: 'felt', added: 'added' };
   const one = (r) => {
     const detail = r.kind === 'rating' ? ' ' + esc(r.detail) + '/10'
       : r.kind === 'character' || r.kind === 'emotion' ? ' &middot; ' + esc(r.detail)

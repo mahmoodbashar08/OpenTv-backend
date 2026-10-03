@@ -283,6 +283,22 @@ published.put('/me/published', requireAuth, async (c) => {
   ];
   await db.batch(statements);
 
+  // FIRST SEEN: a title new to this shelf is stamped now; one already known
+  // keeps its date (OR IGNORE). What the dashboard's Today column reads to say
+  // "added Severance" — names the owner already made public, nothing more.
+  const seenAt = new Date().toISOString();
+  await db.batch(
+    // 25 rows × 4 values = 100, D1's ceiling for bound parameters.
+    chunk(rows, 25).map((group) =>
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO shelf_seen (profile_id, kind, target_key, first_seen_at)
+           VALUES ${group.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        )
+        .bind(...group.flatMap((r) => [me, kind, r.key, seenAt])),
+    ),
+  );
+
   // The totals ride along with the shelf they belong to, so a profile is never
   // showing counts from one sync and titles from another.
   const stats = (b.stats ?? {}) as Record<string, unknown>;
