@@ -19,6 +19,7 @@ import {
 } from '@/pure';
 import { overBudget, SESSION_BUDGET } from '@/rate-limit';
 import { RENEW_AFTER_SECONDS, sign } from '@/session';
+import { refreshCommsuniProfile } from '@/routes/commsuni';
 
 /**
  * Sign-in, the session, the handle flow, and account deletion.
@@ -587,6 +588,8 @@ auth.patch('/me', async (c) => {
     .bind(...binds, me)
     .run();
   if (res.meta.changes === 0) return fail(c, 401, 'unauthenticated', 'No such profile.');
+  // A new name reaches CommsUni's other apps now, not on the next comment.
+  if ('display_name' in b) c.executionCtx.waitUntil(refreshCommsuniProfile(c.env, me, new URL(c.req.url).origin).catch(() => {}));
 
   const row = await c.env.DB.prepare('SELECT * FROM profiles WHERE id = ?').bind(me).first<ProfileRow>();
   return c.json(ownProfile(row!));
@@ -718,6 +721,8 @@ auth.post('/me/handle', async (c) => {
     return fail(c, 409, 'handle_taken', 'That handle is in use.');
   }
 
+  // The handle is the name CommsUni shows when there is no display name.
+  c.executionCtx.waitUntil(refreshCommsuniProfile(c.env, me, new URL(c.req.url).origin).catch(() => {}));
   return c.json({ available: true, handle: display });
 });
 

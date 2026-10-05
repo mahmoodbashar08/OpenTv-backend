@@ -150,6 +150,8 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="ghost" id="refresh" hidden>Refresh</button>
       <!-- Refresh may answer from the ten-minute copy; this one never does. -->
       <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
+      <!-- Every phone at once, no app update: off means no CommsUni comments anywhere. -->
+      <button class="ghost" id="commsuni" hidden title="Show CommsUni comments in the app">CommsUni: …</button>
       <button class="ghost" id="out" hidden>Sign out</button>
     </div>
   </div>
@@ -700,7 +702,12 @@ function drawPeople() {
   // Null means their phone has never sent totals: no library of their own yet
   // (a new install shows a demo library, which is never sent) or not opened
   // since signing in. Nothing failed, so it should not read like a fault.
-  const num = (v) => (v == null ? '<span class="name">no library yet</span>' : String(v));
+  // "imported" = the server holds TV Time ratings or comments from them, so a
+  // library exists on the phone and only the totals are owed.
+  const num = (v, u) =>
+    v != null ? String(v)
+    : u.imported_archive ? '<span class="name">imported, not sent yet</span>'
+    : '<span class="name">no library yet</span>';
   const on = FILTERS.filter((f) => activeFilters.has(f.id));
   const rows = allPeople.filter((u) => on.every((f) => f.test(u)));
   drawChips();
@@ -738,8 +745,8 @@ function drawPeople() {
         '</td><td class="num">' + u.comments + '</td><td class="num">' + u.ratings +
         '</td><td class="num">' + u.feelings + '</td><td class="num">' + u.characters +
         '</td><td class="num">' + u.images + '</td><td class="num">' + u.lists +
-        '</td><td class="num">' + num(u.episodes_watched) +
-        '</td><td class="num">' + num(u.movies_watched) +
+        '</td><td class="num">' + num(u.episodes_watched, u) +
+        '</td><td class="num">' + num(u.movies_watched, u) +
         '</td><td class="num">' + u.followers + '</td></tr>';
     }).join('') ||
     '<tr><td colspan="17" class="name">' + (on.length ? 'Nobody matches these filters.' : 'Nobody yet.') + '</td></tr>';
@@ -850,6 +857,8 @@ function show(ok) {
   $('out').hidden = !ok;
   $('refresh').hidden = !ok;
   $('hard').hidden = !ok;
+  $('commsuni').hidden = !ok;
+  if (ok) readCommsuni();
   $('sub').textContent = ok ? 'Community dashboard' : 'Sign in to continue';
   // The password field survives a failed sign-in; it must not survive a
   // successful one, and it must not be sitting in the DOM behind the panel.
@@ -864,6 +873,31 @@ $('hard').addEventListener('click', async () => {
   } finally {
     $('hard').textContent = 'Hard refresh';
   }
+});
+
+let commsuniOn = null;
+function drawCommsuni() {
+  $('commsuni').textContent = commsuniOn == null ? 'CommsUni: …' : commsuniOn ? 'CommsUni: on' : 'CommsUni: OFF';
+}
+async function readCommsuni() {
+  const res = await fetch('/v1/admin/commsuni', { credentials: 'same-origin' });
+  commsuniOn = res.ok ? (await res.json()).on : null;
+  drawCommsuni();
+}
+$('commsuni').addEventListener('click', async () => {
+  if (commsuniOn == null) return;
+  const next = !commsuniOn;
+  if (!confirm(next
+    ? 'Turn CommsUni back on? Every community member sees the archive again.'
+    : 'Turn CommsUni off for everybody? No phone will show or send CommsUni comments until you turn it back on.')) return;
+  const res = await fetch('/v1/admin/commsuni', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ on: next }),
+  });
+  if (res.ok) commsuniOn = (await res.json()).on;
+  drawCommsuni();
 });
 
 $('refresh').addEventListener('click', () => {

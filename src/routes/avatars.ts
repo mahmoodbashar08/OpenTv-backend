@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { requireAuth } from '@/middleware';
+import { refreshCommsuniProfile } from '@/routes/commsuni';
 import { imageExtension, MAX_AVATAR_BYTES, MAX_COVER_BYTES, MAX_COVER_GIF_BYTES, plusOn } from '@/pure';
 
 /**
@@ -140,6 +141,8 @@ async function storeImage(c: Context<App>, kind: 'avatar' | 'cover'): Promise<Re
     }
   }
 
+  // A new face reaches CommsUni's other apps now, not on the next comment.
+  if (kind === 'avatar') c.executionCtx.waitUntil(refreshCommsuniProfile(c.env, me, new URL(c.req.url).origin).catch(() => {}));
   return c.json({ ok: true, url: publicUrl });
 }
 

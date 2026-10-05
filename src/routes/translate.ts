@@ -40,6 +40,20 @@ const MODEL = '@cf/meta/m2m100-1.2b';
  */
 const MAX_CHARS = 2000;
 
+/** One call to the model, or null when it is down, rate-limited or empty. */
+export async function runModel(ai: NonNullable<App['Bindings']['AI']>, body: string, source: string, lang: string): Promise<string | null> {
+  try {
+    const out = (await ai.run(MODEL, {
+      text: body.slice(0, MAX_CHARS),
+      source_lang: source,
+      target_lang: lang,
+    })) as { translated_text?: string };
+    return out.translated_text || null;
+  } catch {
+    return null;
+  }
+}
+
 translate.post('/comments/:id/translate', requireAuth, async (c) => {
   // ABSENT BINDING IS A 404, not a 500. Every capability on this Worker is
   // optional, so a deployment without Workers AI simply does not have this
@@ -91,20 +105,10 @@ translate.post('/comments/:id/translate', requireAuth, async (c) => {
   // question is actually answerable.
   if (source === lang) return c.json({ text: row.body, source_lang: source, cached: false, same: true });
 
-  let text: string;
-  try {
-    const out = (await c.env.AI.run(MODEL, {
-      text: row.body.slice(0, MAX_CHARS),
-      source_lang: source,
-      target_lang: lang,
-    })) as { translated_text?: string };
-    if (!out.translated_text) throw new Error('empty');
-    text = out.translated_text;
-  } catch {
-    // A model that is down or rate-limited must not look like a missing
-    // comment: the app retries this, and shows the original meanwhile.
-    return fail(c, 503, 'translate_failed', 'Could not translate right now.');
-  }
+  const text = await runModel(c.env.AI, row.body, source, lang);
+  // A model that is down or rate-limited must not look like a missing
+  // comment: the app retries this, and shows the original meanwhile.
+  if (text == null) return fail(c, 503, 'translate_failed', 'Could not translate right now.');
 
   // INSERT OR IGNORE: two readers can ask for the same comment in the same
   // language at once, and the loser of that race must not 500 over a primary

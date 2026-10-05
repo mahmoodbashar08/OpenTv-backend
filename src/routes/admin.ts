@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
+import { COMMSUNI_OFF_KEY } from '@/routes/commsuni';
 import { constantTimeEqual } from '@/pure';
 import { sendMessagePush } from '@/push';
 import { overBudget } from '@/rate-limit';
@@ -226,6 +227,25 @@ admin.post('/admin/cache/clear', async (c) => {
   await c.env.CACHE.delete(COUNTS_KEY);
   await c.env.CACHE.delete(TOTALS_KEY);
   return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/** CommsUni on or off for everybody, at once. See `COMMSUNI_OFF_KEY`. */
+admin.get('/admin/commsuni', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  return c.json({ on: !(await c.env.CACHE.get(COMMSUNI_OFF_KEY)) }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.post('/admin/commsuni', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { on?: unknown };
+  if (typeof body.on !== 'boolean') return fail(c, 400, 'invalid_body', 'on must be true or false');
+  if (body.on) await c.env.CACHE.delete(COMMSUNI_OFF_KEY);
+  else await c.env.CACHE.put(COMMSUNI_OFF_KEY, '1');
+  return c.json({ on: body.on }, 200, { 'Cache-Control': 'no-store' });
 });
 
 admin.use('/admin/stats', cachedRead);
@@ -565,7 +585,12 @@ admin.get('/admin/users', async (c) => {
             -- library change leaves here (added shows, marked episodes).
             (SELECT updated_at       FROM profile_stats ps WHERE ps.profile_id = p.id) AS library_at,
             (SELECT day_base_episodes FROM profile_stats ps WHERE ps.profile_id = p.id) AS day_base_episodes,
-            (SELECT day_base_movies   FROM profile_stats ps WHERE ps.profile_id = p.id) AS day_base_movies
+            (SELECT day_base_movies   FROM profile_stats ps WHERE ps.profile_id = p.id) AS day_base_movies,
+            -- A TV Time import leaves imported ratings or comments here even
+            -- when the totals never arrived: "imported, not sent yet".
+            CASE WHEN EXISTS (SELECT 1 FROM ratings r WHERE r.author_id = p.id AND r.imported_at IS NOT NULL)
+                   OR EXISTS (SELECT 1 FROM comments m WHERE m.author_id = p.id AND m.imported_at IS NOT NULL)
+                 THEN 1 ELSE 0 END AS imported_archive
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL

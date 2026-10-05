@@ -125,3 +125,30 @@ describe('POST /v1/comments/:id/translate', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('POST /v1/commsuni/translate', () => {
+  const ask = async (env: Env, body: Record<string, unknown>) =>
+    call(env, 'POST', '/v1/commsuni/translate', { token: await tokenFor(env, 'p_reader'), body });
+
+  it('translates the text it is sent, and answers a repeat from the cache', async () => {
+    const { env, ai } = seed();
+    const first = await ask(env, { text: 'مرحبا', language: 'ar', lang: 'en' });
+    expect(first.status).toBe(200);
+    expect(first.json.text).toBe('[en] مرحبا');
+    expect((await ask(env, { text: 'مرحبا', language: 'ar', lang: 'en' })).json.text).toBe('[en] مرحبا');
+    expect(ai.calls).toBe(1);
+  });
+
+  it('spends nothing on text already in the reader’s language', async () => {
+    const { env, ai } = seed();
+    const res = await ask(env, { text: 'This is English', language: 'en', lang: 'en' });
+    expect(res.json.same).toBe(true);
+    expect(ai.calls).toBe(0);
+  });
+
+  it('refuses a missing text or a language the app does not ship', async () => {
+    const { env } = seed();
+    expect((await ask(env, { text: '', lang: 'en' })).status).toBe(400);
+    expect((await ask(env, { text: 'hi', lang: 'xx' })).status).toBe(400);
+  });
+});

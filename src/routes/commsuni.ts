@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { requireAuth } from '@/middleware';
-import { validateCommentBody } from '@/pure';
+import { hasPlus, requireAuth } from '@/middleware';
+import { isTranslateTarget, sourceLangOf, validateCommentBody } from '@/pure';
+import { runModel } from '@/routes/translate';
 
 /**
  * The CommsUni consent record.
@@ -26,6 +27,33 @@ import { validateCommentBody } from '@/pure';
  * nobody gave.
  */
 export const commsuni = new Hono<App>();
+
+/**
+ * THE OFF SWITCH, from the dashboard (`POST /v1/admin/commsuni`). One KV flag,
+ * read before anything here talks to CommsUni, so turning it off takes effect
+ * on the next request with no app update. The app treats the refusal exactly
+ * as it treats CommsUni's own rate limit: no board, OpenTV's comments only.
+ * Consent stays reachable — it is our own table, not a call to them.
+ */
+/**
+ * A KV key never longer than KV allows (512 bytes). A page-two path carries a
+ * ~430-character cursor, and on an EPISODE the key came to 520 — KV threw, the
+ * read failed, and "Show more" did nothing (4 Oct; shows squeaked in at 506).
+ * Short keys stay readable, so `firstRepliesKey` still matches its page.
+ */
+export async function kvKey(key: string): Promise<string> {
+  if (new TextEncoder().encode(key).length <= 480) return key;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+  return `${key.slice(0, 12)}#${Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export const COMMSUNI_OFF_KEY = 'commsuni:off';
+commsuni.use('/commsuni/*', async (c, next) => {
+  if (!c.req.path.endsWith('/commsuni/consent') && (await c.env.CACHE.get(COMMSUNI_OFF_KEY))) {
+    return fail(c, 503, 'unavailable', 'CommsUni is switched off.');
+  }
+  await next();
+});
 
 type Decision = 'share' | 'keep_private';
 type Identity = 'profile' | 'persona';
@@ -151,7 +179,7 @@ async function actorId(secret: string, profileId: string): Promise<string> {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-type Upstream = { status: number; body: unknown };
+type Upstream = { status: number; body: unknown; duplicate?: boolean };
 
 /** One request to CommsUni with an allowlisted set of headers — never the
  *  device's own (§1: no forwarded Origin). */
@@ -159,7 +187,7 @@ async function upstream(
   env: App['Bindings'],
   path: string,
   actor: string,
-  write?: { method: 'POST' | 'PUT' | 'DELETE'; body?: unknown; idempotencyKey?: string },
+  write?: { method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'; body?: unknown; idempotencyKey?: string },
 ): Promise<Upstream> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${env.COMMSUNI_API_KEY}`,
@@ -179,7 +207,8 @@ async function upstream(
   } catch {
     body = null;
   }
-  return { status: res.status, body };
+  // A second report from the same person is accepted but not queued.
+  return { status: res.status, body, duplicate: res.headers.get('Report-Duplicate') === 'true' };
 }
 
 type RawSource = { slug?: unknown; displayName?: unknown; shortName?: unknown; accentColor?: unknown; iconUrl?: unknown; status?: unknown };
@@ -265,7 +294,16 @@ export function trimComment(r: RawComment) {
 }
 
 /** The upstream path for one of our targets, or null when it cannot be one. */
-export function commsuniPath(q: { type?: string; id?: string; season?: string; episode?: string; sort?: string; cursor?: string }): string | null {
+export function commsuniPath(q: {
+  type?: string;
+  id?: string;
+  season?: string;
+  episode?: string;
+  sort?: string;
+  cursor?: string;
+  source?: string;
+  language?: string;
+}): string | null {
   const id = q.id ?? '';
   if (!/^\d{1,10}$/.test(id)) return null;
   let ref: string;
@@ -274,8 +312,16 @@ export function commsuniPath(q: { type?: string; id?: string; season?: string; e
     if (!/^\d{1,4}$/.test(q.season ?? '') || !/^\d{1,5}$/.test(q.episode ?? '')) return null;
     ref = `episode/tvdb-${id}-s${Number(q.season)}e${Number(q.episode)}`;
   } else return null;
-  const p = new URLSearchParams({ limit: '20', sort: q.sort === 'most_recent' ? 'most_recent' : 'most_liked' });
+  const sort = q.sort === 'most_recent' || q.sort === 'most_relevant' ? q.sort : 'most_liked';
+  const p = new URLSearchParams({ limit: '20', sort });
   if (q.cursor && q.cursor.length <= 512) p.set('cursor', q.cursor);
+  // FILTERED ON THEIR SIDE, as the guide asks (§9) — never a page thinned out
+  // here. Slugs and one language tag only; anything else is dropped.
+  if (q.source && /^[a-z0-9_-]{1,40}(,[a-z0-9_-]{1,40}){0,9}$/.test(q.source)) p.set('source', q.source);
+  if (q.language && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(q.language)) p.set('language', q.language);
+  // The counts ride on the first page — pre-aggregated per entity, so the
+  // tab's number and the language chips cost no extra request.
+  if (!q.cursor) p.set('include', 'language_counts');
   return `/entities/${ref}/comments?${p.toString()}`;
 }
 
@@ -293,10 +339,12 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
     episode: c.req.query('episode'),
     sort: c.req.query('sort'),
     cursor: c.req.query('cursor'),
+    source: c.req.query('source'),
+    language: c.req.query('language'),
   });
   if (!path) return fail(c, 400, 'invalid_body', 'Unknown target.');
 
-  const cacheKey = `commsuni:c:${path}`;
+  const cacheKey = await kvKey(`commsuni:c:${path}`);
   const cached = await c.env.CACHE.get(cacheKey);
   if (cached) return c.body(cached, 200, { 'Content-Type': 'application/json' });
   if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
@@ -317,7 +365,7 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
     return c.body(body, 200, { 'Content-Type': 'application/json' });
   }
   if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
-  const data = (up.body as { data?: { comments?: RawComment[]; nextCursor?: unknown } } | null)?.data;
+  const data = (up.body as { data?: { comments?: RawComment[]; nextCursor?: unknown; languageCounts?: unknown } } | null)?.data;
   if (up.status !== 200 || !data || !Array.isArray(data.comments)) {
     if (up.status !== 429) console.log(`[commsuni] ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
     return fail(c, 503, 'unavailable', 'Try again later.');
@@ -327,6 +375,12 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
     comments: data.comments.map(trimComment).filter((x) => x !== null),
     nextCursor: typeof data.nextCursor === 'string' ? data.nextCursor : null,
     archived: true,
+    // First page only, under the same source filter.
+    languageCounts: Array.isArray(data.languageCounts)
+      ? (data.languageCounts as { language?: unknown; count?: unknown }[])
+          .filter((l) => typeof l?.language === 'string' && typeof l?.count === 'number')
+          .map((l) => ({ language: l.language as string, count: l.count as number }))
+      : null,
   });
   await c.env.CACHE.put(cacheKey, body, { expirationTtl: 60 });
   return c.body(body, 200, { 'Content-Type': 'application/json' });
@@ -344,11 +398,14 @@ commsuni.get('/commsuni/replies', requireAuth, async (c) => {
   const id = c.req.query('id') ?? '';
   if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return fail(c, 400, 'invalid_body', 'Unknown comment.');
   const p = new URLSearchParams({ limit: '50', sort: 'most_recent' });
+  // A reply's own replies (the guide's second level): same thread, `parent=`.
+  const branch = c.req.query('parent');
+  if (branch && UUID_RE.test(branch)) p.set('parent', branch);
   const cursor = c.req.query('cursor');
   if (cursor && cursor.length <= 512) p.set('cursor', cursor);
   const path = `/comments/${id}/replies?${p.toString()}`;
 
-  const cacheKey = `commsuni:r:${path}`;
+  const cacheKey = await kvKey(`commsuni:r:${path}`);
   const cached = await c.env.CACHE.get(cacheKey);
   if (cached) return c.body(cached, 200, { 'Content-Type': 'application/json' });
   if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
@@ -480,6 +537,9 @@ const firstRepliesKey = (parent: string) =>
 /** Replies a person may send to CommsUni in an hour: the same cap as our own comments. */
 const REPLIES_PER_HOUR = 30;
 
+/** GIPHY's own media addresses, the only GIFs the reply composer offers. */
+const GIPHY_GIF = /^https:\/\/(media[0-9]*|i)\.giphy\.com\/[A-Za-z0-9_./?=&%-]{1,400}$/;
+
 /**
  * POST /v1/commsuni/reply { parent, text, client_id }
  *
@@ -493,7 +553,7 @@ const REPLIES_PER_HOUR = 30;
  */
 commsuni.post('/commsuni/reply', requireAuth, async (c) => {
   if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
-  let b: { parent?: unknown; text?: unknown; client_id?: unknown };
+  let b: { parent?: unknown; root?: unknown; text?: unknown; client_id?: unknown; spoiler?: unknown; gif?: unknown };
   try {
     b = (await c.req.json()) as typeof b;
   } catch {
@@ -502,12 +562,20 @@ commsuni.post('/commsuni/reply', requireAuth, async (c) => {
   const parent = typeof b.parent === 'string' ? b.parent : '';
   const clientId = typeof b.client_id === 'string' ? b.client_id : '';
   if (!UUID_RE.test(parent) || !/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) return fail(c, 400, 'invalid_body', 'parent and client_id are required.');
+  // A GIPHY GIF, by its own address — CommsUni stores links, not files, and
+  // only from hosts allowlisted for our source (§11).
+  const gif = typeof b.gif === 'string' && GIPHY_GIF.test(b.gif) ? b.gif : null;
   const text = validateCommentBody(b.text);
-  if (!text.ok) {
+  const words = text.ok ? text.body : '';
+  if (!text.ok && (text.reason === 'too_long' || !gif)) {
     return text.reason === 'too_long'
       ? fail(c, 400, 'too_large', 'A comment is at most 2,000 characters.')
       : fail(c, 400, 'invalid_body', 'text is required.');
   }
+  const isSpoiler = b.spoiler === true;
+  // A GIF is Plus, as a picture on a comment is everywhere else — checked here
+  // because a client can claim anything.
+  if (gif && !(await hasPlus(c))) return fail(c, 403, 'plus_required', 'A GIF in a reply needs OpenTV Plus.');
   const me = c.get('profileId');
   const consent = await c.env.DB.prepare(
     'SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1',
@@ -528,11 +596,25 @@ commsuni.post('/commsuni/reply', requireAuth, async (c) => {
   const actor = await actorId(c.env.SESSION_SECRET, me);
   try {
     await sendOverlay(c.env, me, actor, consent.identity, who, new URL(c.req.url).origin);
-    const up = await upstream(c.env, `/comments/${parent}/replies`, actor, {
-      method: 'POST',
-      idempotencyKey: clientId,
-      body: { text: text.body },
-    });
+    const write = (withGif: boolean, key: string) =>
+      upstream(c.env, `/comments/${parent}/replies`, actor, {
+        method: 'POST',
+        idempotencyKey: key,
+        body: {
+          ...(words ? { text: words } : {}),
+          isSpoiler,
+          ...(withGif && gif ? { attachments: [{ url: gif, contentType: 'image/gif', provider: 'giphy' }] } : {}),
+        },
+      });
+    let up = await write(gif != null, clientId);
+    // GIPHY NOT YET ALLOWLISTED for our source: the words still go, without
+    // the picture, under their own key (a changed body on the same key is a
+    // 409). A GIF-only reply has nothing left to send and says so.
+    if (up.status === 400 && gif) {
+      console.log(`[commsuni] reply gif refused ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
+      if (!words) return fail(c, 422, 'unsupported_type', 'CommsUni does not take this GIF yet.');
+      up = await write(false, `${clientId}-t`);
+    }
     if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
     if (up.status === 404) return fail(c, 404, 'not_found', 'No such comment.');
     if (up.status !== 201 && up.status !== 200) {
@@ -540,7 +622,26 @@ commsuni.post('/commsuni/reply', requireAuth, async (c) => {
       return fail(c, 503, 'unavailable', 'Try again later.');
     }
     await c.env.CACHE.put(capKey, String(sent + 1), { expirationTtl: 3600 });
+    // THE SPOILER FLAG, MADE SURE OF. A reply sent marked came back unmarked
+    // (5 Oct); if theirs did not keep it, set it — §11 allows PATCH isSpoiler
+    // on your own comment.
+    const made = (up.body as { data?: { comment?: { id?: unknown; isSpoiler?: unknown } } } | null)?.data?.comment;
+    if (isSpoiler && typeof made?.id === 'string' && made.isSpoiler !== true) {
+      try {
+        await upstream(c.env, `/comments/${made.id}`, actor, { method: 'PATCH', body: { isSpoiler: true } });
+      } catch {
+        // The words are up; a missing flag is not worth failing the reply.
+      }
+    }
     await c.env.CACHE.delete(firstRepliesKey(parent));
+    // Answering a reply: the root's thread and that branch both changed.
+    const root = typeof b.root === 'string' && UUID_RE.test(b.root) ? b.root : null;
+    if (root) {
+      await c.env.CACHE.delete(firstRepliesKey(root));
+      await c.env.CACHE.delete(
+        await kvKey(`commsuni:r:/comments/${root}/replies?${new URLSearchParams({ limit: '50', sort: 'most_recent', parent }).toString()}`),
+      );
+    }
     const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
     return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
   } catch {
@@ -638,3 +739,109 @@ commsuni.get('/commsuni/media/:id', requireAuth, async (c) => {
   }
 });
 
+
+/**
+ * POST /v1/commsuni/translate { text, language, lang }
+ *
+ * The archive's comments are not stored here, so — unlike OpenTV's own
+ * translate route — the TEXT comes from the app, which got it from us a moment
+ * ago. The cache is therefore keyed by a hash OF THE TEXT, never a comment id:
+ * a client sending made-up words for somebody else's comment can only ever
+ * cache a translation of its own made-up words. Capped per member per hour so
+ * the route is not a free translation service.
+ */
+const TRANSLATIONS_PER_HOUR = 200;
+commsuni.post('/commsuni/translate', requireAuth, async (c) => {
+  if (!c.env.AI) return fail(c, 404, 'unavailable', 'Translation is not enabled.');
+  const body = (await c.req.json().catch(() => null)) as { text?: unknown; language?: unknown; lang?: unknown } | null;
+  const text = typeof body?.text === 'string' ? body.text.trim() : '';
+  const lang = body?.lang;
+  if (!text || text.length > 5000 || !isTranslateTarget(lang)) return fail(c, 400, 'invalid_body', 'text and lang are required.');
+
+  const source = sourceLangOf(typeof body?.language === 'string' ? body.language : null, text);
+  if (source === lang) return c.json({ text, source_lang: source, same: true });
+
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  const key = `commsuni:tr:${lang}:${hash}`;
+  const hit = await c.env.CACHE.get(key);
+  if (hit) return c.json({ text: hit, source_lang: source });
+
+  const capKey = `commsuni:tr-cap:${c.get('profileId')}:${new Date().toISOString().slice(0, 13)}`;
+  const used = Number((await c.env.CACHE.get(capKey)) ?? 0);
+  if (used >= TRANSLATIONS_PER_HOUR) return fail(c, 429, 'rate_limited', 'Too many translations — try again later.');
+
+  const out = await runModel(c.env.AI, text, source, lang);
+  if (out == null) return fail(c, 503, 'translate_failed', 'Could not translate right now.');
+  await c.env.CACHE.put(capKey, String(used + 1), { expirationTtl: 3600 });
+  await c.env.CACHE.put(key, out, { expirationTtl: 30 * 24 * 60 * 60 });
+  return c.json({ text: out, source_lang: source });
+});
+
+/** Reasons CommsUni accepts. The `mine_*` two are for TV Time archive rows only. */
+const REPORT_REASONS = new Set(['spam', 'abuse', 'spoiler', 'sexual', 'illegal', 'other', 'mine_hide', 'mine_claim']);
+const REPORTS_PER_HOUR = 20;
+
+/**
+ * POST /v1/commsuni/report { id, reason, detail?, archived, client_id }
+ *
+ * Moderation on the shared board (§10): every comment from another app can be
+ * reported, and an archived TV Time comment can also be flagged "this is
+ * mine" — hide it, or claim it later. `mine_*` is refused unless the app says
+ * the row is from the archive, as the guide forbids it on native comments.
+ * No sharing consent needed: a report publishes nothing of the reporter's.
+ */
+commsuni.post('/commsuni/report', requireAuth, async (c) => {
+  if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
+  const b = (await c.req.json().catch(() => null)) as { id?: unknown; reason?: unknown; detail?: unknown; archived?: unknown; client_id?: unknown } | null;
+  const id = typeof b?.id === 'string' ? b.id : '';
+  const reason = typeof b?.reason === 'string' ? b.reason : '';
+  const clientId = typeof b?.client_id === 'string' ? b.client_id : '';
+  if (!UUID_RE.test(id) || !REPORT_REASONS.has(reason) || !/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) {
+    return fail(c, 400, 'invalid_body', 'id, reason and client_id are required.');
+  }
+  if (reason.startsWith('mine_') && b?.archived !== true) {
+    return fail(c, 400, 'invalid_body', 'Only an archived TV Time comment can be claimed.');
+  }
+  const me = c.get('profileId');
+  const capKey = `commsuni:reports:${me}:${new Date().toISOString().slice(0, 13)}`;
+  const sent = Number((await c.env.CACHE.get(capKey)) ?? 0);
+  if (sent >= REPORTS_PER_HOUR) return fail(c, 429, 'rate_limited', 'Too many reports in the last hour.');
+  const detail = typeof b?.detail === 'string' && b.detail.trim() ? b.detail.trim().slice(0, 1000) : undefined;
+  try {
+    const up = await upstream(c.env, `/comments/${id}/reports`, await actorId(c.env.SESSION_SECRET, me), {
+      method: 'POST',
+      idempotencyKey: clientId,
+      body: { reason, ...(detail ? { detail } : {}) },
+    });
+    if (up.status === 404) return fail(c, 404, 'not_found', 'No such comment.');
+    if (up.status !== 202 && up.status !== 200) {
+      console.log(`[commsuni] report ${up.status}`);
+      return fail(c, 503, 'unavailable', 'Try again later.');
+    }
+    await c.env.CACHE.put(capKey, String(sent + 1), { expirationTtl: 3600 });
+    return c.json({ ok: true, duplicate: up.duplicate === true });
+  } catch {
+    return fail(c, 503, 'unavailable', 'Try again later.');
+  }
+});
+
+/**
+ * A NEW NAME OR PICTURE REACHES THE OTHER APPS AT ONCE (facc, 5 Oct). The
+ * overlay used to go up only before a write, so a rename sat unseen on every
+ * comment already shared until the next one. Called after a handle, display
+ * name or avatar change; does nothing for somebody not sharing.
+ */
+export async function refreshCommsuniProfile(env: App['Bindings'], me: string, origin: string): Promise<void> {
+  if (!env.COMMSUNI_API_KEY) return;
+  const consent = await env.DB.prepare('SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1')
+    .bind(me)
+    .first<{ decision: string; identity: string | null }>();
+  if (consent?.decision !== 'share') return;
+  const who = await env.DB.prepare('SELECT handle, display_name, avatar_key FROM profiles WHERE id = ? AND deleted_at IS NULL')
+    .bind(me)
+    .first<{ handle: string; display_name: string | null; avatar_key: string | null }>();
+  if (!who) return;
+  await sendOverlay(env, me, await actorId(env.SESSION_SECRET, me), consent.identity, who, origin);
+}
