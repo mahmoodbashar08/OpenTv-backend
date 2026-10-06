@@ -291,7 +291,9 @@ function todayCell(u) {
   // whole library arriving at once — a first sync or an import — which is one
   // line, not a hundred.
   const added = everything.filter((r) => r.kind === 'added');
-  const rows = everything.filter((r) => r.kind !== 'added');
+  // A rating row with no score is a feeling picked without stars — the
+  // "felt" line already says it, and "rated … /10" with no number misled.
+  const rows = everything.filter((r) => r.kind !== 'added' && !(r.kind === 'rating' && (r.detail == null || r.detail === '')));
   // Library work (shows added, episodes marked) is not an event this server
   // keeps — only that the phone republished its totals on this day.
   // WHAT CHANGED, not the whole library: the totals minus where the day
