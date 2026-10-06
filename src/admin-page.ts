@@ -458,7 +458,7 @@ function wireMessage() {
     if (text.trim().length > 500) { alert('That is over 500 characters.'); return; }
     // WHERE A TAP OPENS — the same closed list the app keeps (MESSAGE_ROUTES).
     const routes = [null, '/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup'];
-    const pick = prompt('When they tap it, open:\n0  nothing (the notifications list)\n1  Cloud Backup\n2  Plus\n3  Join the community\n4  Settings\n5  Sign in, then Cloud Backup', '0');
+    const pick = prompt('When they tap it, open:\\n0  nothing (the notifications list)\\n1  Cloud Backup\\n2  Plus\\n3  Join the community\\n4  Settings\\n5  Sign in, then Cloud Backup', '0');
     if (pick == null) return;
     const route = routes[Number(pick)] ?? null;
     btn.disabled = true;
