@@ -214,7 +214,8 @@ admin.post('/admin/users/:handle/message', async (c) => {
   )
     .bind(row.id)
     .first<{ n: number }>();
-  c.executionCtx.waitUntil(sendMessagePush(c.env, row.id, text));
+  const route = typeof (body as { route?: unknown })?.route === 'string' ? (body as { route: string }).route : null;
+  c.executionCtx.waitUntil(sendMessagePush(c.env, row.id, text, route));
   return c.json({ ok: true, devices: devices?.n ?? 0 }, 200, { 'Cache-Control': 'no-store' });
 });
 

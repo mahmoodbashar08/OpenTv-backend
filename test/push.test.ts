@@ -176,3 +176,23 @@ describe('the message sent to Expo', () => {
     expect(messages[0]?.channelId).toBe('community');
   });
 });
+
+describe('a message that opens a place in the app', () => {
+  it('carries a route from the closed list, and drops anything else', async () => {
+    const { vi } = await import('vitest');
+    const { sendMessagePush } = await import('@/push');
+    const fresh = freshDatabase();
+    const env = makeEnv(fresh.db);
+    insertProfile(fresh.raw, 'p1', 'someone');
+    await call(env, 'POST', '/v1/push/tokens', { token: await tokenFor(env, 'p1'), body: { token: TOKEN, platform: 'ios' } });
+    const sent: { data?: { route?: string | null } }[] = [];
+    vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
+      sent.push(...(JSON.parse(init.body) as typeof sent));
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    });
+    await sendMessagePush(env, 'p1', 'hi', '/cloud-backup');
+    await sendMessagePush(env, 'p1', 'hi', 'https://evil.example');
+    vi.unstubAllGlobals();
+    expect(sent.map((m) => m.data?.route)).toEqual(['/cloud-backup', null]);
+  });
+});

@@ -52,7 +52,8 @@ type Message = {
    */
   channelId: 'community';
   /** What the app opens. Mirrors the in-app row's destination. */
-  data: { kind: DataKind; subjectId: string | null; handle: string | null };
+  /** `route`: where in the app a tap opens — one of MESSAGE_ROUTES, or absent. */
+  data: { kind: DataKind; subjectId: string | null; handle: string | null; route?: string | null };
 };
 
 /**
@@ -139,11 +140,18 @@ export async function sendPush(
  * kinds the text IS the point, so it rides in the body — it is written by the
  * operator, never by another user, so there is no spoiler to leak. Never throws.
  */
-export async function sendMessagePush(env: Env, recipientId: string, text: string): Promise<void> {
+/**
+ * WHERE A MESSAGE MAY OPEN — a closed list, so a push can point at a screen
+ * that exists and never at anything else. The app keeps the same list.
+ */
+export const MESSAGE_ROUTES = ['/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup'] as const;
+
+export async function sendMessagePush(env: Env, recipientId: string, text: string, route: string | null = null): Promise<void> {
   try {
     const rows = await tokensFor(env, recipientId);
     if (rows.length === 0) return;
-    await deliver(env, rows, { title: 'OpenTV', body: text }, { kind: 'message', subjectId: null, handle: null });
+    const to = route && (MESSAGE_ROUTES as readonly string[]).includes(route) ? route : null;
+    await deliver(env, rows, { title: 'OpenTV', body: text }, { kind: 'message', subjectId: null, handle: null, route: to });
   } catch {
     // The row is written either way.
   }

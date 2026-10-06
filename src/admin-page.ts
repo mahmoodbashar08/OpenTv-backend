@@ -456,13 +456,18 @@ function wireMessage() {
     const text = prompt('Message to @' + handle + ' (shows in their notifications, max 500 characters). Sign it — Noddy.');
     if (text == null || !text.trim()) return;
     if (text.trim().length > 500) { alert('That is over 500 characters.'); return; }
+    // WHERE A TAP OPENS — the same closed list the app keeps (MESSAGE_ROUTES).
+    const routes = [null, '/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup'];
+    const pick = prompt('When they tap it, open:\n0  nothing (the notifications list)\n1  Cloud Backup\n2  Plus\n3  Join the community\n4  Settings\n5  Sign in, then Cloud Backup', '0');
+    if (pick == null) return;
+    const route = routes[Number(pick)] ?? null;
     btn.disabled = true;
     try {
       const res = await fetch('/v1/admin/users/' + encodeURIComponent(handle) + '/message', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim() }),
+        body: JSON.stringify({ text: text.trim(), route }),
       });
       const out = await res.json();
       if (!res.ok) throw new Error(out.error?.message || 'failed');
@@ -737,7 +742,8 @@ function drawPeople() {
       // THE SAME SHAPE AS THE PLUS TAG, deliberately: both answer "what kind of
       // person is this row" and the eye should find them in one pass down the
       // names rather than two passes across the table.
-      const who = '<span class="who">@' + esc(u.handle) + '</span>' +
+      // An account only has no username: the placeholder is an internal key.
+      const who = (u.joined_at ? '<span class="who">@' + esc(u.handle) + '</span>' : '<span class="who">no username</span>') +
         (didToday(u) ? ' <span class="tag act">active ' + esc(dayName(viewDay || serverToday).toLowerCase()) + '</span>' : '') +
         ' <button class="more" data-msg="' + esc(u.handle) + '">Message</button>' +
         (u.robot ? ' <span class="tag">Google test robot</span>'
