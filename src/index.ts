@@ -1,3 +1,4 @@
+import { supportChat } from '@/routes/support-chat';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
@@ -149,6 +150,7 @@ v1.route('/', reconcile);
 // session — it belongs to no user, so it sits with `admin` rather than in the
 // social routers.
 v1.route('/', rc);
+v1.route('/', supportChat);
 v1.route('/', admin);
 
 // ── the dashboard page ───────────────────────────────────────────────────────

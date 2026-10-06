@@ -137,6 +137,27 @@ export const ADMIN_PAGE = `<!doctype html>
   a.did { text-decoration:underline; text-underline-offset:2px; }
   .bulkbar { margin-top:14px; }
   .bulkbar button { width:auto; }
+  /* Messages: one row per person, newest first; a dot when unread. */
+  .thread { display:flex; gap:12px; align-items:baseline; padding:10px 12px; border:1px solid #26262b;
+    border-radius:10px; margin-bottom:8px; cursor:pointer; background:#141416; }
+  .thread:hover { border-color:#3a3a42; }
+  .thread .who { font-weight:700; white-space:nowrap; }
+  .thread .last { color:#a7a7ae; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .thread .unread { background:#ffd400; color:#000; border-radius:9px; padding:0 7px; font-size:12px; font-weight:800; }
+  dialog#chatdlg { background:#141416; color:#fff; border:1px solid #26262b; border-radius:12px;
+    padding:18px 20px; width:min(560px,92vw); max-height:84vh; font:inherit; }
+  dialog#chatdlg::backdrop { background:rgba(0,0,0,.6); }
+  dialog#chatdlg h3 { margin:0 0 12px; font-size:15px; }
+  #chatb { max-height:50vh; overflow:auto; display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+  .msg { padding:8px 11px; border-radius:10px; max-width:80%; white-space:pre-wrap; word-break:break-word; }
+  .msg.them { background:#1c1c1e; align-self:flex-start; }
+  .msg.me { background:#ffd400; color:#000; align-self:flex-end; }
+  .msg small { display:block; opacity:.6; font-size:11px; margin-top:3px; }
+  #chatin { width:100%; box-sizing:border-box; min-height:70px; background:#0b0b0d; color:#fff; border:1px solid #2e2e34;
+    border-radius:8px; padding:8px; font:inherit; }
+  .chatbtns { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
+  .chatbtns button { font:inherit; font-size:13px; padding:6px 14px; border-radius:7px; cursor:pointer; border:1px solid #2e2e34; background:#1c1c1e; color:#fff; }
+  .chatbtns #chatsend { background:#ffd400; color:#000; border-color:#ffd400; font-weight:700; }
 </style>
 </head>
 <body>
@@ -164,6 +185,12 @@ export const ADMIN_PAGE = `<!doctype html>
   </form>
 
   <div id="panel" hidden>
+    <!-- MESSAGES FIRST: a person who wrote is waiting; everything else is counts. -->
+    <h2>Messages <span id="msgcount"></span></h2>
+    <div id="threads"><p class="note">Nobody has written yet.</p></div>
+    <dialog id="chatdlg"><h3 id="chatt"></h3><div id="chatb"></div>
+      <textarea id="chatin" placeholder="Reply — it reaches them as a notification"></textarea>
+      <div class="chatbtns"><button onclick="document.getElementById('chatdlg').close()">Close</button><button id="chatsend">Send</button></div></dialog>
     <h2>People</h2>
     <div class="grid" id="people"></div>
     <h2>Activity</h2>
@@ -622,6 +649,8 @@ async function load() {
 
   await loadPeople();
 
+  await loadThreads();
+
   await loadReview();
 
   // WAS "never what anybody wrote", and the Today column made that untrue: it
@@ -774,6 +803,49 @@ function drawPeople() {
  * no "approve the rest", no keyboard shortcut that could run away with a list.
  */
 let reviewStatus = 'pending';
+
+
+// ── Messages ("Message the developer", 1.6.7) ──────────────────────────────
+const escm = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+let chatWith = null;
+async function loadThreads() {
+  const res = await fetch('/v1/admin/support', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const { threads } = await res.json();
+  const unread = threads.reduce((n, t) => n + (t.unread || 0), 0);
+  $('msgcount').innerHTML = unread ? '<span class="thread"><span class="unread">' + unread + ' new</span></span>' : '';
+  if (!threads.length) return;
+  $('threads').innerHTML = threads.map((t) =>
+    '<div class="thread" data-id="' + escm(t.profile_id) + '" data-name="' + escm(t.handle && t.joined_at ? '@' + t.handle : (t.display_name || 'account only')) + '">' +
+    '<span class="who">' + escm(t.handle && t.joined_at ? '@' + t.handle : (t.display_name || 'account only')) + '</span>' +
+    '<span class="last">' + escm(t.last_body) + '</span>' +
+    (t.unread ? '<span class="unread">' + t.unread + '</span>' : '') +
+    '<span class="note">' + escm(String(t.last_at).slice(0, 16).replace('T', ' ')) + '</span></div>').join('');
+  for (const el of $('threads').querySelectorAll('.thread')) el.onclick = () => openChat(el.dataset.id, el.dataset.name);
+}
+async function openChat(id, name) {
+  chatWith = id;
+  $('chatt').textContent = name;
+  $('chatb').innerHTML = '<p class="note">Loading…</p>';
+  $('chatdlg').showModal();
+  const { messages } = await (await fetch('/v1/admin/support/' + encodeURIComponent(id), { credentials: 'same-origin' })).json();
+  $('chatb').innerHTML = messages.map((m) =>
+    '<div class="msg ' + (m.fromDev ? 'me' : 'them') + '">' + escm(m.body) + '<small>' + escm(String(m.at).slice(0, 16).replace('T', ' ')) + '</small></div>').join('');
+  $('chatb').scrollTop = $('chatb').scrollHeight;
+  void loadThreads();
+}
+$('chatsend').onclick = async () => {
+  const body = $('chatin').value.trim();
+  if (!body || !chatWith) return;
+  $('chatsend').disabled = true;
+  const res = await fetch('/v1/admin/support/' + encodeURIComponent(chatWith), {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
+  });
+  $('chatsend').disabled = false;
+  if (!res.ok) { alert('Not sent (' + res.status + ')'); return; }
+  $('chatin').value = '';
+  await openChat(chatWith, $('chatt').textContent);
+};
 
 async function loadReview() {
   const res = await fetch('/v1/admin/images?status=' + reviewStatus, { credentials: 'same-origin' });

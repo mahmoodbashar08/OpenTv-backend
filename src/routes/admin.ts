@@ -6,6 +6,7 @@ import { fail } from '@/http';
 import { COMMSUNI_OFF_KEY } from '@/routes/commsuni';
 import { constantTimeEqual } from '@/pure';
 import { sendMessagePush } from '@/push';
+import { supportOut, type SupportRow } from '@/routes/support-chat';
 import { overBudget } from '@/rate-limit';
 
 /**
@@ -217,6 +218,53 @@ admin.post('/admin/users/:handle/message', async (c) => {
   const route = typeof (body as { route?: unknown })?.route === 'string' ? (body as { route: string }).route : null;
   c.executionCtx.waitUntil(sendMessagePush(c.env, row.id, text, route));
   return c.json({ ok: true, devices: devices?.n ?? 0 }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * "Message the developer", the dashboard's half. Threads are keyed by profile
+ * id, not handle: an account-only person has no handle to address.
+ */
+admin.get('/admin/support', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  const rows = await c.env.DB.prepare(
+    `SELECT m.profile_id, p.handle, p.display_name, p.joined_at,
+            (SELECT body FROM support_messages WHERE profile_id = m.profile_id ORDER BY id DESC LIMIT 1) AS last_body,
+            MAX(m.created_at) AS last_at,
+            SUM(CASE WHEN m.from_dev = 0 AND m.seen_at IS NULL THEN 1 ELSE 0 END) AS unread
+       FROM support_messages m LEFT JOIN profiles p ON p.id = m.profile_id
+      GROUP BY m.profile_id ORDER BY last_at DESC LIMIT 100`,
+  ).all();
+  return c.json({ threads: rows.results }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.get('/admin/support/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  const id = c.req.param('id');
+  const rows = await c.env.DB.prepare('SELECT id, from_dev, body, created_at FROM support_messages WHERE profile_id = ? ORDER BY id').bind(id).all<SupportRow>();
+  await c.env.DB.prepare('UPDATE support_messages SET seen_at = ? WHERE profile_id = ? AND from_dev = 0 AND seen_at IS NULL')
+    .bind(new Date().toISOString(), id)
+    .run();
+  return c.json({ messages: rows.results.map(supportOut) }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.post('/admin/support/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const body = typeof (raw as { body?: unknown })?.body === 'string' ? (raw as { body: string }).body.trim() : '';
+  if (body.length < 1 || body.length > 2000) return fail(c, 400, 'invalid_body', 'body must be 1–2000 characters.');
+  const id = c.req.param('id');
+  const who = await c.env.DB.prepare('SELECT id FROM profiles WHERE id = ? AND deleted_at IS NULL').bind(id).first<{ id: string }>();
+  if (!who) return fail(c, 404, 'not_found', 'No such profile.');
+  const at = new Date().toISOString();
+  await c.env.DB.prepare('INSERT INTO support_messages (profile_id, from_dev, body, created_at) VALUES (?, 1, ?, ?)').bind(id, body, at).run();
+  // The push opens the thread; its text is the reply, cut to a notification's length.
+  c.executionCtx.waitUntil(sendMessagePush(c.env, id, body.length > 160 ? body.slice(0, 157) + '…' : body, '/support'));
+  return c.json({ ok: true }, 201, { 'Cache-Control': 'no-store' });
 });
 
 /** The dashboard's "Hard refresh": the next two reads come from the database. */

@@ -772,6 +772,7 @@ auth.delete('/me', async (c) => {
     db.prepare('DELETE FROM list_items WHERE list_id IN (SELECT id FROM lists WHERE owner_id = ?)').bind(me),
     db.prepare('DELETE FROM lists WHERE owner_id = ?').bind(me),
     db.prepare('DELETE FROM notifications WHERE recipient_id = ?').bind(me),
+    db.prepare('DELETE FROM support_messages WHERE profile_id = ?').bind(me),
 
     // The profiles row is SCRUBBED, not deleted. Hard-deleting would cascade
     // away the reports this person filed — silently defeating the 24-hour

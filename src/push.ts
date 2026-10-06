@@ -144,7 +144,7 @@ export async function sendPush(
  * WHERE A MESSAGE MAY OPEN — a closed list, so a push can point at a screen
  * that exists and never at anything else. The app keeps the same list.
  */
-export const MESSAGE_ROUTES = ['/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup'] as const;
+export const MESSAGE_ROUTES = ['/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup', '/support'] as const;
 
 export async function sendMessagePush(env: Env, recipientId: string, text: string, route: string | null = null): Promise<void> {
   try {
