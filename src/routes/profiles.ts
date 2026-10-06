@@ -104,9 +104,11 @@ export async function readProfile(env: Env, handle: string, viewer: string): Pro
                    WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                       OR (b.blocker_id = p.id AND b.blocked_id = ?)) AS blocked
      FROM profiles p
-     WHERE p.handle_lower = ? AND p.deleted_at IS NULL`,
+     WHERE p.handle_lower = ? AND p.deleted_at IS NULL
+       -- An account only has no public profile (0049); its owner still sees theirs.
+       AND (p.joined_at IS NOT NULL OR p.id = ?)`,
   )
-    .bind(viewer, viewer, viewer, viewer, normaliseHandle(handle))
+    .bind(viewer, viewer, viewer, viewer, normaliseHandle(handle), viewer)
     .first<ProfileReadRow>();
 }
 
@@ -218,6 +220,8 @@ profiles.get('/users', async (c) => {
       WHERE (p.handle_lower LIKE ? ESCAPE '\\'
              OR LOWER(COALESCE(p.display_name, '')) LIKE ? ESCAPE '\\')
         AND p.deleted_at IS NULL
+        -- MEMBERS ONLY: an account made for backup and sync is nobody's to find.
+        AND p.joined_at IS NOT NULL
         -- YOURSELF IS NOT SOMEBODY TO FOLLOW. IS NOT rather than != on
         -- purpose: the viewer is NULL for an anonymous search, and p.id != NULL
         -- evaluates to NULL rather than TRUE, which would empty every

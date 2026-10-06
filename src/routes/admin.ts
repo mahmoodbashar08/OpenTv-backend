@@ -590,7 +590,11 @@ admin.get('/admin/users', async (c) => {
             -- when the totals never arrived: "imported, not sent yet".
             CASE WHEN EXISTS (SELECT 1 FROM ratings r WHERE r.author_id = p.id AND r.imported_at IS NOT NULL)
                    OR EXISTS (SELECT 1 FROM comments m WHERE m.author_id = p.id AND m.imported_at IS NOT NULL)
-                 THEN 1 ELSE 0 END AS imported_archive
+                 THEN 1 ELSE 0 END AS imported_archive,
+            p.joined_at,
+            -- An account only publishes nothing; its Sync changes today, counted.
+            (SELECT COUNT(*) FROM sync_ops so WHERE so.profile_id = p.id
+                AND so.ts >= CAST(strftime('%s', date('now')) AS INTEGER) * 1000) AS sync_today
        FROM profiles p
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL

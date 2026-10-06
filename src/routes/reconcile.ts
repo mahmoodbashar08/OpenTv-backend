@@ -107,6 +107,7 @@ reconcile.post('/me/friends/reconcile', requireAuth, async (c) => {
        FROM profiles p
        WHERE p.tvtime_user_id IN (${ids.map(() => '?').join(',')})
          AND p.deleted_at IS NULL
+         AND p.joined_at IS NOT NULL
          AND p.id <> ?
          AND NOT EXISTS (SELECT 1 FROM blocks b
                          WHERE (b.blocker_id = ? AND b.blocked_id = p.id)

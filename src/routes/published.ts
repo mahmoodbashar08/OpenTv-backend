@@ -303,6 +303,9 @@ published.put('/me/published', requireAuth, async (c) => {
   // showing counts from one sync and titles from another.
   const stats = (b.stats ?? {}) as Record<string, unknown>;
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
+  // PUBLISHING IS A MEMBER'S ACT: only a phone that joined publishes, so this
+  // marks the server's copy of "joined" for every app version (0049).
+  await db.prepare('UPDATE profiles SET joined_at = ? WHERE id = ? AND joined_at IS NULL').bind(nowIso, me).run();
   await db
     .prepare(
       `INSERT INTO profile_stats
@@ -394,9 +397,10 @@ published.get('/profiles/:handle/published', async (c) => {
                      WHERE (b.blocker_id = ? AND b.blocked_id = p.id)
                         OR (b.blocker_id = p.id AND b.blocked_id = ?)) AS blocked
          FROM profiles p
-        WHERE p.handle_lower = ? AND p.deleted_at IS NULL`,
+        WHERE p.handle_lower = ? AND p.deleted_at IS NULL
+          AND (p.joined_at IS NOT NULL OR p.id = ?)`,
     )
-    .bind(viewer, viewer, viewer, (c.req.param('handle') ?? '').toLowerCase())
+    .bind(viewer, viewer, viewer, (c.req.param('handle') ?? '').toLowerCase(), viewer)
     .first<{
       id: string;
       is_private: number;

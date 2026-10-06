@@ -65,6 +65,7 @@ const MIGRATION_FILES = [
   '../migrations/0046_plus_thanked.sql',
   '../migrations/0047_shelf_seen.sql',
   '../migrations/0048_backup_sync_seen.sql',
+  '../migrations/0049_joined_at.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
@@ -329,10 +330,16 @@ export function insertProfile(
   handle: string,
   deletedAt: string | null = null,
 ): void {
+  // A community MEMBER by default — every older test means one (0049) — when
+  // the schema has the column; tests that stop at an early migration do not.
+  const member = (raw.prepare("SELECT 1 FROM pragma_table_info('profiles') WHERE name = 'joined_at'").get() as unknown) != null;
   raw
     .prepare(
-      `INSERT INTO profiles (id, handle, handle_lower, created_at, deleted_at)
-       VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?)`,
+      member
+        ? `INSERT INTO profiles (id, handle, handle_lower, created_at, deleted_at, joined_at)
+           VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?, '2026-01-01T00:00:00.000Z')`
+        : `INSERT INTO profiles (id, handle, handle_lower, created_at, deleted_at)
+           VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z', ?)`,
     )
     .run(id, handle, handle.toLowerCase(), deletedAt);
 }

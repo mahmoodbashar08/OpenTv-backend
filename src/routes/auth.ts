@@ -316,6 +316,20 @@ auth.post('/auth/session', async (c) => {
 auth.use('/me', requireAuth);
 auth.use('/me/*', requireAuth);
 
+// ── POST /v1/me/join ─────────────────────────────────────────────────────────
+
+/**
+ * The phone joined the community (1.6.7 calls this from `joinCommunity`).
+ * Joining used to be a flag on the phone alone, so the server could not tell a
+ * member from an account made for backup (0049). Idempotent.
+ */
+auth.post('/me/join', async (c) => {
+  await c.env.DB.prepare('UPDATE profiles SET joined_at = ? WHERE id = ? AND joined_at IS NULL AND deleted_at IS NULL')
+    .bind(new Date().toISOString(), c.get('profileId'))
+    .run();
+  return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
+});
+
 // ── GET /v1/me ───────────────────────────────────────────────────────────────
 
 auth.get('/me', async (c) => {

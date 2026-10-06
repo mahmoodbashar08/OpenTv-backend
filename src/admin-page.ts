@@ -326,7 +326,12 @@ function todayCell(u) {
       ? '<div class="ev"><span class="vb">added</span> <span class="did">' + added.length + ' titles</span><span class="name"> to their shelves</span></div>'
       : added.map((r) => '<div class="ev"><span class="vb">added</span> <span class="did">' + esc(r.title) +
           '</span><span class="name"> &middot; ' + (r.detail === 'movie' ? 'film' : 'show') + '</span></div>').join('');
-  const library = libraryLine + shelfLines;
+  // AN ACCOUNT ONLY publishes nothing, but its changes still go through Sync —
+  // counted, never named.
+  const syncLine = !u.joined_at && u.sync_today
+    ? '<div class="ev"><span class="vb">synced</span> <span class="did">' + esc(u.sync_today) + (u.sync_today === 1 ? ' change' : ' changes') + '</span></div>'
+    : '';
+  const library = libraryLine + shelfLines + syncLine;
   if (!rows.length) {
     if (library) return library;
     return openedToday(u) ? '<span class="name">opened only</span>' : '<span class="name">&mdash;</span>';
@@ -708,6 +713,7 @@ function drawPeople() {
   // library exists on the phone and only the totals are owed.
   const num = (v, u) =>
     v != null ? String(v)
+    : !u.joined_at ? '<span class="name">private (account only)</span>'
     : u.imported_archive ? '<span class="name">imported, not sent yet</span>'
     : '<span class="name">no library yet</span>';
   const on = FILTERS.filter((f) => activeFilters.has(f.id));
@@ -735,6 +741,8 @@ function drawPeople() {
         (didToday(u) ? ' <span class="tag act">active ' + esc(dayName(viewDay || serverToday).toLowerCase()) + '</span>' : '') +
         ' <button class="more" data-msg="' + esc(u.handle) + '">Message</button>' +
         (u.robot ? ' <span class="tag">Google test robot</span>'
+          // Joined nothing: backup and sync only, no public profile (0049).
+          : !u.joined_at ? ' <span class="tag">account only</span>'
           : placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
