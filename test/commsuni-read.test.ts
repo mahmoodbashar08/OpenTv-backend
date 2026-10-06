@@ -13,17 +13,17 @@ import { call, freshDatabase, makeEnv, tokenFor } from './harness';
 describe('commsuniPath', () => {
   it('addresses an episode by show id, season and episode', () => {
     expect(commsuniPath({ type: 'episode', id: '289590', season: '1', episode: '2' })).toBe(
-      '/entities/episode/tvdb-289590-s1e2/comments?limit=20&sort=most_liked&include=language_counts',
+      '/entities/episode/tvdb-289590-s1e2/comments?limit=20&sort=most_liked&include=language_counts%2Csource_counts',
     );
   });
   it('filters by source and language on their side, and offers "top"', () => {
     expect(commsuniPath({ type: 'show', id: '1', source: 'tvtime,opentv', language: 'ar', sort: 'most_relevant' })).toBe(
-      '/entities/show/tvdb-1/comments?limit=20&sort=most_relevant&source=tvtime%2Copentv&language=ar&include=language_counts',
+      '/entities/show/tvdb-1/comments?limit=20&sort=most_relevant&source=tvtime%2Copentv&language=ar&include=language_counts%2Csource_counts',
     );
   });
   it('drops a source or language that is not a slug or a tag', () => {
     expect(commsuniPath({ type: 'show', id: '1', source: 'tv time;drop', language: 'english!' })).toBe(
-      '/entities/show/tvdb-1/comments?limit=20&sort=most_liked&include=language_counts',
+      '/entities/show/tvdb-1/comments?limit=20&sort=most_liked&include=language_counts%2Csource_counts',
     );
   });
   it('addresses shows and films by their own id, and passes sort and cursor', () => {
@@ -97,9 +97,10 @@ describe('GET /v1/commsuni/comments', () => {
   });
 
   it('passes the language counts through, first page only', async () => {
-    reply = { status: 200, body: { data: { comments: [], nextCursor: null, languageCounts: [{ language: 'en', count: 812 }, { language: 'ar', count: 'x' }] } } };
+    reply = { status: 200, body: { data: { comments: [], nextCursor: null, languageCounts: [{ language: 'en', count: 812 }, { language: 'ar', count: 'x' }], sourceCounts: [{ source: 'tvtime', count: 800 }, { source: 'opentv', count: 0 }, { source: 7, count: 1 }] } } };
     const res = await get('type=show&id=7');
     expect(res.json.languageCounts).toEqual([{ language: 'en', count: 812 }]);
+    expect(res.json.sourceCounts).toEqual([{ source: 'tvtime', count: 800 }, { source: 'opentv', count: 0 }]);
   });
 
   it('reports a comment, and refuses "mine" on anything but the archive', async () => {
@@ -179,7 +180,7 @@ describe('GET /v1/commsuni/comments', () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect(res.json.comments[0].text).toBe('great');
-    expect(calls[0]!.url).toBe('https://api.commsuni.tv/v1/entities/episode/tvdb-289590-s1e2/comments?limit=20&sort=most_liked&include=language_counts');
+    expect(calls[0]!.url).toBe('https://api.commsuni.tv/v1/entities/episode/tvdb-289590-s1e2/comments?limit=20&sort=most_liked&include=language_counts%2Csource_counts');
     expect(calls[0]!.headers.get('authorization')).toBe('Bearer tvta_live_test');
     expect(calls[0]!.headers.get('x-tvta-actor-id')).toMatch(/^[0-9a-f]{64}$/);
     expect(calls[0]!.headers.get('origin')).toBeNull();

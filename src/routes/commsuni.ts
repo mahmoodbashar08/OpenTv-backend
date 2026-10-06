@@ -320,8 +320,8 @@ export function commsuniPath(q: {
   if (q.source && /^[a-z0-9_-]{1,40}(,[a-z0-9_-]{1,40}){0,9}$/.test(q.source)) p.set('source', q.source);
   if (q.language && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(q.language)) p.set('language', q.language);
   // The counts ride on the first page — pre-aggregated per entity, so the
-  // tab's number and the language chips cost no extra request.
-  if (!q.cursor) p.set('include', 'language_counts');
+  // tab's number and the language and app chips cost no extra request.
+  if (!q.cursor) p.set('include', 'language_counts,source_counts');
   return `/entities/${ref}/comments?${p.toString()}`;
 }
 
@@ -365,7 +365,7 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
     return c.body(body, 200, { 'Content-Type': 'application/json' });
   }
   if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
-  const data = (up.body as { data?: { comments?: RawComment[]; nextCursor?: unknown; languageCounts?: unknown } } | null)?.data;
+  const data = (up.body as { data?: { comments?: RawComment[]; nextCursor?: unknown; languageCounts?: unknown; sourceCounts?: unknown } } | null)?.data;
   if (up.status !== 200 || !data || !Array.isArray(data.comments)) {
     if (up.status !== 429) console.log(`[commsuni] ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
     return fail(c, 503, 'unavailable', 'Try again later.');
@@ -380,6 +380,12 @@ commsuni.get('/commsuni/comments', requireAuth, async (c) => {
       ? (data.languageCounts as { language?: unknown; count?: unknown }[])
           .filter((l) => typeof l?.language === 'string' && typeof l?.count === 'number')
           .map((l) => ({ language: l.language as string, count: l.count as number }))
+      : null,
+    // Per app (facc, 6 Oct): follows the language filter, ignores the source one.
+    sourceCounts: Array.isArray(data.sourceCounts)
+      ? (data.sourceCounts as { source?: unknown; count?: unknown }[])
+          .filter((l) => typeof l?.source === 'string' && typeof l?.count === 'number')
+          .map((l) => ({ source: l.source as string, count: l.count as number }))
       : null,
   });
   await c.env.CACHE.put(cacheKey, body, { expirationTtl: 60 });
