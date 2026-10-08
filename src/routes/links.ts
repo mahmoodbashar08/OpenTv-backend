@@ -28,9 +28,10 @@ export const EVENTS = ['halloween', 'christmas'] as const;
 
 export const links = new Hono<App>();
 
-/** An hour at the edge, a day while revalidating. The list changes rarely and
- *  a stale row for an hour is invisible; a request per launch is not. */
-const CACHE_CONTROL = 'public, max-age=3600, stale-while-revalidate=86400';
+/** Five minutes at the edge (was an hour): the seasonal event rides this
+ *  response, and switching it on the dashboard should reach phones while the
+ *  owner is still watching. Still one edge hit per five minutes, not per launch. */
+const CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=600';
 
 links.get('/links', async (c) => {
   const rows = await c.env.DB.prepare(
@@ -51,8 +52,8 @@ links.get('/links', async (c) => {
    * THE SEASONAL EVENT (8 Oct): 'halloween', 'christmas' or null — switched on
    * the dashboard, never by date, so a decoration reaches phones only when the
    * owner says so. Rides this response because it is the one read every
-   * member's phone already makes; cached the same hour, so a switch takes up to
-   * an hour to arrive.
+   * member's phone already makes; cached five minutes, so a switch takes up to
+   * five minutes to arrive.
    */
   const event = (await c.env.CACHE.get(EVENT_KEY)) || null;
   return c.json({ links: safe, event });
