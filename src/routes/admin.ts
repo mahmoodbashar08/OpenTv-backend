@@ -1,3 +1,4 @@
+import { EVENT_KEY, EVENTS } from '@/routes/links';
 import { createMiddleware } from 'hono/factory';
 import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
@@ -295,6 +296,26 @@ admin.post('/admin/commsuni', async (c) => {
   if (body.on) await c.env.CACHE.delete(COMMSUNI_OFF_KEY);
   else await c.env.CACHE.put(COMMSUNI_OFF_KEY, '1');
   return c.json({ on: body.on }, 200, { 'Cache-Control': 'no-store' });
+});
+
+// The seasonal event — see EVENT_KEY in links.ts. One at a time, or none.
+admin.get('/admin/event', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  return c.json({ event: (await c.env.CACHE.get(EVENT_KEY)) || null }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.post('/admin/event', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { event?: unknown };
+  const ev = body.event;
+  if (ev !== null && !(EVENTS as readonly unknown[]).includes(ev)) return fail(c, 400, 'invalid_body', 'event must be one of the events, or null');
+  if (ev === null) await c.env.CACHE.delete(EVENT_KEY);
+  else await c.env.CACHE.put(EVENT_KEY, ev as string);
+  return c.json({ event: ev }, 200, { 'Cache-Control': 'no-store' });
 });
 
 admin.use('/admin/stats', cachedRead);

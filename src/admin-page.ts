@@ -173,6 +173,7 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
       <!-- Every phone at once, no app update: off means no CommsUni comments anywhere. -->
       <button class="ghost" id="commsuni" hidden title="Show CommsUni comments in the app">CommsUni: …</button>
+      <button class="ghost" id="event" hidden title="Seasonal decorations and themes in the app">Event: …</button>
       <button class="ghost" id="out" hidden>Sign out</button>
     </div>
   </div>
@@ -950,6 +951,8 @@ function show(ok) {
   $('hard').hidden = !ok;
   $('commsuni').hidden = !ok;
   if (ok) readCommsuni();
+  $('event').hidden = !ok;
+  if (ok) readEvent();
   $('sub').textContent = ok ? 'Community dashboard' : 'Sign in to continue';
   // The password field survives a failed sign-in; it must not survive a
   // successful one, and it must not be sitting in the DOM behind the panel.
@@ -964,6 +967,34 @@ $('hard').addEventListener('click', async () => {
   } finally {
     $('hard').textContent = 'Hard refresh';
   }
+});
+
+let eventOn = undefined;
+const EVENT_NAMES = { halloween: 'Halloween', christmas: 'Christmas' };
+function drawEvent() {
+  $('event').textContent = eventOn === undefined ? 'Event: …' : 'Event: ' + (eventOn ? EVENT_NAMES[eventOn] : 'off');
+}
+async function readEvent() {
+  const res = await fetch('/v1/admin/event', { credentials: 'same-origin' });
+  eventOn = res.ok ? (await res.json()).event : undefined;
+  drawEvent();
+}
+$('event').addEventListener('click', async () => {
+  if (eventOn === undefined) return;
+  // off -> halloween -> christmas -> off
+  const order = [null, 'halloween', 'christmas'];
+  const next = order[(order.indexOf(eventOn) + 1) % order.length];
+  if (!confirm(next
+    ? 'Turn on ' + EVENT_NAMES[next] + '? Members get its avatar decorations and theme within the hour; free users lose them when you turn it off, Plus keeps them.'
+    : 'Turn the seasonal event off? Free users lose the decorations within the hour.')) return;
+  const res = await fetch('/v1/admin/event', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ event: next }),
+  });
+  if (res.ok) eventOn = (await res.json()).event;
+  drawEvent();
 });
 
 let commsuniOn = null;

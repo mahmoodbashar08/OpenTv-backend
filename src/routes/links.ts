@@ -2,6 +2,9 @@ import { Hono } from 'hono';
 import type { App } from '@/env';
 import { isSafeLinkUrl } from '@/pure';
 
+export const EVENT_KEY = 'event:active';
+export const EVENTS = ['halloween', 'christmas'] as const;
+
 /**
  * Where to find us — Discord, Reddit, Instagram, TikTok, X — as rows this
  * server owns rather than text compiled into an app.
@@ -44,5 +47,13 @@ links.get('/links', async (c) => {
   const safe = (rows.results ?? []).filter((r) => isSafeLinkUrl(r.url));
 
   c.header('Cache-Control', CACHE_CONTROL);
-  return c.json({ links: safe });
+  /*
+   * THE SEASONAL EVENT (8 Oct): 'halloween', 'christmas' or null — switched on
+   * the dashboard, never by date, so a decoration reaches phones only when the
+   * owner says so. Rides this response because it is the one read every
+   * member's phone already makes; cached the same hour, so a switch takes up to
+   * an hour to arrive.
+   */
+  const event = (await c.env.CACHE.get(EVENT_KEY)) || null;
+  return c.json({ links: safe, event });
 });
