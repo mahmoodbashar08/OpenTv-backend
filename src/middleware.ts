@@ -66,12 +66,16 @@ export const requireAuth = createMiddleware<App>(async (c, next) => {
    */
   const raw = c.req.header('X-OpenTV-Version') ?? '';
   const version = /^[0-9]{1,3}(\.[0-9]{1,3}){0,3}$/.test(raw) ? raw : null;
+  // Why the phone's last publish sent nothing, if it did -- see 0051.
+  const pub = c.req.header('X-OpenTV-Publish') ?? '';
+  const publishState = /^[a-z_:]{1,40}$/.test(pub) ? pub : null;
   c.executionCtx.waitUntil(
     c.env.DB.prepare(
-      `UPDATE profiles SET last_seen_at = ?, app_version = COALESCE(?, app_version)
+      `UPDATE profiles SET last_seen_at = ?, app_version = COALESCE(?, app_version),
+              publish_state = COALESCE(?, publish_state)
         WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`,
     )
-      .bind(new Date().toISOString(), version, session.profileId, today)
+      .bind(new Date().toISOString(), version, publishState, session.profileId, today)
       .run()
       .then((r) => {
         // The first open of the day, and only that one, also goes in the day

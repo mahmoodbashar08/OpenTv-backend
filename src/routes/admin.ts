@@ -624,6 +624,7 @@ admin.get('/admin/users', async (c) => {
             -- this one.
             p.last_seen_at,
             p.app_version,
+            p.publish_state,
             -- The address only where the person typed one into this app. A
             -- provider's copy is Apple's or Google's to show, not ours to
             -- collect a list of.

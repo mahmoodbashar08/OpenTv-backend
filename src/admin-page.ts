@@ -749,10 +749,19 @@ function drawPeople() {
   // since signing in. Nothing failed, so it should not read like a fault.
   // "imported" = the server holds TV Time ratings or comments from them, so a
   // library exists on the phone and only the totals are owed.
+  const PUBLISH_WHY = {
+    empty: 'no watched episodes or films on the phone',
+    seed: 'phone still on the demo library',
+    no_token: 'phone has lost its sign-in',
+    fingerprint_failed: 'phone could not read its library',
+    build_failed: 'phone could not build the shelves',
+  };
   const num = (v, u) =>
     v != null ? String(v)
     : !u.joined_at ? '<span class="name">private (account only)</span>'
-    : u.imported_archive ? '<span class="name">imported, not sent yet</span>'
+    // The phone's own reason, from 1.6.9 on (0051): one word instead of a guess.
+    : u.publish_state && u.publish_state !== 'ok' ? '<span class="name">not sent: ' + (PUBLISH_WHY[u.publish_state] || u.publish_state) + '</span>'
+    : u.imported_archive ? '<span class="name">imported, never sent (phone older than 1.6.9 gives no reason)</span>'
     : '<span class="name">no library yet</span>';
   const on = FILTERS.filter((f) => activeFilters.has(f.id));
   const rows = allPeople.filter((u) => on.every((f) => f.test(u)));
