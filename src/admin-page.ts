@@ -708,6 +708,9 @@ const FILTERS = [
   { id: 'given', label: () => 'Plus given', test: (u) => !u.is_plus && !!u.plus_until && Date.parse(u.plus_until) > Date.now() },
   { id: 'expired', label: () => 'Plus expired', test: (u) => !u.is_plus && !!u.plus_until && Date.parse(u.plus_until) <= Date.now() },
   { id: 'mismatch', label: () => '\u26A0 Paid on phone', test: (u) => u.device_plus === 1 && !u.is_plus },
+  // Plus is mostly paid FOR the backup, so a subscriber with none is the one
+  // to write to (Cru, 8 Oct: paying five days, sync on, no copy ever landed).
+  { id: 'nobackup', label: () => '\u26A0 Plus, no backup', test: (u) => (!!u.is_plus || (!!u.plus_until && Date.parse(u.plus_until) > Date.now())) && !u.backup_at },
   { id: 'backup', label: () => 'Backs up', test: (u) => !!u.backup_at },
   { id: 'sync', label: () => 'Sync on', test: (u) => !!u.sync_at && Date.now() - Date.parse(u.sync_at) < 30 * 86400000 },
   { id: 'library', label: () => 'Has a library', test: (u) => u.episodes_watched != null },
