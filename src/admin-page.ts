@@ -173,7 +173,7 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
       <!-- Every phone at once, no app update: off means no CommsUni comments anywhere. -->
       <button class="ghost" id="commsuni" hidden title="Show CommsUni comments in the app">CommsUni: …</button>
-      <button class="ghost" id="event" hidden title="Seasonal decorations and themes in the app">Event: …</button>
+      <select class="ghost" id="event" hidden title="Seasonal decorations and themes in the app"></select>
       <button class="ghost" id="out" hidden>Sign out</button>
     </div>
   </div>
@@ -970,23 +970,26 @@ $('hard').addEventListener('click', async () => {
 });
 
 let eventOn = undefined;
-const EVENT_NAMES = { halloween: 'Halloween', christmas: 'Christmas' };
+const EVENT_NAMES = {
+  halloween: 'Halloween', muertos: 'Day of the Dead', christmas: 'Christmas', newyear: 'New Year',
+  valentine: "Valentine's", ramadan: 'Ramadan & Eid', awards: 'Awards season',
+};
+$('event').innerHTML = '<option value="">Event: off</option>' +
+  Object.entries(EVENT_NAMES).map(([k, v]) => '<option value="' + k + '">Event: ' + v + '</option>').join('');
 function drawEvent() {
-  $('event').textContent = eventOn === undefined ? 'Event: …' : 'Event: ' + (eventOn ? EVENT_NAMES[eventOn] : 'off');
+  $('event').value = eventOn || '';
 }
 async function readEvent() {
   const res = await fetch('/v1/admin/event', { credentials: 'same-origin' });
   eventOn = res.ok ? (await res.json()).event : undefined;
   drawEvent();
 }
-$('event').addEventListener('click', async () => {
-  if (eventOn === undefined) return;
-  // off -> halloween -> christmas -> off
-  const order = [null, 'halloween', 'christmas'];
-  const next = order[(order.indexOf(eventOn) + 1) % order.length];
+$('event').addEventListener('change', async () => {
+  if (eventOn === undefined) return drawEvent();
+  const next = $('event').value || null;
   if (!confirm(next
     ? 'Turn on ' + EVENT_NAMES[next] + '? Members get its avatar decorations and theme within 5 minutes; free users lose them when you turn it off, Plus keeps them.'
-    : 'Turn the seasonal event off? Free users lose the decorations within 5 minutes.')) return;
+    : 'Turn the seasonal event off? Free users lose the decorations within 5 minutes.')) return drawEvent();
   const res = await fetch('/v1/admin/event', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

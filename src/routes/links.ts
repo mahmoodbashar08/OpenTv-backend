@@ -3,7 +3,7 @@ import type { App } from '@/env';
 import { isSafeLinkUrl } from '@/pure';
 
 export const EVENT_KEY = 'event:active';
-export const EVENTS = ['halloween', 'christmas'] as const;
+export const EVENTS = ['halloween', 'muertos', 'christmas', 'newyear', 'valentine', 'ramadan', 'awards'] as const;
 
 /**
  * Where to find us — Discord, Reddit, Instagram, TikTok, X — as rows this
@@ -49,7 +49,7 @@ links.get('/links', async (c) => {
 
   c.header('Cache-Control', CACHE_CONTROL);
   /*
-   * THE SEASONAL EVENT (8 Oct): 'halloween', 'christmas' or null — switched on
+   * THE SEASONAL EVENT (8 Oct): one of `EVENTS` or null — switched on
    * the dashboard, never by date, so a decoration reaches phones only when the
    * owner says so. Rides this response because it is the one read every
    * member's phone already makes; cached five minutes, so a switch takes up to
