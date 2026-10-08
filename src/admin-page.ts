@@ -759,9 +759,9 @@ function drawPeople() {
   const num = (v, u) =>
     v != null ? String(v)
     : !u.joined_at ? '<span class="name">private (account only)</span>'
-    // The phone's own reason, from 1.6.9 on (0051): one word instead of a guess.
+    // The phone's own reason, from 1.6.8 on (0051): one word instead of a guess.
     : u.publish_state && u.publish_state !== 'ok' ? '<span class="name">not sent: ' + (PUBLISH_WHY[u.publish_state] || u.publish_state) + '</span>'
-    : u.imported_archive ? '<span class="name">imported, never sent (phone older than 1.6.9 gives no reason)</span>'
+    : u.imported_archive ? '<span class="name">imported, never sent (phone older than 1.6.8 gives no reason)</span>'
     : '<span class="name">no library yet</span>';
   const on = FILTERS.filter((f) => activeFilters.has(f.id));
   const rows = allPeople.filter((u) => on.every((f) => f.test(u)));
