@@ -985,8 +985,8 @@ $('event').addEventListener('click', async () => {
   const order = [null, 'halloween', 'christmas'];
   const next = order[(order.indexOf(eventOn) + 1) % order.length];
   if (!confirm(next
-    ? 'Turn on ' + EVENT_NAMES[next] + '? Members get its avatar decorations and theme within the hour; free users lose them when you turn it off, Plus keeps them.'
-    : 'Turn the seasonal event off? Free users lose the decorations within the hour.')) return;
+    ? 'Turn on ' + EVENT_NAMES[next] + '? Members get its avatar decorations and theme within 5 minutes; free users lose them when you turn it off, Plus keeps them.'
+    : 'Turn the seasonal event off? Free users lose the decorations within 5 minutes.')) return;
   const res = await fetch('/v1/admin/event', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
