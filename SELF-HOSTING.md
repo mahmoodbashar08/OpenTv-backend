@@ -22,8 +22,8 @@ Community server**, and enter the address along with your own TMDB token and
 TheTVDB key — running everything yourself means running it on your own keys,
 so the app asks for all three together.
 
-**Needs OpenTV 1.6.2 or later.** On Android now; the iOS build is in review as
-of 7 September 2026, and the setting is not in 1.6.1.
+**Needs OpenTV 1.6.2 or later**, on iPhone and Android — the setting is not in
+1.6.1 and earlier.
 
 ---
 
