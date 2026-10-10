@@ -68,6 +68,7 @@ const MIGRATION_FILES = [
   '../migrations/0049_joined_at.sql',
   '../migrations/0050_support_chat.sql',
   '../migrations/0051_publish_state.sql',
+  '../migrations/0054_devices.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

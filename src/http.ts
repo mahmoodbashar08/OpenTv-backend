@@ -50,6 +50,14 @@ export type ErrorCode =
   // Sign-in against an address whose account uses Apple or Google. The reply
   // carries a `providers` array alongside the envelope so the app can name it.
   | 'use_provider'
+  // Sync from a device the owner removed from their list (0054). Its own code
+  // because the phone's answer is to switch sync off and say so once — a plain
+  // `forbidden` would read as "sign in again", which is the wrong sentence.
+  | 'device_removed'
+  // A NEW device, and the account already syncs on its full set. Different
+  // from `device_removed` because the fix is different: remove one you no
+  // longer use, then come back.
+  | 'device_limit'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */
