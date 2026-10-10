@@ -1,7 +1,7 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { requireAuth } from '@/middleware';
+import { hasPlus, requireAuth } from '@/middleware';
 import {
   chunk,
   D1_MAX_BOUND_PARAMS,
@@ -81,6 +81,47 @@ async function isPlusProfile(db: D1Database, profileId: string, nowIso: string):
   return row ? plusOn(row, nowIso) : false;
 }
 
+/**
+ * ONE PHONE PUBLISHES A FREE PROFILE (0052).
+ *
+ * Every intake in this file REPLACES, and a free account on two phones holds
+ * two different libraries — sync is Plus. So once both phones had published,
+ * the public profile flipped to whichever spoke last, on every launch. The
+ * profile is now published from ONE phone: the first to say which it is, or
+ * the last one the person chose — `claim`, which the app sends once after
+ * "Make this phone main" or a restore. The other phone is told so, with its
+ * own code, and keeps tracking, commenting and following exactly as before.
+ * NOTHING IS BLOCKED HERE: a replacement phone and a second phone look the
+ * same from this side, so the choice is made on the phone, gently, not by a
+ * server that cannot tell them apart.
+ *
+ * PLUS LIFTS IT. Sync keeps both libraries equal, so either phone's shelf is
+ * the same shelf — and `hasPlus` says yes on a self-hosted instance too, for
+ * the reason it does for sync. NO DEVICE, NO CHECK: a build from before this
+ * sends none and must keep publishing exactly as it always did.
+ *
+ * The holder is still RECORDED under Plus (see the upsert below), so when a
+ * subscription lapses the last phone that published is the one that keeps
+ * publishing, rather than whichever happened to hold it a year ago.
+ *
+ * The device id is the phone's own random name for itself — the one the sync
+ * relay keys its ops on — and says nothing about the hardware or the person.
+ */
+async function notPublisher(c: Context<App>, me: string, device: string, claim: boolean): Promise<boolean> {
+  if (!device || claim) return false;
+  if (await hasPlus(c)) return false;
+  const row = await c.env.DB.prepare('SELECT publisher_device FROM profile_stats WHERE profile_id = ?')
+    .bind(me)
+    .first<{ publisher_device: string | null }>();
+  return row?.publisher_device != null && row.publisher_device !== device;
+}
+
+/** The phone's name for itself, as `POST /v1/sync` takes it; '' when the
+ *  build predates sending one. */
+function deviceOf(b: Record<string, unknown>): string {
+  return typeof b.device === 'string' ? b.device.slice(0, 64) : '';
+}
+
 /** One request carries at most this many titles. Chosen so 250 stay inside the
  *  100-parameter ceiling at 9 binds each — see `TITLE_BINDS`. It is a TRANSPORT
  *  limit, which is not the same thing as how long a shelf may be: see
@@ -153,6 +194,13 @@ published.put('/me/published', requireAuth, async (c) => {
   const me = c.get('profileId');
   const db = c.env.DB;
   const nowIso = new Date().toISOString();
+
+  // BEFORE anything is written, and before the append branch, so every chunk
+  // of a publish answers the same way — see `notPublisher`.
+  const device = deviceOf(b);
+  if (await notPublisher(c, me, device, b.claim === true)) {
+    return fail(c, 409, 'not_publisher', 'Another of your phones publishes this profile.');
+  }
 
   /*
    * APPEND, FOR THE SECOND CHUNK ONWARDS.
@@ -309,8 +357,9 @@ published.put('/me/published', requireAuth, async (c) => {
   await db
     .prepare(
       `INSERT INTO profile_stats
-         (profile_id, episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (profile_id, episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at,
+          publisher_device)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (profile_id) DO UPDATE SET
          episodes_watched = excluded.episodes_watched,
          minutes_watched  = excluded.minutes_watched,
@@ -324,7 +373,10 @@ published.put('/me/published', requireAuth, async (c) => {
                                   THEN profile_stats.day_base_episodes ELSE profile_stats.episodes_watched END,
          day_base_movies   = CASE WHEN substr(profile_stats.updated_at, 1, 10) = substr(excluded.updated_at, 1, 10)
                                   THEN profile_stats.day_base_movies ELSE profile_stats.movies_count END,
-         updated_at       = excluded.updated_at`,
+         updated_at       = excluded.updated_at,
+         -- The phone that just spoke, when it said which (0052). An older
+         -- build says nothing and the holder stays whoever it was.
+         publisher_device = COALESCE(excluded.publisher_device, profile_stats.publisher_device)`,
     )
     .bind(
       me,
@@ -346,6 +398,7 @@ published.put('/me/published', requireAuth, async (c) => {
       kind === 'show' ? n(stats.shows_count) || rows.length : 0,
       kind === 'movie' ? n(stats.movies_count) || rows.length : 0,
       nowIso,
+      device || null,
       kind,
       kind,
     )
@@ -545,6 +598,13 @@ published.post('/published/lists', requireAuth, async (c) => {
   const me = c.get('profileId');
   const db = c.env.DB;
   const nowIso = new Date().toISOString();
+
+  // The same gate as the shelves, and no `claim` here: the app sends the lists
+  // after the shelves on one run, so the PUT above has already settled who
+  // publishes — this only has to agree with it.
+  if (await notPublisher(c, me, deviceOf(b), false)) {
+    return fail(c, 409, 'not_publisher', 'Another of your phones publishes this profile.');
+  }
 
   const lists: { id: string; name: string; description: string | null; items: {
     source: string; key: string; title: string | null; poster: string | null;

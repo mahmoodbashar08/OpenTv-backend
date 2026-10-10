@@ -390,3 +390,78 @@ describe('when a title first appeared on a shelf', () => {
     expect(rows.filter((r) => !r.first_seen_at.startsWith('2000'))).toHaveLength(1);
   });
 });
+
+/*
+ * ONE PHONE PUBLISHES A FREE PROFILE (0052). Two phones on a free account hold
+ * two different libraries, and every intake here replaces — so without this
+ * the public profile flipped to whichever phone published last. The phone
+ * that holds it is the first to say which it is, or the last the person
+ * chose (`claim`); the other is told 409 and nothing of its is written.
+ */
+describe('one phone publishes a free profile', () => {
+  const put = (device?: string, over: Record<string, unknown> = {}) =>
+    call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', stats: {}, titles: [title(device === 'phone-b' ? 2 : 1)], ...(device ? { device } : {}), ...over },
+    });
+  const lists = (device?: string) =>
+    call(env, 'POST', '/v1/published/lists', {
+      token,
+      body: { lists: [{ name: 'Best', items: [] }], ...(device ? { device } : {}) },
+    });
+  const holder = () =>
+    (raw.prepare("SELECT publisher_device AS d FROM profile_stats WHERE profile_id = 'p1'").get() as { d: string | null } | undefined)
+      ?.d ?? null;
+  const shelf = () =>
+    (raw.prepare("SELECT target_key FROM profile_titles WHERE profile_id = 'p1'").all() as { target_key: string }[]).map((r) => r.target_key);
+
+  it('the first phone to publish holds the profile; the second is told, and replaces nothing', async () => {
+    expect((await put('phone-a')).status).toBe(200);
+    expect(holder()).toBe('phone-a');
+
+    const res = await put('phone-b');
+    expect(res.status).toBe(409);
+    expect(res.json.error.code).toBe('not_publisher');
+    expect(holder()).toBe('phone-a');
+    expect(shelf()).toEqual(['1001']); // still A's shelf, not B's
+    // The lists go the same way, and A carries on exactly as before.
+    expect((await lists('phone-b')).status).toBe(409);
+    expect((await put('phone-a')).status).toBe(200);
+    expect((await lists('phone-a')).status).toBe(200);
+  });
+
+  it('a claim moves it, and from then on the old holder is the one told', async () => {
+    await put('phone-a');
+    expect((await put('phone-b', { claim: true })).status).toBe(200);
+    expect(holder()).toBe('phone-b');
+    expect(shelf()).toEqual(['1002']);
+    // The lists follow on the same run, with no claim of their own.
+    expect((await lists('phone-b')).status).toBe(200);
+    expect((await put('phone-a')).status).toBe(409);
+    expect((await lists('phone-a')).status).toBe(409);
+    // ...until A claims it back.
+    expect((await put('phone-a', { claim: true })).status).toBe(200);
+    expect(holder()).toBe('phone-a');
+  });
+
+  it('never for Plus — sync keeps both libraries equal, so either phone may speak', async () => {
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p1'").run();
+    await put('phone-a');
+    expect((await put('phone-b')).status).toBe(200);
+    expect((await lists('phone-b')).status).toBe(200);
+    expect((await put('phone-a')).status).toBe(200);
+    // Still RECORDED, so a lapse leaves the last phone that spoke in charge.
+    expect(holder()).toBe('phone-a');
+  });
+
+  it('a request with no device — an older build — is accepted as it always was, and forgets nobody', async () => {
+    await put('phone-a');
+    expect((await put()).status).toBe(200);
+    expect((await lists()).status).toBe(200);
+    expect(holder()).toBe('phone-a');
+    // And a profile nobody has claimed takes whoever speaks first.
+    raw.prepare("UPDATE profile_stats SET publisher_device = NULL WHERE profile_id = 'p1'").run();
+    expect((await put('phone-b')).status).toBe(200);
+    expect(holder()).toBe('phone-b');
+  });
+});
