@@ -755,6 +755,10 @@ function drawPeople() {
     no_token: 'phone has lost its sign-in',
     fingerprint_failed: 'phone could not read its library',
     build_failed: 'phone could not build the shelves',
+    held: 'phone holds less than the profile; waiting for the person to choose',
+    check_failed: 'phone could not read the profile to compare',
+    // One phone publishes a free profile (0052); this is the other one.
+    other_device: 'another of their phones publishes the profile',
   };
   const num = (v, u) =>
     v != null ? String(v)
