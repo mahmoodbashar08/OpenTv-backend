@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { hasPlus, requireAuth } from '@/middleware';
-import { plusOn } from '@/pure';
+import { plusOn, readDevice, readDeviceName, readPlatform } from '@/pure';
 
 /**
  * One person's own devices, kept level.
@@ -91,6 +91,75 @@ export function validateOps(raw: unknown): IncomingOp[] | string {
 /** Plus, including the self-hosted case — see `hasPlus` in `middleware.ts`. */
 const isPlus = hasPlus;
 
+/**
+ * HOW MANY DEVICES ONE ACCOUNT SYNCS. A phone, a tablet, an old phone not yet
+ * wiped, a work phone — five is past any one person and short of a group chat
+ * sharing one Plus, which is the only thing this number exists to stop.
+ */
+export const DEVICE_LIMIT = 5;
+
+/**
+ * THE REGISTRY (0054): who this device is, and whether it may still sync.
+ *
+ * Called on every push and pull, because both are a device being in use, and
+ * the list of devices is read from `last_seen`. Three answers:
+ *   - `removed`: the owner dropped this device from the list. It is told so
+ *     rather than silently re-registered — a lost phone that comes back must
+ *     not quietly rejoin.
+ *   - `limit`: a device never seen before, and the account already has its
+ *     full set. The existing five carry on; this one is turned away.
+ *   - null: carry on.
+ *
+ * AT MOST ONE WRITE A DAY PER DEVICE, the same guard `requireAuth` keeps for
+ * `last_seen_at`: a phone polls every minute, and sixty writes an hour per
+ * open app is the whole D1 budget. A new device costs one INSERT; a known one
+ * costs nothing until the date changes. The name and platform ride on that
+ * same daily write — a renamed phone shows its new name tomorrow, which is
+ * soon enough.
+ *
+ * ponytail: the cap is a read-then-insert, so two NEW devices racing on the
+ * same second can both land as the fifth. Harmless; a transaction if it ever
+ * matters.
+ */
+async function registerDevice(
+  c: Context<App>,
+  profileId: string,
+  device: string,
+  name: string | null,
+  platform: string | null,
+): Promise<'removed' | 'limit' | null> {
+  const row = await c.env.DB.prepare('SELECT last_seen, removed_at FROM devices WHERE profile_id = ? AND device = ?')
+    .bind(profileId, device)
+    .first<{ last_seen: string; removed_at: string | null }>();
+  if (row?.removed_at) return 'removed';
+
+  const now = new Date().toISOString();
+  if (!row) {
+    const n = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM devices WHERE profile_id = ? AND removed_at IS NULL')
+      .bind(profileId)
+      .first<{ n: number }>();
+    if ((n?.n ?? 0) >= DEVICE_LIMIT) return 'limit';
+    // OR IGNORE: the same new device pushing twice at once is one row.
+    await c.env.DB.prepare(
+      'INSERT OR IGNORE INTO devices (profile_id, device, name, platform, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+      .bind(profileId, device, name, platform, now, now)
+      .run();
+    return null;
+  }
+
+  // ISO strings order as dates do, so "before today" is a string compare —
+  // the trick `requireAuth` already relies on.
+  if (row.last_seen < now.slice(0, 10)) {
+    await c.env.DB.prepare(
+      'UPDATE devices SET last_seen = ?, name = COALESCE(?, name), platform = COALESCE(?, platform) WHERE profile_id = ? AND device = ?',
+    )
+      .bind(now, name, platform, profileId, device)
+      .run();
+  }
+  return null;
+}
+
 sync.post('/sync', requireAuth, async (c) => {
   const profileId = c.get('profileId');
   let body: Record<string, unknown>;
@@ -100,12 +169,20 @@ sync.post('/sync', requireAuth, async (c) => {
     return fail(c, 400, 'invalid_body', 'body must be JSON');
   }
 
-  const device = typeof body.device === 'string' ? body.device.slice(0, 64) : '';
+  // Pattern-checked now that it is also a URL segment (`DELETE /me/devices/:device`).
+  // Every id a phone has ever made is base-36, so nothing real is refused.
+  const device = readDevice(typeof body.device === 'string' ? body.device : undefined);
   if (!device) return fail(c, 400, 'invalid_body', 'device is required');
   const cursor = typeof body.cursor === 'number' && isFinite(body.cursor) && body.cursor >= 0 ? Math.floor(body.cursor) : 0;
 
   const ops = validateOps(body.ops ?? []);
   if (typeof ops === 'string') return fail(c, 400, 'invalid_body', ops);
+
+  // BEFORE the Plus gate and before anything is stored: a device that may not
+  // sync may not sync in either direction, whatever it brought.
+  const standing = await registerDevice(c, profileId, device, readDeviceName(body.name), readPlatform(body.platform));
+  if (standing === 'removed') return fail(c, 403, 'device_removed', 'This device was removed from the account.');
+  if (standing === 'limit') return fail(c, 403, 'device_limit', `This account already syncs on ${DEVICE_LIMIT} devices.`);
 
   if (ops.length > 0) {
     if (!(await isPlus(c))) return fail(c, 402, 'plus_required', 'pushing changes needs OpenTV Plus');
@@ -203,5 +280,42 @@ sync.post('/sync', requireAuth, async (c) => {
  *  that route it is gated on nothing — you can always stop. */
 sync.delete('/sync', requireAuth, async (c) => {
   await c.env.DB.prepare('DELETE FROM sync_ops WHERE profile_id = ?').bind(c.get('profileId')).run();
+  return c.json({ ok: true });
+});
+
+/**
+ * "Your devices". The live ones only — a removed device is a tombstone, not a
+ * row anybody needs to see again. Most recently used first, so the phone in
+ * the hand is at the top and the one in the drawer at the bottom. The limit
+ * rides along so the app never keeps its own copy of the number.
+ */
+sync.get('/me/devices', requireAuth, async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT device, name, platform, first_seen, last_seen FROM devices
+       WHERE profile_id = ? AND removed_at IS NULL
+       ORDER BY last_seen DESC, first_seen DESC`,
+  )
+    .bind(c.get('profileId'))
+    .all<{ device: string; name: string | null; platform: string | null; first_seen: string; last_seen: string }>();
+  return c.json({ devices: rows.results ?? [], limit: DEVICE_LIMIT });
+});
+
+/**
+ * Drop a device. Its next sync, in either direction, is refused with
+ * `device_removed`; its library stays on it, and nothing it already relayed is
+ * taken back — those were real things the owner did before the phone was
+ * lost. Gated on nothing but a session, like turning sync off: you can always
+ * stop a device of your own. A 404 is "already gone", which the app treats as
+ * done.
+ */
+sync.delete('/me/devices/:device', requireAuth, async (c) => {
+  const device = readDevice(c.req.param('device'));
+  if (!device) return fail(c, 400, 'invalid_body', 'bad device id');
+  const r = await c.env.DB.prepare(
+    'UPDATE devices SET removed_at = ? WHERE profile_id = ? AND device = ? AND removed_at IS NULL',
+  )
+    .bind(new Date().toISOString(), c.get('profileId'), device)
+    .run();
+  if (!r.meta.changes) return fail(c, 404, 'not_found', 'No such device.');
   return c.json({ ok: true });
 });

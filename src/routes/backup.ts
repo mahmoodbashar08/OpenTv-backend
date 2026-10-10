@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
 import { hasPlus, requireAuth } from '@/middleware';
-import { plusOn } from '@/pure';
+import { plusOn, readDevice } from '@/pure';
 
 /**
  * The library, kept somewhere that is not the phone.
@@ -68,10 +68,6 @@ const keyFor = (profileId: string, device: string): string => `${prefixFor(profi
  *  copy a not-yet-updated device has. */
 const legacyKeyFor = (profileId: string): string => `backups/${profileId}.zip`;
 
-/** A device id is a path segment and is treated like one. */
-const DEVICE_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const readDevice = (raw: string | undefined): string | null =>
-  raw && DEVICE_RE.test(raw) ? raw : null;
 
 /**
  * Generous next to what a real library measures. The heaviest genuine export

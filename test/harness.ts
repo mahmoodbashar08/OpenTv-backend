@@ -70,6 +70,7 @@ const MIGRATION_FILES = [
   '../migrations/0051_publish_state.sql',
   '../migrations/0052_profile_publisher.sql',
   '../migrations/0053_profile_templates.sql',
+  '../migrations/0054_devices.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

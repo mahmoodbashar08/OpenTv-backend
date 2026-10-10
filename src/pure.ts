@@ -1752,3 +1752,31 @@ export function parseTemplateBlocks(text: unknown): { ok: true; blocks: Template
   if (blocks[0] !== 'banners') return { ok: false, reason: 'the first line must be banners' };
   return { ok: true, blocks };
 }
+
+/**
+ * A device id is a path segment and is treated like one. It names an R2 key in
+ * `routes/backup.ts` and a URL segment in `DELETE /v1/me/devices/:device`, so
+ * it is pattern-checked before it goes near either: a client that could put
+ * `../` in it could write outside the prefix.
+ */
+const DEVICE_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const readDevice = (raw: string | undefined): string | null =>
+  raw && DEVICE_RE.test(raw) ? raw : null;
+
+/**
+ * What a phone may say about itself when it syncs — see 0054. A name is kept
+ * to tell two iPhones apart on the list, and nothing else is read from it:
+ * control characters are dropped, the rest is cut to a label's length.
+ */
+export const DEVICE_NAME_MAX = 64;
+export function readDeviceName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const name = raw.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, DEVICE_NAME_MAX);
+  return name || null;
+}
+
+/** 'ios' or 'android' today; a short lowercase word so a future platform fits. */
+export function readPlatform(raw: unknown): string | null {
+  return typeof raw === 'string' && /^[a-z]{1,16}$/.test(raw) ? raw : null;
+}

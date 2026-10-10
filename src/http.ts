@@ -54,6 +54,14 @@ export type ErrorCode =
   // and its own code: the request was well-formed and the app's answer is
   // "make this phone main", not a retry and not the paywall on its own.
   | 'not_publisher'
+  // Sync from a device the owner removed from their list (0054). Its own code
+  // because the phone's answer is to switch sync off and say so once — a plain
+  // `forbidden` would read as "sign in again", which is the wrong sentence.
+  | 'device_removed'
+  // A NEW device, and the account already syncs on its full set. Different
+  // from `device_removed` because the fix is different: remove one you no
+  // longer use, then come back.
+  | 'device_limit'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */
