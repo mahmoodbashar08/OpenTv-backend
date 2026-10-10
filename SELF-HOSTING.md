@@ -7,6 +7,17 @@ That is not a minimal example — it is the actual deployment. Cloudflare D1 *is
 SQLite, so the data is a file; the only bytes this server stores are pictures,
 so they are a folder.
 
+**Before you start: run it yourself, or let us run it.** A server of your own
+costs about $5/month for a small VPS (or a machine at home that never sleeps)
+and your time for updates and backups, and it is its own island — the
+comments on it are from the people on it, and there is no comment
+translation. OpenTV Plus is $19.99/year (about $1.67/month): sync and backup
+on our server, nothing to maintain, and the whole community. Self-hosting is
+here for people who want to own every byte, and it always will be. On your
+own server, backup and sync need no Plus — the server treats everyone as Plus
+(`SELF_HOSTED` is set for you by `selfhost/server.ts`; nothing to configure),
+and the app knows it from 2.0.0 on.
+
 ```bash
 git clone https://github.com/mahmoodbashar08/OpenTv-backend.git
 cd OpenTv-backend
