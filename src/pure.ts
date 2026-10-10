@@ -1654,3 +1654,101 @@ export function publicCoverFrame(frame: string | null, plus: boolean): string | 
   // The fade and the overlay are looks, not Plus shapes: they stay.
   return `${x},${y},${zoom},0,0,${fade},${strength},${tint}`;
 }
+
+// ── profile templates from the server ───────────────────────────────────────
+
+/**
+ * What a dashboard-made template may say about itself (0053). The lists are
+ * the app's: a layout `profile-template.tsx` can draw, a persona
+ * `profile-templates.ts` can name in six languages, and a block the arranger
+ * knows. The phone checks all three again before showing a template, so a
+ * mistake here costs a template on every phone rather than a crash — which is
+ * exactly why the dashboard is told at save time instead of finding out never.
+ */
+export const TEMPLATE_LAYOUTS = ['classic', 'cards', 'poster'] as const;
+
+export const TEMPLATE_PERSONAS = [
+  'binger', 'filmBuff', 'explorer', 'nostalgic', 'completionist', 'critic',
+  'curator', 'devotee', 'feeler', 'newcomer', 'spooky', 'festive',
+] as const;
+
+/**
+ * The blocks a template may place, and the sizes each allows — the app's
+ * WIDGETS table (`mobile/src/profile-layout.ts`) minus the private ones
+ * (prime time, first ever, watchlist) and the ones that need content of their
+ * own (artwork, GIF, links): a template cannot supply a picture or a link, so
+ * placing one would put an empty block on the page.
+ */
+export const TEMPLATE_BLOCKS: Readonly<Record<string, readonly string[]>> = {
+  banners: ['2x1'],
+  intro: ['2x1'],
+  counts: ['2x1'],
+  stats: ['2x2'],
+  activity: ['1x1', '2x1', '2x2'],
+  timeline: ['2x1'],
+  lists: ['2x2'],
+  extra: ['2x1'],
+  since: ['1x1'],
+  character: ['1x1', '2x1'],
+  streak: ['1x1'],
+  genre: ['1x1', '2x1'],
+  thisYear: ['1x1'],
+  binge: ['1x1', '2x1'],
+  finished: ['1x1'],
+  rated: ['1x1', '2x1'],
+  emotions: ['1x1', '2x1'],
+  emotionCalendar: ['2x1', '2x2'],
+  topRated: ['2x1', '2x2'],
+  nowWatching: ['2x1', '2x2'],
+  'shelf:shows': ['2x2'],
+  'shelf:fav-shows': ['2x2'],
+  'shelf:movies': ['2x2'],
+  'shelf:fav-movies': ['2x2'],
+};
+
+export const isHexColour = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+
+/** A block as the app stores it: `id`, `id:span`, or a pair of squares. */
+export type TemplateBlock = string | [string, string];
+
+/**
+ * The dashboard's blocks box, one block a line, into the app's block list.
+ * `a + b` is a pair of squares side by side; `id:2x1` is a block at another
+ * size. The first line is `banners` because the identity row is the one block
+ * a profile cannot be without (LOCKED in profile-layout.ts). Refuses with the
+ * line that is wrong, so a typo is fixed on the dashboard rather than silently
+ * dropping the template on every phone.
+ */
+export function parseTemplateBlocks(text: unknown): { ok: true; blocks: TemplateBlock[] } | { ok: false; reason: string } {
+  if (typeof text !== 'string') return { ok: false, reason: 'blocks must be text' };
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return { ok: false, reason: 'no blocks' };
+  if (lines.length > 40) return { ok: false, reason: 'at most 40 lines' };
+  // `id:span` only when what follows the colon IS a size — a shelf's own id
+  // (`shelf:shows`) has a colon in it too. Same split the phone makes.
+  const one = (ref: string): { ok: true; id: string; span: string } | { ok: false; reason: string } => {
+    const m = /^(.*):(1x1|2x1|2x2)$/.exec(ref);
+    const id = m ? m[1]! : ref;
+    const spans = TEMPLATE_BLOCKS[id];
+    if (!spans) return { ok: false, reason: `unknown block "${ref}"` };
+    const span = m?.[2] ?? spans[0]!;
+    if (!spans.includes(span)) return { ok: false, reason: `"${id}" cannot be ${span}` };
+    return { ok: true, id, span };
+  };
+  const blocks: TemplateBlock[] = [];
+  for (const line of lines) {
+    const parts = line.split('+').map((p) => p.trim());
+    if (parts.length > 2 || parts.some((p) => !p)) return { ok: false, reason: `"${line}" is not a block or a pair` };
+    const parsed = parts.map(one);
+    for (const p of parsed) if (!p.ok) return p;
+    if (parts.length === 2) {
+      // A pair is two squares on one row; anything wider breaks the row.
+      if (parsed.some((p) => p.ok && p.span !== '1x1')) return { ok: false, reason: `"${line}": a pair is two small blocks` };
+      blocks.push([parts[0]!, parts[1]!]);
+    } else {
+      blocks.push(parts[0]!);
+    }
+  }
+  if (blocks[0] !== 'banners') return { ok: false, reason: 'the first line must be banners' };
+  return { ok: true, blocks };
+}

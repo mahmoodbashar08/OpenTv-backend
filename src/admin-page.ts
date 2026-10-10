@@ -158,6 +158,19 @@ export const ADMIN_PAGE = `<!doctype html>
   .chatbtns { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
   .chatbtns button { font:inherit; font-size:13px; padding:6px 14px; border-radius:7px; cursor:pointer; border:1px solid #2e2e34; background:#1c1c1e; color:#fff; }
   .chatbtns #chatsend { background:#ffd400; color:#000; border-color:#ffd400; font-weight:700; }
+  /* Profile templates: the same card as a photo, dimmed when hidden. */
+  .shot.off img { opacity:.35; }
+  .sw { display:inline-block; width:12px; height:12px; border-radius:6px; vertical-align:-2px; margin-right:3px;
+        border:1px solid #0d0d0f; }
+  details.tplnew { margin-top:14px; }
+  details.tplnew summary { cursor:pointer; color:#ffd400; font-weight:700; }
+  .tplform { max-width:520px; margin-top:12px; }
+  .tplform label { color:#8a8a92; font-size:13px; display:flex; align-items:center; gap:8px; }
+  .tplrow { display:flex; gap:18px; flex-wrap:wrap; }
+  .tplform select, .tplform textarea { font:inherit; background:#16161a; border:1px solid #26262b;
+        border-radius:10px; padding:10px 12px; color:#e9e9ee; }
+  .tplform textarea { font-family:ui-monospace,Menlo,monospace; font-size:13px; line-height:1.4; }
+  .tplform .note { margin:0; }
 </style>
 </head>
 <body>
@@ -240,6 +253,32 @@ export const ADMIN_PAGE = `<!doctype html>
     <div class="bulkbar" id="bulkbar" hidden>
       <button class="ghost" id="showall">Show all on this page</button>
     </div>
+    <h2>Profile templates</h2>
+    <p class="note">On top of the twelve built into the app. Members' phones get these with the
+       event, within 5 minutes; one tied to an event is sent only while that event is on. Hidden
+       ones stay here and reach nobody. No edit &mdash; delete and save another.</p>
+    <div class="shots" id="tpllist"><p class="note">None yet.</p></div>
+    <details class="tplnew"><summary>New template</summary>
+      <form id="tplform" class="tplform">
+        <input id="tplname" placeholder="Name, e.g. Ramadan Nights" maxlength="40" required />
+        <label>Banner <input id="tplimg" type="file" accept="image/jpeg,image/png,image/webp" required /></label>
+        <div class="tplrow">
+          <label>Colour <input id="tplc1" type="color" value="#8b5cf6" /></label>
+          <label>Second colour <input id="tplc2" type="color" value="#22d3ee" /></label>
+        </div>
+        <select id="tpllayout"></select>
+        <select id="tplpersona"></select>
+        <select id="tplevent"></select>
+        <textarea id="tplblocks" rows="13" spellcheck="false"></textarea>
+        <p class="note">One block a line, in order. <b>a + b</b> puts two small blocks side by side;
+           <b>name:2x1</b> picks a size (1x1, 2x1, 2x2). The first line is banners. Blocks: banners, intro,
+           counts, stats, activity, timeline, lists, extra, since, character, streak, genre, thisYear, binge,
+           finished, rated, emotions, emotionCalendar, topRated, nowWatching, shelf:shows, shelf:fav-shows,
+           shelf:movies, shelf:fav-movies.</p>
+        <button type="submit">Save template</button>
+        <div class="err" id="tplerr"></div>
+      </form>
+    </details>
     <h2>Joins, last 14 days</h2>
     <div class="bars" id="bars"></div>
     <p class="foot" id="foot"></p>
@@ -654,6 +693,8 @@ async function load() {
 
   await loadReview();
 
+  await loadTemplates();
+
   // WAS "never what anybody wrote", and the Today column made that untrue: it
   // names the title somebody rated or voted on. Comment TEXT is still never
   // read here, and that is the line the sentence now draws.
@@ -1007,6 +1048,92 @@ $('event').addEventListener('change', async () => {
   });
   if (res.ok) eventOn = (await res.json()).event;
   drawEvent();
+});
+
+// ── Profile templates (0053) ────────────────────────────────────────────────
+// The phone names the persona and the event in its own language; these are
+// the English for this page only.
+const PERSONA_NAMES = {
+  binger: 'The Binger', filmBuff: 'The Film Buff', explorer: 'The Explorer', nostalgic: 'The Nostalgic',
+  completionist: 'The Completionist', critic: 'The Critic', curator: 'The Curator', devotee: 'The Devotee',
+  feeler: 'The Feeler', newcomer: 'The Newcomer', spooky: 'The Spooky One', festive: 'The Festive One',
+};
+$('tplpersona').innerHTML = Object.entries(PERSONA_NAMES).map(([k, v]) =>
+  '<option value="' + k + '">Persona: ' + v + '</option>').join('');
+$('tpllayout').innerHTML = [['cards', 'grid'], ['classic', 'row'], ['poster', 'compact']].map(([k, v]) =>
+  '<option value="' + k + '">Layout: ' + v + '</option>').join('');
+$('tplevent').innerHTML = '<option value="">Shown: always</option>' +
+  Object.entries(EVENT_NAMES).map(([k, v]) => '<option value="' + k + '">Shown: only during ' + v + '</option>').join('');
+// The Midnight template's order, as a starting point.
+$('tplblocks').value = ['banners', 'intro', 'counts', 'nowWatching:2x2', 'binge + streak', 'stats', 'activity:2x1',
+  'thisYear + finished', 'shelf:shows', 'shelf:fav-shows', 'shelf:movies', 'shelf:fav-movies', 'lists', 'extra'].join('\\n');
+
+async function loadTemplates() {
+  const res = await fetch('/v1/admin/templates', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const { items = [] } = await res.json();
+  if (!items.length) { $('tpllist').innerHTML = '<p class="note">None yet.</p>'; return; }
+  $('tpllist').innerHTML = items.map((t) =>
+    '<div class="shot' + (t.hidden ? ' off' : '') + '" data-id="' + escm(t.id) + '">' +
+    '<img loading="lazy" src="' + escm(t.banner) + '" alt="">' +
+    '<div class="meta"><div class="who">' + escm(t.name) +
+    (t.hidden ? ' <span class="tag gone">hidden</span>' : '') +
+    (t.event ? ' <span class="tag warn">' + escm(EVENT_NAMES[t.event] || t.event) + '</span>' : '') + '</div>' +
+    '<div class="cap"><span class="sw" style="background:' + escm(t.primary) + '"></span>' +
+    '<span class="sw" style="background:' + escm(t.secondary) + '"></span> ' +
+    escm(PERSONA_NAMES[t.persona] || t.persona) + ' &middot; ' + escm(t.layout) + ' &middot; ' +
+    (Array.isArray(t.blocks) ? t.blocks.length : 0) + ' blocks &middot; ' + escm(String(t.created_at).slice(0, 10)) + '</div></div>' +
+    '<div class="btns"><button data-hide="' + (t.hidden ? '0' : '1') + '">' + (t.hidden ? 'Show' : 'Hide') + '</button>' +
+    '<button class="no" data-del="1">Delete</button></div></div>').join('');
+}
+
+$('tpllist').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  const card = btn.closest('.shot');
+  const id = card.dataset.id;
+  if (btn.dataset.del) {
+    if (!confirm('Delete this template? It leaves phones within 5 minutes; anyone who already applied it keeps their look.')) return;
+    btn.disabled = true;
+    const res = await fetch('/v1/admin/templates/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin' });
+    if (res.ok) card.remove(); else btn.disabled = false;
+    if (!$('tpllist').querySelector('.shot')) void loadTemplates();
+    return;
+  }
+  btn.disabled = true;
+  const res = await fetch('/v1/admin/templates/' + encodeURIComponent(id), {
+    method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ hidden: btn.dataset.hide === '1' }),
+  });
+  if (!res.ok) btn.disabled = false;
+  void loadTemplates();
+});
+
+$('tplform').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('tplerr').textContent = '';
+  const fd = new FormData();
+  fd.set('name', $('tplname').value);
+  fd.set('layout', $('tpllayout').value);
+  fd.set('primary', $('tplc1').value);
+  fd.set('secondary', $('tplc2').value);
+  fd.set('persona', $('tplpersona').value);
+  fd.set('event', $('tplevent').value);
+  fd.set('blocks', $('tplblocks').value);
+  const file = $('tplimg').files[0];
+  if (file) fd.set('image', file, file.name);
+  const btn = $('tplform').querySelector('button[type=submit]');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/v1/admin/templates', { method: 'POST', credentials: 'same-origin', body: fd });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) { $('tplerr').textContent = (out.error && out.error.message) || 'That did not work.'; return; }
+    $('tplname').value = '';
+    $('tplimg').value = '';
+    await loadTemplates();
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 let commsuniOn = null;

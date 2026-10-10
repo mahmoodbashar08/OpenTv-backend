@@ -1,9 +1,49 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
+import { fail } from '@/http';
 import { isSafeLinkUrl } from '@/pure';
 
 export const EVENT_KEY = 'event:active';
 export const EVENTS = ['halloween', 'muertos', 'christmas', 'newyear', 'valentine', 'ramadan', 'awards'] as const;
+
+/** A `profile_templates` row (0053). */
+export type TemplateRow = {
+  id: string;
+  name: string;
+  layout: string;
+  colours: string;
+  blocks: string;
+  persona: string;
+  banner_key: string;
+  event: string | null;
+  hidden: number;
+  created_at: string;
+};
+
+export const TEMPLATE_COLUMNS = 'id, name, layout, colours, blocks, persona, banner_key, event, hidden, created_at';
+
+/**
+ * A template as the phone (and the dashboard) receives it: the two colours
+ * unpacked, the blocks as a list, and the banner as an address on THIS origin
+ * — `GET /v1/templates/:name` below — so the phone downloads it once and never
+ * needs to know where it is kept.
+ */
+export function templateOut(row: TemplateRow, origin: string) {
+  const [primary, secondary] = JSON.parse(row.colours) as [string, string];
+  return {
+    id: row.id,
+    name: row.name,
+    banner: `${origin}/v1/${row.banner_key}`,
+    primary,
+    secondary,
+    layout: row.layout,
+    persona: row.persona,
+    blocks: JSON.parse(row.blocks) as unknown,
+    event: row.event,
+    hidden: row.hidden === 1,
+    created_at: row.created_at,
+  };
+}
 
 /**
  * Where to find us — Discord, Reddit, Instagram, TikTok, X — as rows this
@@ -56,5 +96,60 @@ links.get('/links', async (c) => {
    * five minutes to arrive.
    */
   const event = (await c.env.CACHE.get(EVENT_KEY)) || null;
-  return c.json({ links: safe, event });
+
+  /*
+   * THE SERVER'S PROFILE TEMPLATES (2.0.0, 0053), on this same read, so a
+   * Ramadan template ships on the day with no new request and no app update.
+   * The visible ones; an event-tied one only while its event is the one
+   * switched on, so it arrives and leaves with the decorations — up to five
+   * minutes late, like the event itself. Newest first: the one just made
+   * leads its section on the phone.
+   *
+   * ONLY TO A PHONE WITH AN ACCOUNT, the same way the event is: not by auth
+   * here (this read is the same for everybody and cached hard, see above) but
+   * because the app only ever asks when it is signed in — a phone without an
+   * account keeps the twelve built in and reaches nothing.
+   */
+  const origin = new URL(c.req.url).origin;
+  const templates = (
+    await c.env.DB.prepare(
+      `SELECT ${TEMPLATE_COLUMNS} FROM profile_templates
+        WHERE hidden = 0 AND (event IS NULL OR event = ?)
+        ORDER BY created_at DESC`,
+    )
+      .bind(event ?? '')
+      .all<TemplateRow>()
+  ).results.map((r) => templateOut(r, origin));
+
+  return c.json({ links: safe, event, templates });
+});
+
+// ── GET /v1/templates/:name — a template's banner ───────────────────────────
+
+/**
+ * Public and unauthenticated like an avatar: the address ends up inside an
+ * `<Image>` on the templates screen and an image request carries no session.
+ * The owner's own artwork, uploaded from the dashboard — never a user's
+ * picture, so none of the scanning caveat that hangs over every other image
+ * route. Immutable because a template's banner never changes: there is no
+ * edit, only make, hide and delete, and a new template is a new key.
+ */
+links.get('/templates/:name', async (c) => {
+  const bucket = c.env.COMMENT_IMAGES;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Image storage is not configured.');
+
+  // The key is rebuilt from a name that can only be a file name, never a path.
+  const name = c.req.param('name');
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) return fail(c, 404, 'not_found', 'No such image.');
+
+  const obj = await bucket.get(`templates/${name}`);
+  if (!obj) return fail(c, 404, 'not_found', 'No such image.');
+
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 });

@@ -1,11 +1,19 @@
-import { EVENT_KEY, EVENTS } from '@/routes/links';
+import { EVENT_KEY, EVENTS, TEMPLATE_COLUMNS, templateOut, type TemplateRow } from '@/routes/links';
 import { createMiddleware } from 'hono/factory';
 import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { COMMSUNI_OFF_KEY } from '@/routes/commsuni';
-import { constantTimeEqual } from '@/pure';
+import {
+  constantTimeEqual,
+  imageExtension,
+  isHexColour,
+  MAX_COVER_BYTES,
+  parseTemplateBlocks,
+  TEMPLATE_LAYOUTS,
+  TEMPLATE_PERSONAS,
+} from '@/pure';
 import { sendMessagePush } from '@/push';
 import { supportOut, type SupportRow } from '@/routes/support-chat';
 import { overBudget } from '@/rate-limit';
@@ -316,6 +324,135 @@ admin.post('/admin/event', async (c) => {
   if (ev === null) await c.env.CACHE.delete(EVENT_KEY);
   else await c.env.CACHE.put(EVENT_KEY, ev as string);
   return c.json({ event: ev }, 200, { 'Cache-Control': 'no-store' });
+});
+
+// ── Profile templates (0053) ─────────────────────────────────────────────────
+
+/**
+ * The dashboard's half of "templates from the server": make one, hide it,
+ * delete it. Delivery is `GET /v1/links` (links.ts), which sends the visible
+ * ones to every member's phone — so a save here reaches phones within the
+ * five minutes that read is cached, and nothing else has to happen.
+ *
+ * NO EDIT, on purpose. A template is one banner plus a shape; getting one
+ * wrong is fixed by deleting it and saving another, and the banner's address
+ * can then be cached for ever because it never changes under a phone.
+ */
+admin.get('/admin/templates', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  // Hidden ones too: this is the list to un-hide them from.
+  const rows = await c.env.DB.prepare(`SELECT ${TEMPLATE_COLUMNS} FROM profile_templates ORDER BY created_at DESC`).all<TemplateRow>();
+  const origin = new URL(c.req.url).origin;
+  return c.json({ items: rows.results.map((r) => templateOut(r, origin)) }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/** The banner is a cover, so a cover's types and a cover's size. No GIF: the
+ *  phone copies the banner through the same path as a bundled one, which is
+ *  a still. */
+const TEMPLATE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+admin.post('/admin/templates', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const bucket = c.env.COMMENT_IMAGES;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Image storage is not configured.');
+
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be multipart/form-data.');
+  }
+  const str = (k: string) => {
+    const v = form.get(k);
+    return typeof v === 'string' ? v.trim() : '';
+  };
+
+  // Every field checked against the app's own lists (pure.ts): a value the
+  // phone does not know would make it leave the template out, silently, on
+  // every phone — so the dashboard hears about it now instead.
+  const name = str('name');
+  if (name.length < 1 || name.length > 40) return fail(c, 400, 'invalid_body', 'name must be 1–40 characters.');
+  const layout = str('layout');
+  if (!(TEMPLATE_LAYOUTS as readonly string[]).includes(layout)) return fail(c, 400, 'invalid_body', 'layout must be classic, cards or poster.');
+  const primary = str('primary').toUpperCase();
+  const secondary = str('secondary').toUpperCase();
+  if (!isHexColour(primary) || !isHexColour(secondary)) return fail(c, 400, 'invalid_body', 'Both colours must be #RRGGBB.');
+  const persona = str('persona');
+  if (!(TEMPLATE_PERSONAS as readonly string[]).includes(persona)) return fail(c, 400, 'invalid_body', 'persona must be one of the app\'s twelve.');
+  const event = str('event') || null;
+  if (event !== null && !(EVENTS as readonly string[]).includes(event)) return fail(c, 400, 'invalid_body', 'event must be one of the events, or empty.');
+  const blocks = parseTemplateBlocks(str('blocks'));
+  if (!blocks.ok) return fail(c, 400, 'invalid_body', `blocks: ${blocks.reason}.`);
+
+  const file = form.get('image');
+  if (!(file instanceof File)) return fail(c, 400, 'invalid_body', 'A banner image is required.');
+  if (!TEMPLATE_IMAGE_TYPES.has(file.type)) return fail(c, 415, 'unsupported_type', `Type ${file.type || 'unknown'} is not a JPEG, PNG or WebP.`);
+  if (file.size <= 0) return fail(c, 400, 'invalid_body', 'The image is empty.');
+  if (file.size > MAX_COVER_BYTES) return fail(c, 413, 'too_large', `A banner is at most ${Math.floor(MAX_COVER_BYTES / 1_000_000)} MB.`);
+
+  const id = crypto.randomUUID();
+  const key = `templates/${id}.${imageExtension(file.type)}`;
+  // The object BEFORE the row: a row whose banner is missing is a template
+  // every phone downloads, fails on, and leaves out.
+  await bucket.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+
+  const row: TemplateRow = {
+    id,
+    name,
+    layout,
+    colours: JSON.stringify([primary, secondary]),
+    blocks: JSON.stringify(blocks.blocks),
+    persona,
+    banner_key: key,
+    event,
+    hidden: 0,
+    created_at: new Date().toISOString(),
+  };
+  await c.env.DB.prepare(`INSERT INTO profile_templates (${TEMPLATE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(row.id, row.name, row.layout, row.colours, row.blocks, row.persona, row.banner_key, row.event, row.hidden, row.created_at)
+    .run();
+  return c.json({ template: templateOut(row, new URL(c.req.url).origin) }, 201, { 'Cache-Control': 'no-store' });
+});
+
+/** Hide or show. Hidden stays stored and reaches nobody — the way to take a
+ *  template back for a day without losing the banner. */
+admin.post('/admin/templates/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { hidden?: unknown };
+  if (typeof body.hidden !== 'boolean') return fail(c, 400, 'invalid_body', 'hidden must be true or false.');
+  const res = await c.env.DB.prepare('UPDATE profile_templates SET hidden = ? WHERE id = ?')
+    .bind(body.hidden ? 1 : 0, c.req.param('id'))
+    .run();
+  if (!res.meta.changes) return fail(c, 404, 'not_found', 'No such template.');
+  return c.json({ ok: true, hidden: body.hidden }, 200, { 'Cache-Control': 'no-store' });
+});
+
+admin.delete('/admin/templates/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const id = c.req.param('id');
+  const row = await c.env.DB.prepare('SELECT banner_key FROM profile_templates WHERE id = ?').bind(id).first<{ banner_key: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such template.');
+  await c.env.DB.prepare('DELETE FROM profile_templates WHERE id = ?').bind(id).run();
+  // The banner AFTER the row, best-effort: an orphan costs kilobytes, a row
+  // pointing at nothing costs a template that fails on every phone. A phone
+  // that already applied it keeps its copy — the look became that person's
+  // own settings the moment they tapped Use it.
+  if (c.env.COMMENT_IMAGES) {
+    try {
+      await c.env.COMMENT_IMAGES.delete(row.banner_key);
+    } catch {
+      /* orphan, swept later */
+    }
+  }
+  return c.body(null, 204);
 });
 
 admin.use('/admin/stats', cachedRead);

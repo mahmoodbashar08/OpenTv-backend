@@ -68,6 +68,7 @@ const MIGRATION_FILES = [
   '../migrations/0049_joined_at.sql',
   '../migrations/0050_support_chat.sql',
   '../migrations/0051_publish_state.sql',
+  '../migrations/0053_profile_templates.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
@@ -259,14 +260,16 @@ export async function callBytes(
   return { status: res.status, json, bytes: raw };
 }
 
-/** A multipart request — the shape `POST /v1/comments/image` takes. */
+/** A multipart request — the shape `POST /v1/comments/image` takes. `headers`
+ *  is for the dashboard's uploads, which sign in with a cookie, not a token. */
 export async function callForm(
   env: Env,
   path: string,
   form: FormData,
   token?: string,
+  extra: Record<string, string> = {},
 ): Promise<{ status: number; json: any }> {
-  const headers = new Headers();
+  const headers = new Headers(extra);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   // Content-Type is deliberately NOT set: fetch derives it from the FormData,
   // including the multipart boundary, which a hand-written header would omit.
