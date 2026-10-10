@@ -1,0 +1,20 @@
+-- WHICH OF A PERSON'S PHONES PUBLISHES THE PROFILE (10 Oct 2026).
+--
+-- Publishing REPLACES the shelves, the lists and the totals, and a free
+-- account on two phones holds two different libraries — sync is Plus. So once
+-- both phones had published, the public profile flipped to whichever spoke
+-- last, on every launch, for ever. Signing in on a second phone stays allowed:
+-- a replacement phone and a second phone look identical from here, and
+-- blocking would lock out somebody who simply replaced theirs. Instead the
+-- profile is published from ONE phone — the first to say which it is, or the
+-- last one the person chose — and the other is answered 409 not_publisher and
+-- keeps everything else (tracking, comments, ratings, follows). Plus lifts it:
+-- sync keeps both libraries equal, so either phone's shelf is the same shelf.
+-- See `routes/published.ts`.
+--
+-- NOT WATCH HISTORY, and README.md's promise stands. The value is the random
+-- name a phone makes up for itself — the same `device` the sync relay keys
+-- its ops on (POST /v1/sync) — derived from nothing about the hardware or the
+-- person. It says which of their own devices last spoke for the profile and
+-- nothing about what it said.
+ALTER TABLE profile_stats ADD COLUMN publisher_device TEXT;

@@ -50,6 +50,10 @@ export type ErrorCode =
   // Sign-in against an address whose account uses Apple or Google. The reply
   // carries a `providers` array alongside the envelope so the app can name it.
   | 'use_provider'
+  // Another of this person's own phones publishes the profile (0052). A 409
+  // and its own code: the request was well-formed and the app's answer is
+  // "make this phone main", not a retry and not the paywall on its own.
+  | 'not_publisher'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */
