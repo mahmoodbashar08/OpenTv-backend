@@ -273,9 +273,11 @@ admin.post('/admin/support/:id', async (c) => {
   if (!who) return fail(c, 404, 'not_found', 'No such profile.');
   const at = new Date().toISOString();
   await c.env.DB.prepare('INSERT INTO support_messages (profile_id, from_dev, body, created_at) VALUES (?, 1, ?, ?)').bind(id, body, at).run();
-  // The push opens the thread; its text is the reply, cut to a notification's length.
-  c.executionCtx.waitUntil(sendMessagePush(c.env, id, body.length > 160 ? body.slice(0, 157) + '…' : body, '/support'));
-  return c.json({ ok: true }, 201, { 'Cache-Control': 'no-store' });
+  // The push opens the thread; its text is the reply, cut to a notification's
+  // length. AWAITED, with the store's receipt, so the dashboard can say whether
+  // it rang — a reply that silently reached nobody looked like one that did.
+  const push = await sendMessagePush(c.env, id, body.length > 160 ? body.slice(0, 157) + '…' : body, '/support', true);
+  return c.json({ ok: true, push }, 201, { 'Cache-Control': 'no-store' });
 });
 
 /** The dashboard's "Hard refresh": the next two reads come from the database. */
