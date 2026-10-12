@@ -1278,21 +1278,26 @@ admin.get('/admin/trends', async (c) => {
   const asked = Number(c.req.query('days'));
   const days = (TREND_DAYS as readonly number[]).includes(asked) ? asked : 30;
   const since = new Date(Date.now() - (2 * days - 1) * 864e5).toISOString().slice(0, 10);
-  type Row = { day: string; n: number };
+  // `p` is how many people, `apple`/`google` how new members signed in — still
+  // counts, never who.
+  type Row = { day: string; n: number; p?: number; apple?: number; google?: number };
   const db = c.env.DB;
   const [joins, opened, comments, ratings] = await Promise.all([
     db.prepare(
-      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM profiles pr
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n,
+              SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'apple')) AS apple,
+              SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'google')) AS google
+         FROM profiles pr
         WHERE deleted_at IS NULL AND created_at >= ? AND NOT ${robotSql('pr')}
         GROUP BY day`,
     ).bind(since).all<Row>(),
     db.prepare('SELECT day, COUNT(*) AS n FROM profile_days WHERE day >= ? GROUP BY day').bind(since).all<Row>(),
     db.prepare(
-      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM comments
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n, COUNT(DISTINCT author_id) AS p FROM comments
         WHERE imported_at IS NULL AND deleted_at IS NULL AND created_at >= ? GROUP BY day`,
     ).bind(since).all<Row>(),
     db.prepare(
-      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM ratings
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n, COUNT(DISTINCT author_id) AS p FROM ratings
         WHERE imported_at IS NULL AND created_at >= ? GROUP BY day`,
     ).bind(since).all<Row>(),
   ]);

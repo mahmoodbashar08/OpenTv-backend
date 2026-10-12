@@ -444,9 +444,9 @@ describe('the dashboard trends and the seasonal calendar', () => {
     const res = await call(env, 'GET', '/v1/admin/trends?days=14', { headers: { Cookie: cookie } });
     expect(res.status).toBe(200);
     expect(res.json.days).toBe(14);
-    expect(res.json.series.joins).toEqual([{ day: today, n: 2 }]);
+    expect(res.json.series.joins).toEqual([{ day: today, n: 2, apple: 0, google: 0 }]);
     expect(res.json.series.opened).toEqual([{ day: today, n: 2 }]);
-    expect(res.json.series.ratings).toEqual([{ day: today, n: 1 }]);
+    expect(res.json.series.ratings).toEqual([{ day: today, n: 1, p: 1 }]);
     // An unknown range falls back to thirty days rather than reading a year.
     expect((await call(env, 'GET', '/v1/admin/trends?days=365', { headers: { Cookie: cookie } })).json.days).toBe(30);
   });

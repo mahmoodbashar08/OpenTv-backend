@@ -77,6 +77,12 @@ export const ADMIN_PAGE = `<!doctype html>
            border-bottom:1px solid #26262b; }
   .tbar { flex:1; position:relative; display:flex; flex-direction:column; justify-content:flex-end;
           align-items:center; height:100%; min-width:0; }
+  .tbar:hover i { background:#fff; }
+  #ttip { position:fixed; z-index:50; pointer-events:none; background:#0b0b0d; border:1px solid #33333a;
+          border-radius:10px; padding:8px 11px; font-size:12px; color:#c9c9d0; line-height:1.5;
+          box-shadow:0 6px 24px #0008; display:none; max-width:260px; }
+  #ttip b { color:#fff; font-size:14px; }
+  #ttip .d { color:#8a8a92; }
   .tbar i { display:block; width:100%; background:#ffd400; border-radius:3px 3px 0 0; min-height:1px; }
   .tbar.zero i { background:#26262b; }
   .tbar.today i { background:#ffd40080; }
@@ -774,10 +780,12 @@ function drawTrend(key, title, kind, d) {
   const big = kind === 'avg' ? (Math.round(avg * 10) / 10).toLocaleString() : total.toLocaleString();
   const lbl = kind === 'avg' ? 'a day on average' : 'in ' + d.days + ' days · ' + (Math.round(avg * 10) / 10) + ' a day';
   const change = kind === 'avg' ? changeHtml(avg, beforeAvg) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0));
+  const rowOf = {};
+  rows.forEach((r) => { rowOf[r.day] = r; });
   const bars = vals.map((n, i) => {
     const cls = 'tbar' + (n ? '' : ' zero') + (i === vals.length - 1 ? ' today' : '');
     const label = n && (showAll || i === best || i === vals.length - 1) ? '<b>' + n + '</b>' : '';
-    return '<div class="' + cls + '" title="' + cur[i] + ': ' + n + '">' + label +
+    return '<div class="' + cls + '" data-tip="' + tipFor(key, cur[i], n, rowOf[cur[i]], avg, i === vals.length - 1).replace(/"/g, '&quot;') + '">' + label +
       '<i style="height:' + Math.max(1, Math.round((n / max) * 86)) + '%"></i></div>';
   }).join('');
   const avgLine = avg > 0 ? '<div class="tavg" style="bottom:' + Math.round((avg / max) * 86) + '%" title="average ' + (Math.round(avg * 10) / 10) + '"></div>' : '';
@@ -788,6 +796,45 @@ function drawTrend(key, title, kind, d) {
     '<div class="tbars">' + avgLine + bars + '</div><div class="tlabs">' + labs + '</div>' +
     '<div class="tfoot">' + foot + '</div></div>';
 }
+const TIP_UNIT = {
+  joins: ['new member', 'new members'],
+  opened: ['member opened the app', 'members opened the app'],
+  comments: ['comment', 'comments'],
+  ratings: ['rating', 'ratings'],
+};
+function tipFor(key, day, n, row, avg, isToday) {
+  const date = new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const unit = TIP_UNIT[key][n === 1 ? 0 : 1];
+  let detail = '';
+  if (key === 'joins' && n && row) {
+    const other = n - (row.apple || 0) - (row.google || 0);
+    detail = [['Apple', row.apple], ['Google', row.google], ['Email', other]].filter(([, v]) => v > 0).map(([k, v]) => v + ' ' + k).join(' · ');
+  } else if ((key === 'comments' || key === 'ratings') && n && row && row.p) {
+    detail = 'by ' + row.p + (row.p === 1 ? ' person' : ' people');
+  }
+  let vs = '';
+  if (avg > 0 && !isToday) {
+    const r = n / avg;
+    vs = r >= 1.5 ? r.toFixed(1) + '× the ' + (Math.round(avg * 10) / 10) + ' average'
+      : r <= 0.67 ? 'below the ' + (Math.round(avg * 10) / 10) + ' average' : 'about average';
+  }
+  return '<span class="d">' + date + (isToday ? ' · today so far' : '') + '</span><br><b>' + n + '</b> ' + unit +
+    (detail ? '<br>' + detail : '') + (vs ? '<br><span class="d">' + vs + '</span>' : '');
+}
+const ttip = document.createElement('div');
+ttip.id = 'ttip';
+document.body.appendChild(ttip);
+document.addEventListener('mouseover', (e) => {
+  const bar = e.target.closest && e.target.closest('.tbar');
+  if (!bar) { ttip.style.display = 'none'; return; }
+  ttip.innerHTML = bar.dataset.tip;
+  ttip.style.display = 'block';
+  const r = bar.getBoundingClientRect();
+  const w = ttip.offsetWidth, h = ttip.offsetHeight;
+  ttip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+  ttip.style.top = Math.max(8, r.top - h - 8) + 'px';
+});
+document.addEventListener('scroll', () => { ttip.style.display = 'none'; }, true);
 async function loadTrends() {
   const res = await fetch('/v1/admin/trends?days=' + trendDays, { credentials: 'same-origin' });
   if (!res.ok) { $('trends').innerHTML = '<p class="note">Trends could not be read.</p>'; return; }
