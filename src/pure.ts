@@ -1654,3 +1654,60 @@ export function publicCoverFrame(frame: string | null, plus: boolean): string | 
   // The fade and the overlay are looks, not Plus shapes: they stay.
   return `${x},${y},${zoom},0,0,${fade},${strength},${tint}`;
 }
+
+// ── the seasonal calendar ────────────────────────────────────────────────────
+
+/**
+ * WHEN EACH SEASON RUNS, for the dashboard's "Automatic" mode. Inclusive UTC
+ * dates. Ramadan moves with the moon, so it is a list of years rather than a
+ * rule — approximate to a day, and it wins over Valentine's where they meet.
+ * Awards season is never automatic: the ceremony date moves, so it stays a
+ * hand-picked event.
+ */
+const ANNUAL: { event: string; from: string; to: string }[] = [
+  { event: 'halloween', from: '10-01', to: '10-31' },
+  { event: 'muertos', from: '11-01', to: '11-02' },
+  { event: 'christmas', from: '12-01', to: '12-26' },
+  { event: 'newyear', from: '12-27', to: '12-31' },
+  { event: 'newyear', from: '01-01', to: '01-02' },
+  { event: 'valentine', from: '02-07', to: '02-14' },
+];
+const RAMADAN: { from: string; to: string }[] = [
+  { from: '2027-02-08', to: '2027-03-10' },
+  { from: '2028-01-28', to: '2028-02-27' },
+  { from: '2029-01-16', to: '2029-02-15' },
+  { from: '2030-01-05', to: '2030-02-05' },
+];
+
+/** The season the calendar puts on `day` (YYYY-MM-DD, UTC), or null. */
+export function scheduledEvent(day: string): string | null {
+  for (const r of RAMADAN) if (day >= r.from && day <= r.to) return 'ramadan';
+  const md = day.slice(5);
+  for (const a of ANNUAL) if (md >= a.from && md <= a.to) return a.event;
+  return null;
+}
+
+/**
+ * What the app is told, from what the dashboard stored. Nothing stored is OFF,
+ * as it always was — so a self-hosted server never grows decorations it was
+ * not asked for. 'auto' follows the calendar; anything else is a hand-picked
+ * event that stays until somebody changes it.
+ */
+export function resolveEvent(stored: string | null | undefined, day: string): string | null {
+  if (!stored) return null;
+  if (stored === 'auto') return scheduledEvent(day);
+  return stored;
+}
+
+/** The next day the calendar changes what it shows, within a year, or null. */
+export function nextScheduledChange(day: string): { day: string; event: string | null } | null {
+  const now = scheduledEvent(day);
+  let t = Date.parse(`${day}T00:00:00Z`);
+  for (let i = 0; i < 366; i++) {
+    t += 864e5;
+    const d = new Date(t).toISOString().slice(0, 10);
+    const e = scheduledEvent(d);
+    if (e !== now) return { day: d, event: e };
+  }
+  return null;
+}

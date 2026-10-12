@@ -158,3 +158,36 @@ describe('banner frame', () => {
     expect(publicCoverFrame('0.500,0.250,1.50,0.900,1', true)).toBe('0.500,0.250,1.50,0.900,1');
   });
 });
+
+describe('the seasonal calendar', () => {
+  it('puts each season on its days and nothing in between', async () => {
+    const { scheduledEvent } = await import('@/pure');
+    expect(scheduledEvent('2026-10-12')).toBe('halloween');
+    expect(scheduledEvent('2026-10-31')).toBe('halloween');
+    expect(scheduledEvent('2026-11-01')).toBe('muertos');
+    expect(scheduledEvent('2026-11-03')).toBeNull();
+    expect(scheduledEvent('2026-12-25')).toBe('christmas');
+    expect(scheduledEvent('2026-12-31')).toBe('newyear');
+    expect(scheduledEvent('2027-01-02')).toBe('newyear');
+    expect(scheduledEvent('2027-01-03')).toBeNull();
+    expect(scheduledEvent('2026-06-15')).toBeNull();
+  });
+  it('lets Ramadan win where it meets Valentine’s', async () => {
+    const { scheduledEvent } = await import('@/pure');
+    expect(scheduledEvent('2027-02-14')).toBe('ramadan');
+    expect(scheduledEvent('2026-02-14')).toBe('valentine');
+  });
+  it('stores nothing as off, auto as the calendar, anything else as itself', async () => {
+    const { resolveEvent } = await import('@/pure');
+    expect(resolveEvent(null, '2026-10-12')).toBeNull();
+    expect(resolveEvent('auto', '2026-10-12')).toBe('halloween');
+    expect(resolveEvent('auto', '2026-06-15')).toBeNull();
+    expect(resolveEvent('christmas', '2026-10-12')).toBe('christmas');
+  });
+  it('names the next change', async () => {
+    const { nextScheduledChange } = await import('@/pure');
+    expect(nextScheduledChange('2026-10-12')).toEqual({ day: '2026-11-01', event: 'muertos' });
+    expect(nextScheduledChange('2026-11-02')).toEqual({ day: '2026-11-03', event: null });
+    expect(nextScheduledChange('2026-11-03')).toEqual({ day: '2026-12-01', event: 'christmas' });
+  });
+});
