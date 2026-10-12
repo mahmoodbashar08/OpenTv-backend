@@ -138,10 +138,25 @@ seeding.post('/comments/import', requireAuth, async (c) => {
       chunk.map((p) =>
         db
           .prepare(
+            /*
+             * NOT A SECOND COPY OF SOMETHING WRITTEN IN THE APP (12 Oct). The
+             * derived id dedupes an import against itself, never against a
+             * comment written live, which has a random `c_` id — so a second
+             * device seeding the same history put every app-written comment
+             * up twice, photo and all, back in the review queue. Same author,
+             * target, episode and words within two minutes is the same
+             * comment; the author index keeps the check cheap.
+             */
             `INSERT OR IGNORE INTO comments
                (id, author_id, target_source, target_key, season, episode, body, is_spoiler, lang,
                 parent_id, imported_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?
+              WHERE NOT EXISTS (
+                SELECT 1 FROM comments o
+                 WHERE o.author_id = ? AND o.target_source = ? AND o.target_key = ?
+                   AND o.season IS ? AND o.episode IS ? AND o.body = ?
+                   AND o.id NOT LIKE 'imp!_%' ESCAPE '!'
+                   AND abs(julianday(o.created_at) - julianday(?)) * 86400 < 120)`,
           )
           .bind(
             p.id,
@@ -154,6 +169,13 @@ seeding.post('/comments/import', requireAuth, async (c) => {
             p.isSpoiler,
             p.lang,
             nowIso,
+            p.createdAt,
+            me,
+            p.source,
+            p.key,
+            p.season,
+            p.episode,
+            p.body,
             p.createdAt,
           ),
       ),

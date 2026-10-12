@@ -137,3 +137,28 @@ describe('a picture with no caption', () => {
     expect(allowed.json.body).toBe('');
   });
 });
+
+describe('seeding a comment that was written in the app', () => {
+  it('does not put up a second copy', async () => {
+    // Written live: a random id, the server's own clock a few seconds after the phone's.
+    raw
+      .prepare(
+        `INSERT INTO comments (id, author_id, target_source, target_key, season, episode, body, is_spoiler, created_at)
+         VALUES ('c_live', 'p_owner', 'tvdb', '121361', 1, 3, ?, 0, '2019-04-02T10:00:04.000Z')`,
+      )
+      .run(ITEM.body);
+    const res = await call(env, 'POST', '/v1/comments/import', { token: owner, body: { items: [ITEM] } });
+    expect(res.json.imported).toBe(0);
+    expect((await call(env, 'GET', THREAD, { token: owner })).json.items).toHaveLength(1);
+  });
+
+  it('still seeds a different comment on the same episode', async () => {
+    raw
+      .prepare(
+        `INSERT INTO comments (id, author_id, target_source, target_key, season, episode, body, is_spoiler, created_at)
+         VALUES ('c_live', 'p_owner', 'tvdb', '121361', 1, 3, 'Something else', 0, '2019-04-02T10:00:04.000Z')`,
+      )
+      .run();
+    expect((await call(env, 'POST', '/v1/comments/import', { token: owner, body: { items: [ITEM] } })).json.imported).toBe(1);
+  });
+});
