@@ -10,7 +10,9 @@ import {
   imageExtension,
   isHexColour,
   MAX_COVER_BYTES,
+  nextScheduledChange,
   parseTemplateBlocks,
+  resolveEvent,
   TEMPLATE_LAYOUTS,
   TEMPLATE_PERSONAS,
 } from '@/pure';
@@ -311,8 +313,19 @@ admin.get('/admin/event', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
   }
-  return c.json({ event: (await c.env.CACHE.get(EVENT_KEY)) || null }, 200, { 'Cache-Control': 'no-store' });
+  return c.json(await eventState(c.env), 200, { 'Cache-Control': 'no-store' });
 });
+
+/** What is stored, what the app is shown today, and — in auto — what comes next. */
+async function eventState(env: Env) {
+  const stored = (await env.CACHE.get(EVENT_KEY)) || null;
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    mode: stored === 'auto' ? 'auto' : stored ? 'manual' : 'off',
+    event: resolveEvent(stored, today),
+    next: stored === 'auto' ? nextScheduledChange(today) : null,
+  };
+}
 
 admin.post('/admin/event', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
@@ -320,10 +333,12 @@ admin.post('/admin/event', async (c) => {
   }
   const body = (await c.req.json().catch(() => ({}))) as { event?: unknown };
   const ev = body.event;
-  if (ev !== null && !(EVENTS as readonly unknown[]).includes(ev)) return fail(c, 400, 'invalid_body', 'event must be one of the events, or null');
+  if (ev !== null && ev !== 'auto' && !(EVENTS as readonly unknown[]).includes(ev)) {
+    return fail(c, 400, 'invalid_body', "event must be one of the events, 'auto', or null");
+  }
   if (ev === null) await c.env.CACHE.delete(EVENT_KEY);
   else await c.env.CACHE.put(EVENT_KEY, ev as string);
-  return c.json({ event: ev }, 200, { 'Cache-Control': 'no-store' });
+  return c.json(await eventState(c.env), 200, { 'Cache-Control': 'no-store' });
 });
 
 // ── Profile templates (0053) ─────────────────────────────────────────────────
@@ -456,6 +471,7 @@ admin.delete('/admin/templates/:id', async (c) => {
 });
 
 admin.use('/admin/stats', cachedRead);
+admin.use('/admin/trends', cachedRead);
 admin.use('/admin/users', cachedRead);
 // Any change made from the dashboard makes both reads fresh again.
 admin.use('/admin/users/*', async (c, next) => {
@@ -1232,4 +1248,59 @@ admin.get('/admin/image/:id', async (c) => {
       'X-Content-Type-Options': 'nosniff',
     },
   });
+});
+
+// ── GET /v1/admin/trends?days=14|30|90 ───────────────────────────────────────
+
+/*
+ * FOUR LINES OVER TIME, and the period before each, so a number can be read as
+ * better or worse rather than only as big or small. Counts per UTC day, never
+ * who: joins (robots left out, as on the cards), members who opened the app
+ * (profile_days — kept 90 days, so the period before a 90-day view is partly
+ * empty and the page says so), and comments and ratings written in the app
+ * (imports left out, as on the cards). Cached like the stats.
+ */
+export const TREND_DAYS = [14, 30, 90] as const;
+
+admin.get('/admin/trends', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const asked = Number(c.req.query('days'));
+  const days = (TREND_DAYS as readonly number[]).includes(asked) ? asked : 30;
+  const since = new Date(Date.now() - (2 * days - 1) * 864e5).toISOString().slice(0, 10);
+  type Row = { day: string; n: number };
+  const db = c.env.DB;
+  const [joins, opened, comments, ratings] = await Promise.all([
+    db.prepare(
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM profiles pr
+        WHERE deleted_at IS NULL AND created_at >= ? AND NOT ${robotSql('pr')}
+        GROUP BY day`,
+    ).bind(since).all<Row>(),
+    db.prepare('SELECT day, COUNT(*) AS n FROM profile_days WHERE day >= ? GROUP BY day').bind(since).all<Row>(),
+    db.prepare(
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM comments
+        WHERE imported_at IS NULL AND deleted_at IS NULL AND created_at >= ? GROUP BY day`,
+    ).bind(since).all<Row>(),
+    db.prepare(
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM ratings
+        WHERE imported_at IS NULL AND created_at >= ? GROUP BY day`,
+    ).bind(since).all<Row>(),
+  ]);
+  const first = await db.prepare('SELECT MIN(day) AS d FROM profile_days').first<{ d: string | null }>();
+  return c.json(
+    {
+      days,
+      today: new Date().toISOString().slice(0, 10),
+      openedSince: first?.d ?? null,
+      series: {
+        joins: joins.results ?? [],
+        opened: opened.results ?? [],
+        comments: comments.results ?? [],
+        ratings: ratings.results ?? [],
+      },
+    },
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
 });

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { isSafeLinkUrl } from '@/pure';
+import { isSafeLinkUrl, resolveEvent } from '@/pure';
 
 export const EVENT_KEY = 'event:active';
 export const EVENTS = ['halloween', 'muertos', 'christmas', 'newyear', 'valentine', 'ramadan', 'awards'] as const;
@@ -89,13 +89,14 @@ links.get('/links', async (c) => {
 
   c.header('Cache-Control', CACHE_CONTROL);
   /*
-   * THE SEASONAL EVENT (8 Oct): one of `EVENTS` or null — switched on
-   * the dashboard, never by date, so a decoration reaches phones only when the
-   * owner says so. Rides this response because it is the one read every
-   * member's phone already makes; cached five minutes, so a switch takes up to
-   * five minutes to arrive.
+   * THE SEASONAL EVENT (8 Oct): one of `EVENTS` or null. The dashboard
+   * stores off (nothing), a hand-picked event, or 'auto' (12 Oct), which
+   * follows the calendar in `scheduledEvent` — the owner still chose it, once.
+   * Rides this response because it is the one read every member's phone
+   * already makes; cached five minutes, so a switch takes up to five minutes
+   * to arrive, and a calendar change lands within five minutes of midnight UTC.
    */
-  const event = (await c.env.CACHE.get(EVENT_KEY)) || null;
+  const event = resolveEvent(await c.env.CACHE.get(EVENT_KEY), new Date().toISOString().slice(0, 10));
 
   /*
    * THE SERVER'S PROFILE TEMPLATES (2.0.0, 0053), on this same read, so a

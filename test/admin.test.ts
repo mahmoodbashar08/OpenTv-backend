@@ -412,3 +412,58 @@ describe('the people list on a busy day', () => {
     expect(res.json.items.length).toBe(1);
   });
 });
+
+describe('the dashboard trends and the seasonal calendar', () => {
+  let env: Env;
+  let raw: ReturnType<typeof freshDatabase>['raw'];
+  beforeEach(() => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    env = { ...makeEnv(fresh.db), ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+  });
+  const cookieOf = async () =>
+    (await call(env, 'POST', '/v1/admin/login', { body: { email: 'me@example.com', password: 'a-long-one' } }))
+      .headers.get('set-cookie')!.split(';')[0]!;
+
+  it('counts each line per day, and keeps imports out of comments and ratings', async () => {
+    const cookie = await cookieOf();
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toISOString();
+    insertProfile(raw, 'p1', 'one');
+    insertProfile(raw, 'p2', 'two');
+    raw.prepare('UPDATE profiles SET created_at = ?').run(now);
+    raw.prepare('INSERT INTO profile_days (profile_id, day) VALUES (?, ?), (?, ?)').run('p1', today, 'p2', today);
+    raw
+      .prepare(
+        `INSERT INTO ratings (id, author_id, target_source, target_key, score, created_at, imported_at)
+         VALUES ('r1', 'p1', 'tvdb', 'tvdb:1', 5, ?, NULL), ('r2', 'p1', 'tvdb', 'tvdb:2', 4, ?, ?)`,
+      )
+      .run(now, now, now);
+
+    expect((await call(env, 'GET', '/v1/admin/trends?days=14')).status).toBe(401);
+    const res = await call(env, 'GET', '/v1/admin/trends?days=14', { headers: { Cookie: cookie } });
+    expect(res.status).toBe(200);
+    expect(res.json.days).toBe(14);
+    expect(res.json.series.joins).toEqual([{ day: today, n: 2 }]);
+    expect(res.json.series.opened).toEqual([{ day: today, n: 2 }]);
+    expect(res.json.series.ratings).toEqual([{ day: today, n: 1 }]);
+    // An unknown range falls back to thirty days rather than reading a year.
+    expect((await call(env, 'GET', '/v1/admin/trends?days=365', { headers: { Cookie: cookie } })).json.days).toBe(30);
+  });
+
+  it('keeps off as off, follows the calendar in auto, and keeps a hand-picked event', async () => {
+    const cookie = await cookieOf();
+    const set = (event: unknown) => call(env, 'POST', '/v1/admin/event', { headers: { Cookie: cookie }, body: { event } });
+    const shown = async () => (await call(env, 'GET', '/v1/links')).json.event;
+
+    expect(await shown()).toBeNull();
+    const auto = await set('auto');
+    expect(auto.json.mode).toBe('auto');
+    const { scheduledEvent } = await import('@/pure');
+    expect(await shown()).toBe(scheduledEvent(new Date().toISOString().slice(0, 10)));
+    expect((await set('christmas')).json).toMatchObject({ mode: 'manual', event: 'christmas', next: null });
+    expect(await shown()).toBe('christmas');
+    expect((await set(null)).json.mode).toBe('off');
+    expect((await set('easter')).status).toBe(400);
+  });
+});

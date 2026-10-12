@@ -62,6 +62,29 @@ export const ADMIN_PAGE = `<!doctype html>
   .bar.on { background:#ffd400; }
   .bar span { position:absolute; bottom:-20px; left:0; right:0; text-align:center;
               font-size:10px; color:#6b6b72; }
+  /* TRENDS: four charts, each with its own numbers, so a bar can be read
+     without hovering. The last bar is today so far, drawn lighter. */
+  .trends { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:12px; }
+  .trend { background:#16161a; border-radius:12px; padding:14px 14px 10px; }
+  .trend h3 { margin:0; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:#8a8a92; }
+  .tsum { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 14px; margin:6px 0 10px; }
+  .tsum .big { font-size:26px; font-weight:800; color:#e9e9ee; }
+  .tsum .lbl { font-size:12px; color:#8a8a92; }
+  .up { color:#78be3d; font-weight:700; font-size:13px; }
+  .down { color:#e5484d; font-weight:700; font-size:13px; }
+  .flat { color:#8a8a92; font-weight:700; font-size:13px; }
+  .tbars { display:flex; align-items:flex-end; gap:3px; height:120px; position:relative;
+           border-bottom:1px solid #26262b; }
+  .tbar { flex:1; position:relative; display:flex; flex-direction:column; justify-content:flex-end;
+          align-items:center; height:100%; min-width:0; }
+  .tbar i { display:block; width:100%; background:#ffd400; border-radius:3px 3px 0 0; min-height:1px; }
+  .tbar.zero i { background:#26262b; }
+  .tbar.today i { background:#ffd40080; }
+  .tbar b { font-size:10px; color:#c9c9cf; font-weight:600; margin-bottom:2px; white-space:nowrap; }
+  .tavg { position:absolute; left:0; right:0; border-top:1px dashed #6b6b72; pointer-events:none; }
+  .tlabs { display:flex; gap:3px; margin-top:4px; }
+  .tlabs span { flex:1; text-align:center; font-size:9px; color:#6b6b72; min-width:0; overflow:hidden; }
+  .tfoot { font-size:11px; color:#6b6b72; margin-top:6px; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
   .acts { display:flex; gap:8px; }
   .foot { color:#6b6b72; font-size:12px; margin-top:34px; }
@@ -207,6 +230,14 @@ export const ADMIN_PAGE = `<!doctype html>
       <div class="chatbtns"><button onclick="document.getElementById('chatdlg').close()">Close</button><button id="chatsend">Send</button></div></dialog>
     <h2>People</h2>
     <div class="grid" id="people"></div>
+    <h2>Trends</h2>
+    <p class="note">Per UTC day. The lighter last bar is today so far. The dashed line is the daily average; the arrow compares with the period before.</p>
+    <div class="tabs" id="trendtabs">
+      <button class="tab" data-days="14">14 days</button>
+      <button class="tab on" data-days="30">30 days</button>
+      <button class="tab" data-days="90">90 days</button>
+    </div>
+    <div class="trends" id="trends"><p class="note">Loading…</p></div>
     <h2>Activity</h2>
     <p class="note">Everything the community holds, imports included. These only grow.</p>
     <div class="grid" id="activity"></div>
@@ -279,8 +310,6 @@ export const ADMIN_PAGE = `<!doctype html>
         <div class="err" id="tplerr"></div>
       </form>
     </details>
-    <h2>Joins, last 14 days</h2>
-    <div class="bars" id="bars"></div>
     <p class="foot" id="foot"></p>
   </div>
 </div>
@@ -675,17 +704,7 @@ async function load() {
     ['People voting, 30 days', t.voters_30d],
   ]);
 
-  const joins = d.joins || [];
-  const max = Math.max(1, ...joins.map((j) => j.n));
-  const days = [];
-  for (let i = 13; i >= 0; i--) {
-    const dt = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-    const hit = joins.find((j) => j.day === dt);
-    days.push([dt, hit ? hit.n : 0]);
-  }
-  $('bars').innerHTML = days.map(([day, n]) =>
-    '<div class="bar ' + (n ? 'on' : '') + '" style="height:' + Math.round((n / max) * 100) + '%" title="' +
-    day + ': ' + n + '"><span>' + day.slice(8) + '</span></div>').join('');
+  await loadTrends();
 
   await loadPeople();
 
@@ -701,6 +720,81 @@ async function load() {
   $('foot').textContent = 'This page reads counts, and the titles today was spent on — never the ' +
     'text of a comment. Read ' + new Date().toLocaleTimeString();
 }
+
+
+/* ── Trends ── */
+let trendDays = 30;
+const TRENDS = [
+  ['joins', 'New members', 'total'],
+  ['opened', 'Members who opened the app', 'avg'],
+  ['comments', 'Comments written in the app', 'total'],
+  ['ratings', 'Ratings given in the app', 'total'],
+];
+function dayList(end, n) {
+  const out = [];
+  const t = Date.parse(end + 'T00:00:00Z');
+  for (let i = n - 1; i >= 0; i--) out.push(new Date(t - i * 86400000).toISOString().slice(0, 10));
+  return out;
+}
+function shortDay(d) {
+  const dt = new Date(d + 'T00:00:00Z');
+  return ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'][dt.getUTCDay()] + ' ' + d.slice(8);
+}
+function changeHtml(now, before) {
+  if (before == null) return '<span class="flat">no earlier data</span>';
+  if (before === 0) return now > 0 ? '<span class="up">▲ new</span>' : '<span class="flat">–</span>';
+  const pct = Math.round(((now - before) / before) * 100);
+  if (pct === 0) return '<span class="flat">= same as before</span>';
+  return '<span class="' + (pct > 0 ? 'up' : 'down') + '">' + (pct > 0 ? '▲ ' : '▼ ') + Math.abs(pct) + '% vs previous ' + trendDays + ' days</span>';
+}
+function drawTrend(key, title, kind, d) {
+  const rows = d.series[key] || [];
+  const map = {};
+  rows.forEach((r) => { map[r.day] = r.n; });
+  const cur = dayList(d.today, d.days);
+  const prev = dayList(new Date(Date.parse(cur[0] + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10), d.days);
+  const vals = cur.map((day) => map[day] || 0);
+  const total = vals.reduce((a, b) => a + b, 0);
+  // Today is not over, so the average and the comparison use whole days only.
+  const whole = vals.slice(0, -1);
+  const avg = whole.length ? whole.reduce((a, b) => a + b, 0) / whole.length : 0;
+  let before = prev.reduce((a, day) => a + (map[day] || 0), 0);
+  const prevWhole = prev.slice(1);
+  let beforeAvg = prevWhole.reduce((a, day) => a + (map[day] || 0), 0) / Math.max(1, prevWhole.length);
+  const known = key !== 'opened' || (d.openedSince && d.openedSince <= prev[0]);
+  if (!known) { before = null; beforeAvg = null; }
+  const max = Math.max(1, ...vals);
+  const best = vals.indexOf(Math.max(...vals));
+  const showAll = d.days <= 30;
+  const every = d.days <= 14 ? 1 : d.days <= 30 ? 3 : 10;
+  const big = kind === 'avg' ? (Math.round(avg * 10) / 10).toLocaleString() : total.toLocaleString();
+  const lbl = kind === 'avg' ? 'a day on average' : 'in ' + d.days + ' days · ' + (Math.round(avg * 10) / 10) + ' a day';
+  const change = kind === 'avg' ? changeHtml(avg, beforeAvg) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0));
+  const bars = vals.map((n, i) => {
+    const cls = 'tbar' + (n ? '' : ' zero') + (i === vals.length - 1 ? ' today' : '');
+    const label = n && (showAll || i === best || i === vals.length - 1) ? '<b>' + n + '</b>' : '';
+    return '<div class="' + cls + '" title="' + cur[i] + ': ' + n + '">' + label +
+      '<i style="height:' + Math.max(1, Math.round((n / max) * 86)) + '%"></i></div>';
+  }).join('');
+  const avgLine = avg > 0 ? '<div class="tavg" style="bottom:' + Math.round((avg / max) * 86) + '%" title="average ' + (Math.round(avg * 10) / 10) + '"></div>' : '';
+  const labs = cur.map((day, i) => '<span>' + ((i % every === 0 || i === cur.length - 1) ? shortDay(day) : '') + '</span>').join('');
+  const foot = (total ? 'Best day: ' + shortDay(cur[best]) + ' (' + vals[best] + ')' : 'Nothing yet in this period') + (key === 'opened' && d.openedSince ? ' · counted since ' + d.openedSince : '');
+  return '<div class="trend"><h3>' + title + '</h3>' +
+    '<div class="tsum"><span class="big">' + big + '</span><span class="lbl">' + lbl + '</span>' + change + '</div>' +
+    '<div class="tbars">' + avgLine + bars + '</div><div class="tlabs">' + labs + '</div>' +
+    '<div class="tfoot">' + foot + '</div></div>';
+}
+async function loadTrends() {
+  const res = await fetch('/v1/admin/trends?days=' + trendDays, { credentials: 'same-origin' });
+  if (!res.ok) { $('trends').innerHTML = '<p class="note">Trends could not be read.</p>'; return; }
+  const d = await res.json();
+  $('trends').innerHTML = TRENDS.map(([k, t, kind]) => drawTrend(k, t, kind, d)).join('');
+}
+document.querySelectorAll('#trendtabs .tab').forEach((b) => b.addEventListener('click', () => {
+  trendDays = Number(b.dataset.days);
+  document.querySelectorAll('#trendtabs .tab').forEach((x) => x.classList.toggle('on', x === b));
+  loadTrends();
+}));
 
 /** Which UTC day the people table is showing; '' is today. */
 let viewDay = '';
@@ -1023,34 +1117,48 @@ $('hard').addEventListener('click', async () => {
   }
 });
 
-let eventOn = undefined;
 const EVENT_NAMES = {
   halloween: 'Halloween', muertos: 'Day of the Dead', christmas: 'Christmas', newyear: 'New Year',
   valentine: "Valentine's", ramadan: 'Ramadan & Eid', awards: 'Awards season',
 };
-$('event').innerHTML = '<option value="">Event: off</option>' +
-  Object.entries(EVENT_NAMES).map(([k, v]) => '<option value="' + k + '">Event: ' + v + '</option>').join('');
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function niceDay(d) { return Number(d.slice(8)) + ' ' + SHORT_MONTHS[Number(d.slice(5, 7)) - 1]; }
+let eventState;
+function eventOptions() {
+  const auto = eventState && eventState.mode === 'auto';
+  const now = eventState && eventState.event ? EVENT_NAMES[eventState.event] : 'nothing';
+  const next = eventState && eventState.next
+    ? ' → ' + (eventState.next.event ? EVENT_NAMES[eventState.next.event] : 'off') + ' on ' + niceDay(eventState.next.day)
+    : '';
+  return '<option value="">Event: off</option>' +
+    '<option value="auto">Event: automatic' + (auto ? ' (now ' + now + next + ')' : ' — follows the calendar') + '</option>' +
+    Object.entries(EVENT_NAMES).map(([k, v]) => '<option value="' + k + '">Event: ' + v + ' (fixed)</option>').join('');
+}
 function drawEvent() {
-  $('event').value = eventOn || '';
+  $('event').innerHTML = eventOptions();
+  $('event').value = !eventState ? '' : eventState.mode === 'auto' ? 'auto' : (eventState.event || '');
 }
 async function readEvent() {
   const res = await fetch('/v1/admin/event', { credentials: 'same-origin' });
-  eventOn = res.ok ? (await res.json()).event : undefined;
+  eventState = res.ok ? await res.json() : undefined;
   drawEvent();
 }
 $('event').addEventListener('change', async () => {
-  if (eventOn === undefined) return drawEvent();
+  if (eventState === undefined) return drawEvent();
   const next = $('event').value || null;
-  if (!confirm(next
-    ? 'Turn on ' + EVENT_NAMES[next] + '? Members get its avatar decorations and theme within 5 minutes; free users lose them when you turn it off, Plus keeps them.'
-    : 'Turn the seasonal event off? Free users lose the decorations within 5 minutes.')) return drawEvent();
+  const msg = next === 'auto'
+    ? 'Switch seasons automatically by date? Halloween 1–31 Oct, Day of the Dead 1–2 Nov, Christmas 1–26 Dec, New Year 27 Dec–2 Jan, Valentine’s 7–14 Feb, Ramadan & Eid on its dates. Awards season stays manual. Changes reach phones within 5 minutes of midnight UTC.'
+    : next
+      ? 'Turn on ' + EVENT_NAMES[next] + ' and keep it until you change it? Members get its decorations and theme within 5 minutes; free users lose them when it ends, Plus keeps them.'
+      : 'Turn the seasonal event off? Free users lose the decorations within 5 minutes.';
+  if (!confirm(msg)) return drawEvent();
   const res = await fetch('/v1/admin/event', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify({ event: next }),
   });
-  if (res.ok) eventOn = (await res.json()).event;
+  if (res.ok) eventState = await res.json();
   drawEvent();
 });
 
