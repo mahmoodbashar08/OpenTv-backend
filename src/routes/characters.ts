@@ -120,7 +120,7 @@ characterVotes.post('/character-votes', requireAuth, async (c) => {
     .prepare(
       `SELECT character_name FROM character_votes
         WHERE voter_id = ? AND target_source = ? AND target_key = ?
-        ORDER BY created_at DESC LIMIT 1`,
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .bind(me, src, key)
     .first<{ character_name: string }>();
@@ -252,7 +252,7 @@ characterVotes.delete('/character-votes', requireAuth, async (c) => {
     .prepare(
       `SELECT character_name FROM character_votes
         WHERE voter_id = ? AND target_source = ? AND target_key = ?
-        ORDER BY created_at DESC LIMIT 1`,
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .bind(me, src, key)
     .first<{ character_name: string }>();
@@ -267,7 +267,7 @@ characterVotes.delete('/character-votes', requireAuth, async (c) => {
     .prepare(
       `SELECT character_name FROM character_votes
         WHERE voter_id = ? AND target_source = ? AND target_key = ?
-        ORDER BY created_at DESC LIMIT 1`,
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
     .bind(me, src, key)
     .first<{ character_name: string }>();
