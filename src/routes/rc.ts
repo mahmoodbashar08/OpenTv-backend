@@ -58,7 +58,7 @@ type RcEvent = {
  * lapse; UNCANCELLATION because turning auto-renew back on is the opposite of
  * leaving.
  */
-const GRANTS = new Set(['INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'PRODUCT_CHANGE', 'NON_RENEWING_PURCHASE']);
+const GRANTS = new Set(['INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'PRODUCT_CHANGE', 'NON_RENEWING_PURCHASE', 'SUBSCRIPTION_EXTENDED']);
 
 /**
  * REVOKE ON EXPIRATION AND NOTHING ELSE, and this is the decision most easily

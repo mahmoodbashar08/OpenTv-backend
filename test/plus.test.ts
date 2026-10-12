@@ -68,7 +68,7 @@ describe('POST /v1/rc/webhook — the entitlement', () => {
   const grant = (type: string) =>
     rcEvent({ type, app_user_id: 'p1', entitlement_ids: ['plus'], product_id: 'otv_plus_monthly' });
 
-  it.each(['INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'PRODUCT_CHANGE'])('grants on %s', async (type) => {
+  it.each(['INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'PRODUCT_CHANGE', 'SUBSCRIPTION_EXTENDED'])('grants on %s', async (type) => {
     const res = await grant(type);
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true, matched: true });
