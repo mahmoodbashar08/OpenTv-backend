@@ -633,7 +633,14 @@ published.post('/published/lists', requireAuth, async (c) => {
     // DERIVED from the owner and the name, not random: re-publishing must land
     // on the same id, or every sync would hand a reader a new URL for a list
     // they already had open.
-    lists.push({ id: listId(me, name), name, description: null, items });
+    //
+    // ONE LIST PER ID. `listId` folds case, so "Favourites" and "favourites"
+    // — two lists on the phone — share an id, and the second INSERT broke the
+    // primary key: a 500 that cost the member every list (omar, Oct 2026).
+    // The first one in the owner's order wins.
+    const id = listId(me, name);
+    if (lists.some((l) => l.id === id)) continue;
+    lists.push({ id, name, description: null, items });
   }
 
   /**
