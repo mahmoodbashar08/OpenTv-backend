@@ -251,11 +251,14 @@ admin.get('/admin/support', async (c) => {
 admin.get('/admin/support/:id', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) return fail(c, 401, 'unauthenticated', 'Sign in first.');
   const id = c.req.param('id');
-  const rows = await c.env.DB.prepare('SELECT id, from_dev, body, created_at FROM support_messages WHERE profile_id = ? ORDER BY id').bind(id).all<SupportRow>();
+  const rows = await c.env.DB.prepare('SELECT id, from_dev, body, created_at, seen_at, push FROM support_messages WHERE profile_id = ? ORDER BY id')
+    .bind(id)
+    .all<SupportRow & { seen_at: string | null; push: string | null }>();
   await c.env.DB.prepare('UPDATE support_messages SET seen_at = ? WHERE profile_id = ? AND from_dev = 0 AND seen_at IS NULL')
     .bind(new Date().toISOString(), id)
     .run();
-  return c.json({ messages: rows.results.map(supportOut) }, 200, { 'Cache-Control': 'no-store' });
+  // The ticks: read beats delivered beats sent.
+  return c.json({ messages: rows.results.map((r) => ({ ...supportOut(r), seenAt: r.seen_at, push: r.push })) }, 200, { 'Cache-Control': 'no-store' });
 });
 
 admin.post('/admin/support/:id', async (c) => {
@@ -272,11 +275,15 @@ admin.post('/admin/support/:id', async (c) => {
   const who = await c.env.DB.prepare('SELECT id FROM profiles WHERE id = ? AND deleted_at IS NULL').bind(id).first<{ id: string }>();
   if (!who) return fail(c, 404, 'not_found', 'No such profile.');
   const at = new Date().toISOString();
-  await c.env.DB.prepare('INSERT INTO support_messages (profile_id, from_dev, body, created_at) VALUES (?, 1, ?, ?)').bind(id, body, at).run();
+  const ins = await c.env.DB.prepare('INSERT INTO support_messages (profile_id, from_dev, body, created_at) VALUES (?, 1, ?, ?) RETURNING id')
+    .bind(id, body, at)
+    .first<{ id: number }>();
   // The push opens the thread; its text is the reply, cut to a notification's
   // length. AWAITED, with the store's receipt, so the dashboard can say whether
   // it rang — a reply that silently reached nobody looked like one that did.
   const push = await sendMessagePush(c.env, id, body.length > 160 ? body.slice(0, 157) + '…' : body, '/support', true);
+  const status = push.delivered > 0 ? 'delivered' : push.devices === 0 ? 'nophone' : push.accepted > 0 ? 'sent' : `failed:${push.errors[0] ?? 'unknown'}`.slice(0, 60);
+  if (ins) await c.env.DB.prepare('UPDATE support_messages SET push = ? WHERE id = ?').bind(status, ins.id).run();
   return c.json({ ok: true, push }, 201, { 'Cache-Control': 'no-store' });
 });
 

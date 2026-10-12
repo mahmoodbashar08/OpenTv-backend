@@ -63,3 +63,15 @@ describe('support chat', () => {
     expect(raw.prepare("SELECT COUNT(*) AS n FROM support_messages WHERE profile_id = 'p1'").get()).toEqual({ n: 0 });
   });
 });
+
+describe('reply ticks', () => {
+  it('records the push result on the reply and shows read once the person opens the chat', async () => {
+    await call(env, 'POST', '/v1/admin/support/p1', { headers: { Cookie: cookie }, body: { body: 'Fixed in the next update.' } });
+    const before = (await call(env, 'GET', '/v1/admin/support/p1', { headers: { Cookie: cookie } })).json as { messages: { push: string | null; seenAt: string | null }[] };
+    // p1 has no push devices in the test database.
+    expect(before.messages.at(-1)).toMatchObject({ push: 'nophone', seenAt: null });
+    await call(env, 'GET', '/v1/support', { token: await tokenFor(env, 'p1') });
+    const after = (await call(env, 'GET', '/v1/admin/support/p1', { headers: { Cookie: cookie } })).json as { messages: { seenAt: string | null }[] };
+    expect(after.messages.at(-1)?.seenAt).not.toBeNull();
+  });
+});

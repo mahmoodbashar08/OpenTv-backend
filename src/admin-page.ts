@@ -176,6 +176,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .msg.them { background:#1c1c1e; align-self:flex-start; }
   .msg.me { background:#ffd400; color:#000; align-self:flex-end; }
   .msg small { display:block; opacity:.6; font-size:11px; margin-top:3px; }
+  .tick { font-weight:800; letter-spacing:-2px; margin-left:6px; opacity:1; }
+  .tick.read { color:#1d4ed8; }
+  .tick.fail { color:#b91c1c; letter-spacing:0; font-weight:700; }
   #chatin { width:100%; box-sizing:border-box; min-height:70px; background:#0b0b0d; color:#fff; border:1px solid #2e2e34;
     border-radius:8px; padding:8px; font:inherit; }
   .chatbtns { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
@@ -229,9 +232,10 @@ export const ADMIN_PAGE = `<!doctype html>
       <textarea id="chatin" placeholder="Reply — it reaches them as a notification"></textarea>
       <div class="chatbtns"><button onclick="document.getElementById('chatdlg').close()">Close</button><button id="chatsend">Send</button></div></dialog>
     <h2>People</h2>
+    <p class="note">"Today" here means since 03:00 Iraq time (midnight UTC). Every time on this page is shown in Iraq time.</p>
     <div class="grid" id="people"></div>
     <h2>Trends</h2>
-    <p class="note">Per UTC day. The lighter last bar is today so far. The dashed line is the daily average; the arrow compares with the period before.</p>
+    <p class="note">Each day runs 03:00 → 03:00 Iraq time (midnight UTC, so every member counts on the same clock). The lighter last bar is today so far. The dashed line is the daily average; the arrow compares with the period before.</p>
     <div class="tabs" id="trendtabs">
       <button class="tab" data-days="14">14 days</button>
       <button class="tab on" data-days="30">30 days</button>
@@ -264,7 +268,7 @@ export const ADMIN_PAGE = `<!doctype html>
       <!-- Steps the Opened filter and the day column back one day at a time. -->
       <span class="daynav">
         <button class="tab" id="dprev" title="Previous day">&lsaquo;</button>
-        <span id="dlabel">Today</span>
+        <span id="dlabel" title="Days run 03:00 → 03:00 Iraq time">Today</span>
         <button class="tab" id="dnext" title="Next day" disabled>&rsaquo;</button>
       </span>
     </div>
@@ -972,8 +976,19 @@ async function loadThreads() {
     '<span class="who">' + escm(t.handle && t.joined_at ? '@' + t.handle : (t.display_name || 'account only')) + '</span>' +
     '<span class="last">' + escm(t.last_body) + '</span>' +
     (t.unread ? '<span class="unread">' + t.unread + '</span>' : '') +
-    '<span class="note">' + escm(String(t.last_at).slice(0, 16).replace('T', ' ')) + '</span></div>').join('');
+    '<span class="note">' + escm(baghdad(t.last_at)) + '</span></div>').join('');
   for (const el of $('threads').querySelectorAll('.thread')) el.onclick = () => openChat(el.dataset.id, el.dataset.name);
+}
+/* WHATSAPP-STYLE TICKS on our own replies (13 Oct). ✓ saved, ✓✓ a phone
+   accepted the notification, blue ✓✓ they opened the chat in the app. Kept on
+   the message, so it is still there tomorrow — the popup it replaces was gone
+   the moment it was closed. */
+function ticks(m) {
+  if (m.seenAt) return '<span class="tick read" title="Read ' + escm(baghdad(m.seenAt)) + '">✓✓</span>';
+  if (m.push === 'delivered') return '<span class="tick" title="Delivered to their phone">✓✓</span>';
+  if (m.push === 'nophone') return '<span class="tick" title="Saved — they have no phone that allows notifications; they will see it when they open the chat">✓</span>';
+  if (m.push && m.push.indexOf('failed:') === 0) return '<span class="tick fail" title="Notification failed">✓ ' + escm(m.push.slice(7)) + '</span>';
+  return '<span class="tick" title="Sent">✓</span>';
 }
 async function openChat(id, name) {
   chatWith = id;
@@ -982,7 +997,7 @@ async function openChat(id, name) {
   $('chatdlg').showModal();
   const { messages } = await (await fetch('/v1/admin/support/' + encodeURIComponent(id), { credentials: 'same-origin' })).json();
   $('chatb').innerHTML = messages.map((m) =>
-    '<div class="msg ' + (m.fromDev ? 'me' : 'them') + '">' + escm(m.body) + '<small>' + escm(String(m.at).slice(0, 16).replace('T', ' ')) + '</small></div>').join('');
+    '<div class="msg ' + (m.fromDev ? 'me' : 'them') + '">' + escm(m.body) + '<small>' + escm(baghdad(m.at)) + (m.fromDev ? ticks(m) : '') + '</small></div>').join('');
   $('chatb').scrollTop = $('chatb').scrollHeight;
   void loadThreads();
 }
@@ -995,17 +1010,9 @@ $('chatsend').onclick = async () => {
   });
   $('chatsend').disabled = false;
   if (!res.ok) { alert('Not sent (' + res.status + ')'); return; }
-  const out = await res.json().catch(() => ({}));
   $('chatin').value = '';
   await openChat(chatWith, $('chatt').textContent);
-  // Saved either way; this says whether a phone actually rang.
-  const p = out.push || {};
-  const note = !p.devices
-    ? 'Saved, but no notification: this person has not allowed notifications on any phone. They will see it when they open Settings → Message the developer.'
-    : p.errors && p.errors.length
-      ? 'Saved. Notification problem on ' + p.errors.length + ' of ' + p.devices + ' phone(s): ' + p.errors.join(', ')
-      : 'Saved. Notification delivered to ' + p.delivered + ' of ' + p.devices + ' phone(s)' + (p.delivered < p.accepted ? ' (others still on the way)' : '') + '.';
-  alert(note);
+  // The result is drawn on the message itself now (see ticks).
 };
 
 async function loadReview() {
