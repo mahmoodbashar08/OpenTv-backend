@@ -85,6 +85,18 @@ describe('POST /v1/rc/webhook — the entitlement', () => {
     expect(isPlusRow('p1').plus_since).toBe(first);
   });
 
+  it('keeps the store end date, moving it on each renewal', async () => {
+    const exp = (ms: number) => rcEvent({ type: 'RENEWAL', app_user_id: 'p1', entitlement_ids: ['plus'], expiration_at_ms: ms });
+    const at = () => (raw.prepare('SELECT plus_expires_at FROM profiles WHERE id = ?').get('p1') as { plus_expires_at: string | null }).plus_expires_at;
+    await exp(Date.parse('2026-11-01T00:00:00Z'));
+    expect(at()).toBe('2026-11-01T00:00:00.000Z');
+    await exp(Date.parse('2026-12-01T00:00:00Z'));
+    expect(at()).toBe('2026-12-01T00:00:00.000Z');
+    // An event without a date never wipes the one we have.
+    await grant('UNCANCELLATION');
+    expect(at()).toBe('2026-12-01T00:00:00.000Z');
+  });
+
   it('is idempotent — the same event twice is the same row', async () => {
     await grant('INITIAL_PURCHASE');
     await grant('INITIAL_PURCHASE');

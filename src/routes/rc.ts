@@ -170,6 +170,12 @@ export async function setPlus(env: Env, profileId: string, on: boolean, nowIso: 
   return res.meta.changes > 0;
 }
 
+/** The store's own end date, kept for gifting after it (`plus_expires_at`). */
+export async function notePlusExpiry(env: Env, profileId: string, expiresIso: string | null): Promise<void> {
+  if (!expiresIso) return;
+  await env.DB.prepare('UPDATE profiles SET plus_expires_at = ? WHERE id = ? AND deleted_at IS NULL').bind(expiresIso, profileId).run();
+}
+
 rc.post('/rc/webhook', async (c) => {
   // NO SECRET CONFIGURED MEANS NO WEBHOOK, the same rule the admin door
   // follows: an unset secret must refuse everything rather than accept
@@ -276,12 +282,16 @@ rc.post('/rc/webhook', async (c) => {
         .run();
       // Already claimed by a profile: the event applies to it too.
       const claimed = await c.env.DB.prepare('SELECT claimed_by FROM rc_anon_purchases WHERE rc_id = ?').bind(id).first<{ claimed_by: string | null }>();
-      if (claimed?.claimed_by) await setPlus(c.env, claimed.claimed_by, grant, nowIso);
+      if (claimed?.claimed_by) {
+        await setPlus(c.env, claimed.claimed_by, grant, nowIso);
+        await notePlusExpiry(c.env, claimed.claimed_by, exp);
+      }
     }
     return c.json({ ok: true, matched: false, kept: anon.length > 0 });
   }
 
   const matched = await setPlus(c.env, profileId, grant, nowIso);
+  await notePlusExpiry(c.env, profileId, typeof ev.expiration_at_ms === 'number' ? new Date(ev.expiration_at_ms).toISOString() : null);
   /*
    * SAY SO WHEN AN EVENT WE ACTED ON CHANGED NOTHING. A grant naming a profile
    * this server has never heard of is either a purchase made under an id that
@@ -308,6 +318,7 @@ export async function rcSaysPlus(env: Env, profileId: string): Promise<boolean |
     const body = (await res.json()) as { subscriber?: { entitlements?: Record<string, { expires_date?: string | null }> } };
     const ent = body.subscriber?.entitlements?.[PLUS_ENTITLEMENT];
     if (!ent) return false;
+    await notePlusExpiry(env, profileId, ent.expires_date ?? null);
     return ent.expires_date == null || Date.parse(ent.expires_date) > Date.now();
   } catch {
     return null;
@@ -354,6 +365,7 @@ rc.post('/me/plus-check', requireAuth, async (c) => {
     if (!row || (row.claimed_by && row.claimed_by !== me)) continue;
     if (!row.claimed_by) await c.env.DB.prepare('UPDATE rc_anon_purchases SET claimed_by = ? WHERE rc_id = ? AND claimed_by IS NULL').bind(me, id).run();
     if (row.active === 1 && (row.expires_at == null || row.expires_at > nowIso)) granted = (await setPlus(c.env, me, true, nowIso)) || granted;
+    await notePlusExpiry(c.env, me, row.expires_at);
   }
   const rcPlus = await rcSaysPlus(c.env, me);
   if (rcPlus === true) granted = (await setPlus(c.env, me, true, nowIso)) || granted;

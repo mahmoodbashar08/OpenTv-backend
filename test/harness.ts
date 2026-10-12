@@ -72,6 +72,7 @@ const MIGRATION_FILES = [
   '../migrations/0053_profile_templates.sql',
   '../migrations/0054_devices.sql',
   '../migrations/0057_support_push.sql',
+  '../migrations/0058_plus_expires.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
