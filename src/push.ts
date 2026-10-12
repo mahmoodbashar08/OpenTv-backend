@@ -23,6 +23,7 @@ const EXPO_SEND = 'https://exp.host/--/api/v2/push/send';
 
 /** Expo rejects a batch of more than 100. */
 const BATCH = 100;
+const EXPO_RECEIPTS = 'https://exp.host/--/api/v2/push/getReceipts';
 
 export type PushKind = 'follow' | 'like' | 'reply' | 'comment';
 
@@ -146,15 +147,49 @@ export async function sendPush(
  */
 export const MESSAGE_ROUTES = ['/cloud-backup', '/paywall', '/join', '/settings', '/sign-in?next=/cloud-backup', '/support'] as const;
 
-export async function sendMessagePush(env: Env, recipientId: string, text: string, route: string | null = null): Promise<void> {
+/** What happened to one push, for the dashboard: phones tried, accepted, and every error by name. */
+export type PushReport = { devices: number; accepted: number; delivered: number; errors: string[] };
+
+/**
+ * A message from OpenTV to one person. RETURNS WHAT HAPPENED (12 Oct): it used
+ * to swallow everything but DeviceNotRegistered, so a reply that never rang
+ * looked exactly like one that did. With `checkReceipts`, it also waits a few
+ * seconds for Apple's or Google's answer — the ticket only says Expo took it.
+ */
+export async function sendMessagePush(
+  env: Env,
+  recipientId: string,
+  text: string,
+  route: string | null = null,
+  checkReceipts = false,
+): Promise<PushReport> {
+  const report: PushReport = { devices: 0, accepted: 0, delivered: 0, errors: [] };
   try {
     const rows = await tokensFor(env, recipientId);
-    if (rows.length === 0) return;
+    report.devices = rows.length;
+    if (rows.length === 0) return report;
     const to = route && (MESSAGE_ROUTES as readonly string[]).includes(route) ? route : null;
-    await deliver(env, rows, { title: 'OpenTV', body: text }, { kind: 'message', subjectId: null, handle: null, route: to });
-  } catch {
-    // The row is written either way.
+    const tickets = await deliver(env, rows, { title: 'OpenTV', body: text }, { kind: 'message', subjectId: null, handle: null, route: to }, report);
+    if (checkReceipts && tickets.length) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const res = await fetch(EXPO_RECEIPTS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ ids: tickets }),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { data?: Record<string, { status?: string; message?: string; details?: { error?: string } }> };
+        for (const r of Object.values(json.data ?? {})) {
+          if (r?.status === 'ok') report.delivered++;
+          else if (r?.status === 'error') report.errors.push(r.details?.error ?? r.message ?? 'receipt error');
+        }
+      } else report.errors.push(`receipts HTTP ${res.status}`);
+    }
+  } catch (e) {
+    report.errors.push(e instanceof Error ? e.message : 'failed');
   }
+  if (report.errors.length) console.error('push', recipientId, JSON.stringify(report));
+  return report;
 }
 
 async function deliver(
@@ -162,7 +197,9 @@ async function deliver(
   rows: { token: string }[],
   { title, body }: { title: string; body: string },
   data: Message['data'],
-): Promise<void> {
+  report?: PushReport,
+): Promise<string[]> {
+  const tickets: string[] = [];
   const messages: Message[] = rows.map((r) => ({
     to: r.token,
     title,
@@ -180,14 +217,24 @@ async function deliver(
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(slice),
     });
-    if (!res.ok) continue;
+    if (!res.ok) {
+      report?.errors.push(`send HTTP ${res.status}`);
+      continue;
+    }
 
     // Expo answers per message, in order, and reports a dead token as an
     // error rather than an HTTP failure.
-    const json = (await res.json()) as { data?: { status?: string; details?: { error?: string } }[] };
+    const json = (await res.json()) as { data?: { status?: string; id?: string; message?: string; details?: { error?: string } }[] };
+    for (const d of json.data ?? []) {
+      if (d?.status === 'ok') {
+        if (report) report.accepted++;
+        if (d.id) tickets.push(d.id);
+      } else report?.errors.push(d?.details?.error ?? d?.message ?? 'ticket error');
+    }
     const dead = (json.data ?? [])
       .map((d, n) => (d?.details?.error === 'DeviceNotRegistered' ? slice[n]?.to : null))
       .filter((tk): tk is string => tk != null);
     await disable(env, dead, nowIso);
   }
+  return tickets;
 }

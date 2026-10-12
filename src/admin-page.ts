@@ -950,8 +950,17 @@ $('chatsend').onclick = async () => {
   });
   $('chatsend').disabled = false;
   if (!res.ok) { alert('Not sent (' + res.status + ')'); return; }
+  const out = await res.json().catch(() => ({}));
   $('chatin').value = '';
   await openChat(chatWith, $('chatt').textContent);
+  // Saved either way; this says whether a phone actually rang.
+  const p = out.push || {};
+  const note = !p.devices
+    ? 'Saved, but no notification: this person has not allowed notifications on any phone. They will see it when they open Settings → Message the developer.'
+    : p.errors && p.errors.length
+      ? 'Saved. Notification problem on ' + p.errors.length + ' of ' + p.devices + ' phone(s): ' + p.errors.join(', ')
+      : 'Saved. Notification delivered to ' + p.delivered + ' of ' + p.devices + ' phone(s)' + (p.delivered < p.accepted ? ' (others still on the way)' : '') + '.';
+  alert(note);
 };
 
 async function loadReview() {

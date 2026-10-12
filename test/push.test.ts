@@ -196,3 +196,25 @@ describe('a message that opens a place in the app', () => {
     expect(sent.map((m) => m.data?.route)).toEqual(['/cloud-backup', null]);
   });
 });
+
+describe('a message push says what happened', () => {
+  it('reports no phones, an accepted ticket, and a refused one by name', async () => {
+    const { db, raw } = freshDatabase();
+    const env = makeEnv(db);
+    insertProfile(raw, 'p1', 'one');
+    const { sendMessagePush } = await import('@/push');
+    expect(await sendMessagePush(env, 'p1', 'hi')).toEqual({ devices: 0, accepted: 0, delivered: 0, errors: [] });
+
+    const now = new Date().toISOString();
+    raw.prepare("INSERT INTO push_tokens (token, profile_id, platform, created_at, last_seen_at) VALUES ('ExponentPushToken[a]', 'p1', 'ios', ?, ?), ('ExponentPushToken[b]', 'p1', 'ios', ?, ?)").run(now, now, now, now);
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ status: 'ok', id: 't1' }, { status: 'error', details: { error: 'InvalidCredentials' } }] }), { status: 200 })) as typeof fetch;
+    try {
+      const r = await sendMessagePush(env, 'p1', 'hi');
+      expect(r).toMatchObject({ devices: 2, accepted: 1, errors: ['InvalidCredentials'] });
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});
