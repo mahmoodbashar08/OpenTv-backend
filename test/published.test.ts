@@ -390,3 +390,15 @@ describe('when a title first appeared on a shelf', () => {
     expect(rows.filter((r) => !r.first_seen_at.startsWith('2000'))).toHaveLength(1);
   });
 });
+
+describe('two lists whose names differ only in case', () => {
+  it('publishes the first instead of failing the whole set', async () => {
+    const res = await call(env, 'POST', '/v1/published/lists', {
+      token,
+      body: { lists: [{ name: 'Favourites', items: [] }, { name: 'favourites', items: [] }, { name: 'Later', items: [] }] },
+    });
+    expect(res.status).toBe(200);
+    const names = (raw.prepare("SELECT name FROM lists WHERE owner_id = 'p1' ORDER BY position").all() as { name: string }[]).map((r) => r.name);
+    expect(names).toEqual(['Favourites', 'Later']);
+  });
+});
