@@ -832,7 +832,7 @@ admin.get('/admin/users', async (c) => {
        LEFT JOIN email_credentials c ON c.profile_id = p.id
       WHERE p.deleted_at IS NULL
       ORDER BY p.created_at DESC
-      LIMIT 200`,
+      LIMIT 1000`,
   ).all<Record<string, unknown>>();
 
   /*
