@@ -62,6 +62,17 @@ export type ErrorCode =
   // from `device_removed` because the fix is different: remove one you no
   // longer use, then come back.
   | 'device_limit'
+  // A capability this deployment does not have at all — the live room on a
+  // self-hosted instance, which has no Durable Object runtime. The app hides
+  // the feature rather than offering "try again".
+  | 'not_configured'
+  // The live room's 48 h window is over (or not yet open). Its own code so the
+  // app draws "The room closed" instead of an error.
+  | 'room_closed'
+  // 2,000 sockets in one room, or five from one account.
+  | 'room_full'
+  // The live room's socket route asked for without a WebSocket upgrade.
+  | 'upgrade_required'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */

@@ -158,6 +158,16 @@ export type Env = {
    * strangers a paid tier — it only stops a server refusing its own owner.
    */
   SELF_HOSTED?: string;
+
+  /**
+   * The live room — one `EpisodeRoom` Durable Object per episode-night. See
+   * `src/rooms.ts`.
+   *
+   * OPTIONAL like every capability: `selfhost/server.ts` runs on Node, which
+   * has no Durable Object runtime, so it never sets this and every room route
+   * answers `not_configured`. The app then never draws the pill.
+   */
+  ROOMS?: DurableObjectNamespace;
 };
 
 /** What `requireAuth` puts on the context. */

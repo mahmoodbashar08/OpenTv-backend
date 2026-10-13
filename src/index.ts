@@ -32,8 +32,11 @@ import { sharedLists } from '@/routes/shared-lists';
 import { movieNames } from '@/routes/movie-names';
 import { links } from '@/routes/links';
 import { translate } from '@/routes/translate';
+import { rooms } from '@/routes/rooms';
 
 export type { Env } from '@/env';
+// The live room's Durable Object class. wrangler finds it by this export.
+export { EpisodeRoom } from '@/rooms';
 
 const app = new Hono<App>();
 
@@ -139,6 +142,7 @@ v1.route('/', links);
 v1.route('/', movieNames);
 v1.route('/', dev);
 v1.route('/', sharedLists);
+v1.route('/', rooms);
 v1.route('/', reports);
 v1.route('/', blocks);
 v1.route('/', follows);
