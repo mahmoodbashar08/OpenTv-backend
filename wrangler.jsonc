@@ -112,6 +112,15 @@
   // this runs here rather than at a translation vendor.
   "ai": { "binding": "AI" },
 
+  /*
+   * The live room (2.0.0) — one Durable Object per episode-night, see
+   * src/rooms.ts. SQLite-backed, as Cloudflare recommends for every new class
+   * and as the Free plan requires. The migration tag is this Worker's first:
+   * a later change to the class (a rename, a delete) appends v2, never edits v1.
+   */
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "EpisodeRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EpisodeRoom"] }],
+
   // Caches provider JWKS so token verification does not fetch on every request.
   "kv_namespaces": [
     { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" }
