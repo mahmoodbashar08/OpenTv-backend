@@ -17,7 +17,7 @@ Users who decline the community never contact this server at all.
 
 One container, one directory, no database server and no reverse proxy — the
 data is a SQLite file because D1 *is* SQLite, and the only bytes stored are
-pictures, so they are a folder.
+pictures and the opt-in backup ZIPs, so they are folders.
 
 ```bash
 echo "SESSION_SECRET=$(openssl rand -base64 48)" > .env
