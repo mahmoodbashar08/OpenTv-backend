@@ -1257,6 +1257,12 @@ export const HIDEABLE_SECTIONS = [
   'shows',
   'movies',
   'comments',
+  // NOT A SECTION OF THE PROFILE but a switch on the same screen (2.0.0, D6):
+  // "Show my reactions to followers". Listed means the owner's ratings,
+  // feelings, comments and favourite characters never reach anybody's feed
+  // (routes/feed.ts). Absent — the default — means they do. The column is
+  // opaque JSON, so a new key needs no migration.
+  'feed',
 ] as const;
 
 export type HideableSection = (typeof HIDEABLE_SECTIONS)[number];

@@ -71,6 +71,7 @@ const MIGRATION_FILES = [
   '../migrations/0052_profile_publisher.sql',
   '../migrations/0053_profile_templates.sql',
   '../migrations/0054_devices.sql',
+  '../migrations/0055_feed.sql',
   '../migrations/0057_support_push.sql',
   '../migrations/0058_plus_expires.sql',
 ];
