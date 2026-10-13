@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { requireAuth } from '@/middleware';
+import { hasPlus, requireAuth } from '@/middleware';
 import { plusOn } from '@/pure';
 
 /**
@@ -30,6 +30,33 @@ const MAX_NAME = 60;
 const MAX_ITEMS = 500;
 const MAX_MEMBERS = 20;
 
+/**
+ * WATCHING TOGETHER (2.0.0, design §2) — a shared list of exactly one show
+ * (`kind = 'together'`) whose tick became a position: each member's furthest
+ * episode marked watched, one (season, episode) cursor in
+ * `shared_list_positions`, overwritten, never a history (§0).
+ *
+ * PLUS, AND EXACTLY WHERE (D11). Only STARTING one needs Plus — `POST
+ * /shared-lists` with `kind: 'together'`, every time, not past a free first.
+ * Everything after that stays open at every tier, including for a creator
+ * whose Plus has lapsed: join, both GETs, PUT/DELETE position, leave, delete,
+ * rotate the invite. A lapse freezing a friend's progress strip would punish
+ * the friend for somebody else's subscription.
+ *
+ * Invites are the existing code/link (D8), at most five people (D9), and
+ * nothing here sends a push (D12) — the strip updates when it is opened.
+ *
+ * D1 PER ACTIVE MEMBER PER DAY: PUT position ≈ 3 rows read + 1 write, ≤ 3
+ * sittings; GET detail ≈ 15 rows (list 1, members ≤ 5, items 1, positions ≤ 5,
+ * plus the watched counts), ~5 opens; GET index ≈ 10 per list, once. About
+ * 100 rows read and 3 writes, and zero requests when nothing changed.
+ */
+const MAX_TOGETHER_MEMBERS = 5;
+const MAX_EPISODE_NUMBER = 9999;
+
+type Kind = 'list' | 'together';
+type TogetherShow = { target_source: 'tvdb'; target_key: string; title: string | null; poster: string | null };
+
 function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
 }
@@ -50,15 +77,23 @@ function newInviteCode(): string {
 
 /** The caller's role on a list, or null when they are not in it at all. */
 async function roleOf(db: D1Database, listId: string, me: string): Promise<string | null> {
-  const row = await db
+  return (await membershipOf(db, listId, me))?.role ?? null;
+}
+
+/** The caller's role and the list's kind, in the one read `roleOf` already makes. */
+async function membershipOf(
+  db: D1Database,
+  listId: string,
+  me: string,
+): Promise<{ role: string; kind: Kind } | null> {
+  return db
     .prepare(
-      `SELECT m.role AS role FROM shared_list_members m
+      `SELECT m.role AS role, l.kind AS kind FROM shared_list_members m
          JOIN shared_lists l ON l.id = m.list_id AND l.deleted_at IS NULL
         WHERE m.list_id = ? AND m.member_id = ?`,
     )
     .bind(listId, me)
-    .first<{ role: string }>();
-  return row?.role ?? null;
+    .first<{ role: string; kind: Kind }>();
 }
 
 // ── GET /v1/shared-lists ────────────────────────────────────────────────────
@@ -66,7 +101,14 @@ async function roleOf(db: D1Database, listId: string, me: string): Promise<strin
 sharedLists.get('/shared-lists', requireAuth, async (c) => {
   const me = c.get('profileId');
   const rows = await c.env.DB.prepare(
-    `SELECT l.id, l.name, m.role,
+    `SELECT l.id, l.name, l.kind, m.role,
+            -- A together row is drawn as its one show, so the show travels
+            -- with it; an ordinary list reads nothing extra here.
+            CASE WHEN l.kind = 'together' THEN (
+              SELECT json_object('target_source', i.target_source, 'target_key', i.target_key,
+                                 'title', i.title, 'poster', i.poster)
+                FROM shared_list_items i WHERE i.list_id = l.id LIMIT 1
+            ) END AS show,
             (SELECT COUNT(*) FROM shared_list_members x WHERE x.list_id = l.id) AS members,
             (SELECT COUNT(*) FROM shared_list_items i WHERE i.list_id = l.id) AS items,
             (SELECT MAX(i.created_at) FROM shared_list_items i WHERE i.list_id = l.id) AS last_activity,
@@ -97,6 +139,8 @@ sharedLists.get('/shared-lists', requireAuth, async (c) => {
     .all<{
       id: string;
       name: string;
+      kind: Kind;
+      show: string | null;
       role: string;
       members: number;
       items: number;
@@ -108,6 +152,7 @@ sharedLists.get('/shared-lists', requireAuth, async (c) => {
     lists: (rows.results ?? []).map((r) => ({
       ...r,
       is_owner: r.role === 'owner',
+      show: r.show ? (JSON.parse(r.show) as TogetherShow) : null,
       // Split here rather than on the phone: GROUP_CONCAT is a transport
       // detail, and an array is what every caller wants.
       posters: (r.posters ?? '').split('\n').filter(Boolean),
@@ -125,28 +170,68 @@ sharedLists.post('/shared-lists', requireAuth, async (c) => {
   } catch {
     return fail(c, 400, 'invalid_body', 'Body must be JSON.');
   }
-  const name = String((body as { name?: unknown })?.name ?? '').trim();
-  if (!name || name.length > MAX_NAME) return fail(c, 400, 'invalid_body', 'A name is required.');
+  const b = (body ?? {}) as Record<string, unknown>;
+  const kind: Kind = b.kind === 'together' ? 'together' : 'list';
+  if (b.kind !== undefined && b.kind !== 'list' && b.kind !== 'together') {
+    return fail(c, 400, 'invalid_body', "kind is 'list' or 'together'.");
+  }
 
   /*
-   * THE CAP IS ON LISTS THIS PERSON STARTED, never on lists they are in. A
-   * member of nine lists who has started none is not near any limit.
+   * A TOGETHER IS ONE SHOW, AND IT ARRIVES WITH IT, in the same batch as the
+   * list — a together with no show is a screen with nothing to draw. Only a
+   * `tvdb` show: a film has no episodes, so it has no position to share, and
+   * a film "together" is just a shared list.
    */
-  const owned = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM shared_lists WHERE owner_id = ? AND deleted_at IS NULL",
-  )
-    .bind(me)
-    .first<{ n: number }>();
+  let item: TogetherShow | null = null;
+  if (kind === 'together') {
+    const raw = (b.item ?? {}) as Record<string, unknown>;
+    const key = String(raw.target_key ?? '').trim();
+    if (raw.target_source !== 'tvdb' || !key) {
+      return fail(c, 400, 'target_invalid', "A together needs item.target_source 'tvdb' and a target_key.");
+    }
+    item = {
+      target_source: 'tvdb',
+      target_key: key,
+      title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : null,
+      poster: typeof raw.poster === 'string' ? raw.poster.slice(0, 300) : null,
+    };
+  }
 
-  if ((owned?.n ?? 0) >= FREE_OWNED_LISTS) {
-    const owner = await c.env.DB.prepare(
-      'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+  // A together is named after its show unless the phone says otherwise; the
+  // screens draw the show, so the name is only what the index falls back to.
+  let name = String(b.name ?? item?.title ?? '').trim();
+  if (kind === 'together') name = name.slice(0, MAX_NAME);
+  if (!name || name.length > MAX_NAME) return fail(c, 400, 'invalid_body', 'A name is required.');
+
+  if (kind === 'together') {
+    // ALWAYS PLUS, not past a free first: there is no free together (§2.7).
+    // Joining one stays free, and so does everything after starting (D11).
+    if (!(await hasPlus(c))) {
+      return fail(c, 403, 'plus_required', 'Watching together needs OpenTV Plus.');
+    }
+  } else {
+    /*
+     * THE CAP IS ON LISTS THIS PERSON STARTED, never on lists they are in. A
+     * member of nine lists who has started none is not near any limit. And on
+     * ORDINARY lists only: a together already cost Plus, so it must not also
+     * use up the free list a lapsed subscriber still has.
+     */
+    const owned = await c.env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM shared_lists WHERE owner_id = ? AND kind = 'list' AND deleted_at IS NULL",
     )
       .bind(me)
-      .first<{ is_plus: number; plus_until: string | null }>();
-    if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
-    if (!plusOn(owner, new Date().toISOString())) {
-      return fail(c, 403, 'plus_required', 'Starting another shared list needs OpenTV Plus.');
+      .first<{ n: number }>();
+
+    if ((owned?.n ?? 0) >= FREE_OWNED_LISTS) {
+      const owner = await c.env.DB.prepare(
+        'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
+      )
+        .bind(me)
+        .first<{ is_plus: number; plus_until: string | null }>();
+      if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+      if (!plusOn(owner, new Date().toISOString())) {
+        return fail(c, 403, 'plus_required', 'Starting another shared list needs OpenTV Plus.');
+      }
     }
   }
 
@@ -155,13 +240,21 @@ sharedLists.post('/shared-lists', requireAuth, async (c) => {
   const now = new Date().toISOString();
   await c.env.DB.batch([
     c.env.DB.prepare(
-      'INSERT INTO shared_lists (id, owner_id, name, invite_code, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).bind(id, me, name, code, now),
+      'INSERT INTO shared_lists (id, owner_id, name, invite_code, created_at, kind) VALUES (?, ?, ?, ?, ?, ?)',
+    ).bind(id, me, name, code, now, kind),
     // The owner is a MEMBER with role 'owner', so "who is in this list" is one
     // question with one answer everywhere it is asked.
     c.env.DB.prepare(
       "INSERT INTO shared_list_members (list_id, member_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
     ).bind(id, me, now),
+    ...(item
+      ? [
+          c.env.DB.prepare(
+            `INSERT INTO shared_list_items (id, list_id, added_by, target_source, target_key, title, poster, created_at)
+             VALUES (?, ?, ?, 'tvdb', ?, ?, ?, ?)`,
+          ).bind(newId('si'), id, me, item.target_key, item.title, item.poster, now),
+        ]
+      : []),
   ]);
 
   return c.json({ id, invite_code: code });
@@ -183,21 +276,25 @@ sharedLists.post('/shared-lists/join', requireAuth, async (c) => {
   if (!code) return fail(c, 400, 'invalid_body', 'An invite code is required.');
 
   const list = await c.env.DB.prepare(
-    'SELECT id, name FROM shared_lists WHERE invite_code = ? AND deleted_at IS NULL',
+    'SELECT id, name, kind FROM shared_lists WHERE invite_code = ? AND deleted_at IS NULL',
   )
     .bind(code)
-    .first<{ id: string; name: string }>();
+    .first<{ id: string; name: string; kind: Kind }>();
   if (!list) return fail(c, 404, 'not_found', 'No list with that code.');
 
   const already = await roleOf(c.env.DB, list.id, me);
   // JOINING TWICE IS NOT AN ERROR. Somebody tapping a link they are already in
   // should land in the list, not on a message about it.
-  if (already) return c.json({ id: list.id, name: list.name, joined: false });
+  // `kind` rides along so the phone knows a together began without another read.
+  if (already) return c.json({ id: list.id, name: list.name, kind: list.kind, joined: false });
 
   const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM shared_list_members WHERE list_id = ?')
     .bind(list.id)
     .first<{ n: number }>();
-  if ((count?.n ?? 0) >= MAX_MEMBERS) return fail(c, 403, 'forbidden', 'This list is full.');
+  // A together is a sofa, not a channel (D9): five, so a code pasted somewhere
+  // public cannot grow it into an audience.
+  const cap = list.kind === 'together' ? MAX_TOGETHER_MEMBERS : MAX_MEMBERS;
+  if ((count?.n ?? 0) >= cap) return fail(c, 403, 'forbidden', 'This list is full.');
 
   /*
    * NO PLUS CHECK, AND THERE NEVER WILL BE ONE. Charging to accept an invite
@@ -209,7 +306,7 @@ sharedLists.post('/shared-lists/join', requireAuth, async (c) => {
     .bind(list.id, me, new Date().toISOString())
     .run();
 
-  return c.json({ id: list.id, name: list.name, joined: true });
+  return c.json({ id: list.id, name: list.name, kind: list.kind, joined: true });
 });
 
 // ── GET /v1/shared-lists/:id ────────────────────────────────────────────────
@@ -252,10 +349,10 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
    * that deletes a list and expects everybody to lose it.
    */
   const list = await c.env.DB.prepare(
-    'SELECT id, name, invite_code, created_at FROM shared_lists WHERE id = ? AND deleted_at IS NULL',
+    'SELECT id, name, kind, invite_code, created_at FROM shared_lists WHERE id = ? AND deleted_at IS NULL',
   )
     .bind(id)
-    .first<{ id: string; name: string; invite_code: string; created_at: string }>();
+    .first<{ id: string; name: string; kind: Kind; invite_code: string; created_at: string }>();
   if (!list) return fail(c, 404, 'not_found', 'No such list.');
 
   const members = await c.env.DB.prepare(
@@ -298,10 +395,33 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
       watched_by: string | null;
     }>();
 
+  /*
+   * WHERE EACH MEMBER IS — members only, the rule `watched` follows: a visitor
+   * learns what the together is and who is in it, never how far anybody got.
+   * Read only for a together, so an ordinary list costs nothing new, and only
+   * for accounts still standing (a deleted one waits for the purge to cascade).
+   */
+  const positions = new Map<string, { member_id: string; season: number; episode: number; updated_at: string }[]>();
+  if (member && list.kind === 'together') {
+    const rows = await c.env.DB.prepare(
+      `SELECT s.item_id, s.member_id, s.season, s.episode, s.updated_at
+         FROM shared_list_positions s
+         JOIN shared_list_items i ON i.id = s.item_id
+         JOIN profiles p ON p.id = s.member_id AND p.deleted_at IS NULL
+        WHERE i.list_id = ?`,
+    )
+      .bind(id)
+      .all<{ item_id: string; member_id: string; season: number; episode: number; updated_at: string }>();
+    for (const { item_id, ...pos } of rows.results ?? []) {
+      positions.set(item_id, [...(positions.get(item_id) ?? []), pos]);
+    }
+  }
+
   const nowIso = new Date().toISOString();
   return c.json({
     id: list.id,
     name: list.name,
+    kind: list.kind,
     is_owner: role === 'owner',
     // THE CODE IS THE OWNER'S ALONE. It lets a stranger in, so a member who
     // was invited cannot hand that power on without the owner knowing.
@@ -328,6 +448,7 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
       poster: i.poster,
       created_at: i.created_at,
       watched_by: i.watched_by ? i.watched_by.split(',') : [],
+      positions: positions.get(i.id) ?? [],
     })),
   });
 });
@@ -339,7 +460,11 @@ sharedLists.post('/shared-lists/:id/items', requireAuth, async (c) => {
   const id = c.req.param('id');
   // EVERY MEMBER ADDS. A shared list where only the owner may write is a
   // published list with extra steps.
-  if (!(await roleOf(c.env.DB, id, me))) return fail(c, 404, 'not_found', 'No such list.');
+  const membership = await membershipOf(c.env.DB, id, me);
+  if (!membership) return fail(c, 404, 'not_found', 'No such list.');
+  // A together holds exactly one show, from the batch that created it. Another
+  // show is another together.
+  if (membership.kind === 'together') return fail(c, 403, 'forbidden', 'A together holds one show.');
 
   let body: unknown;
   try {
@@ -389,8 +514,11 @@ sharedLists.post('/shared-lists/:id/items', requireAuth, async (c) => {
 sharedLists.delete('/shared-lists/:id/items/:itemId', requireAuth, async (c) => {
   const me = c.get('profileId');
   const id = c.req.param('id');
-  const role = await roleOf(c.env.DB, id, me);
-  if (!role) return fail(c, 404, 'not_found', 'No such list.');
+  const membership = await membershipOf(c.env.DB, id, me);
+  if (!membership) return fail(c, 404, 'not_found', 'No such list.');
+  // Its one show IS the together; ending it is leave or delete, not this.
+  if (membership.kind === 'together') return fail(c, 403, 'forbidden', 'A together holds one show.');
+  const role = membership.role;
 
   /*
    * REMOVE YOUR OWN, OR ANYTHING IF YOU OWN THE LIST. A member deleting
@@ -447,6 +575,75 @@ sharedLists.delete('/shared-lists/:id/items/:itemId/watched', requireAuth, async
   return c.json({ ok: true });
 });
 
+// ── PUT/DELETE /v1/shared-lists/:id/items/:itemId/position ─────────────────
+
+/**
+ * The item, when the caller is a member of the together it belongs to — one
+ * indexed read of list, membership and item (the 3 rows the budget counts).
+ * An ordinary list answers 404 like a list you are not in: a position means
+ * nothing on it.
+ */
+async function togetherItem(db: D1Database, listId: string, itemId: string, me: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS ok FROM shared_list_items i
+         JOIN shared_lists l ON l.id = i.list_id AND l.deleted_at IS NULL AND l.kind = 'together'
+         JOIN shared_list_members m ON m.list_id = l.id AND m.member_id = ?
+        WHERE i.id = ? AND i.list_id = ?`,
+    )
+    .bind(me, itemId, listId)
+    .first<{ ok: number }>();
+  return row != null;
+}
+
+sharedLists.put('/shared-lists/:id/items/:itemId/position', requireAuth, async (c) => {
+  const me = c.get('profileId');
+  const itemId = c.req.param('itemId');
+  if (!(await togetherItem(c.env.DB, c.req.param('id'), itemId, me))) {
+    return fail(c, 404, 'not_found', 'No such together.');
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const { season, episode } = (body ?? {}) as { season?: unknown; episode?: unknown };
+  const inRange = (n: unknown): n is number =>
+    Number.isInteger(n) && (n as number) >= 0 && (n as number) <= MAX_EPISODE_NUMBER;
+  if (!inRange(season) || !inRange(episode)) {
+    return fail(c, 400, 'invalid_body', `season and episode are integers 0–${MAX_EPISODE_NUMBER}.`);
+  }
+
+  /*
+   * OVERWRITTEN, and allowed to go DOWN: un-marking an episode is honest, and
+   * a cursor that only climbs would keep claiming something the phone no
+   * longer says. Only ever the caller's own row — `member_id` is the session,
+   * never the body.
+   */
+  await c.env.DB.prepare(
+    `INSERT OR REPLACE INTO shared_list_positions (item_id, member_id, season, episode, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(itemId, me, season, episode, new Date().toISOString())
+    .run();
+  return c.json({ ok: true });
+});
+
+sharedLists.delete('/shared-lists/:id/items/:itemId/position', requireAuth, async (c) => {
+  const me = c.get('profileId');
+  const itemId = c.req.param('itemId');
+  if (!(await togetherItem(c.env.DB, c.req.param('id'), itemId, me))) {
+    return fail(c, 404, 'not_found', 'No such together.');
+  }
+  // Nothing watched any more (or the show left this phone): back to "Not started".
+  await c.env.DB.prepare('DELETE FROM shared_list_positions WHERE item_id = ? AND member_id = ?')
+    .bind(itemId, me)
+    .run();
+  return c.json({ ok: true });
+});
+
 // ── PATCH /v1/shared-lists/:id ──────────────────────────────────────────────
 
 sharedLists.patch('/shared-lists/:id', requireAuth, async (c) => {
@@ -497,14 +694,28 @@ sharedLists.delete('/shared-lists/:id', requireAuth, async (c) => {
    * one membership row — there is nothing to recover and nothing shared about
    * it.
    */
+  /*
+   * POSITIONS GO IN THE SAME BATCH, because neither path cascades to them: a
+   * soft delete removes no rows, and members → positions has no foreign key.
+   * A cursor is only kept while the pair it was shared with exists (§0) —
+   * the owner ending it drops everybody's, a member leaving drops theirs.
+   */
+  const dropPositions = (who: string | null) =>
+    c.env.DB.prepare(
+      `DELETE FROM shared_list_positions
+        WHERE item_id IN (SELECT id FROM shared_list_items WHERE list_id = ?)
+          AND (? IS NULL OR member_id = ?)`,
+    ).bind(id, who, who);
   if (role === 'owner') {
-    await c.env.DB.prepare('UPDATE shared_lists SET deleted_at = ? WHERE id = ?')
-      .bind(new Date().toISOString(), id)
-      .run();
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE shared_lists SET deleted_at = ? WHERE id = ?').bind(new Date().toISOString(), id),
+      dropPositions(null),
+    ]);
   } else {
-    await c.env.DB.prepare('DELETE FROM shared_list_members WHERE list_id = ? AND member_id = ?')
-      .bind(id, me)
-      .run();
+    await c.env.DB.batch([
+      c.env.DB.prepare('DELETE FROM shared_list_members WHERE list_id = ? AND member_id = ?').bind(id, me),
+      dropPositions(me),
+    ]);
   }
   return c.json({ ok: true });
 });
